@@ -1,0 +1,15 @@
+# Temporary test and dump files
+*.ppm
+*.tmp
+*.log
+serial.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE & OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
