@@ -94,8 +94,8 @@ part1 = part1.replace("; COM1 (0x3F8) auf 115200 Baud", kbd_8042_init + "\n    ;
 # RAM-Variablen im Segment 0x0000
 ram_defs = """
 ; --- RAM-Variablen im freien Basisspeicher (DS = 0x0000, Adressen 0x1000..0x1B00) ---
-SNAKE_X     equ 0x1000      ; X-Koordinaten (1200 Bytes fuer volles 1044-Feld: 0x1000..0x14AF)
-SNAKE_Y     equ 0x1500      ; Y-Koordinaten (1200 Bytes fuer volles 1044-Feld: 0x1500..0x19AF)
+SNAKE_X     equ 0x1000      ; X-Koordinaten (1200 Bytes: 0x1000..0x14AF)
+SNAKE_Y     equ 0x1500      ; Y-Koordinaten (1200 Bytes: 0x1500..0x19AF)
 SNAKE_LEN   equ 0x1A00      ; Aktuelle Laenge (Word)
 SNAKE_DIR   equ 0x1A02      ; Richtung: 0=Up, 1=Right, 2=Down, 3=Left (Byte)
 NEXT_DIR    equ 0x1A03      ; Gepufferte naechste Richtung (Byte)
@@ -103,21 +103,32 @@ FOOD_X      equ 0x1A04      ; X-Position der Frucht (Byte)
 FOOD_Y      equ 0x1A05      ; Y-Position der Frucht (Byte)
 SCORE       equ 0x1A06      ; Aktuelle Punktzahl (Word)
 RND_SEED    equ 0x1A08      ; Zufalls-Seed (Word)
-DIR_LOCKED  equ 0x1A0A      ; Sperre fuer Richtungswechsel im aktuellen Schritt (Byte)
+DIR_LOCKED  equ 0x1A0A      ; Sperre fuer Richtungswechsel (Byte)
 NEW_HEAD_X  equ 0x1A0B      ; Neuer Kopf X (Byte)
 NEW_HEAD_Y  equ 0x1A0C      ; Neuer Kopf Y (Byte)
-QUEUED_DIR  equ 0x1A0D      ; Puffer (Byte)
-HIGH_SCORE  equ 0x1A0E      ; Session High Score (Word, persists across game restarts)
+QUEUED_DIR  equ 0x1A0D      ; Puffer fuer schnellen 2. Tastendruck (Byte)
+HIGH_SCORE  equ 0x1A0E      ; Session High Score (Word, im CMOS NVRAM persistiert)
 
-; Cybforge Retro BIOS Setup Konfigurationsoptionen (0x1A10..0x1A17)
+; Cybforge Retro BIOS Setup Konfigurationsoptionen (0x1A10..0x1A19)
 CFG_SPEED   equ 0x1A10      ; 0=Normal, 1=Fast, 2=Slow (Byte)
 CFG_WALLS   equ 0x1A11      ; 0=Solid, 1=Wrap-Around (Byte)
 CFG_SOUND   equ 0x1A12      ; 0=Enabled, 1=Disabled (Byte)
 CFG_FACE    equ 0x1A13      ; 0=Classic Smile, 1=Cool Shades (Byte)
 CFG_LEN     equ 0x1A14      ; 0=4 Segments, 1=3 Segments, 2=6 Segments (Byte)
-CFG_WIN     equ 0x1A15      ; 0=Full Board (1044), 1=25 Apples, 2=50 Apples, 3=100 Apples (Byte)
+CFG_WIN     equ 0x1A15      ; 0=Full Board (1044), 1=25, 2=50, 3=100 (Byte)
 CFG_DISP    equ 0x1A16      ; Auto 1080p (Byte)
-SETUP_SEL   equ 0x1A17      ; Ausgewaehlte Menue-Zeile im Cybforge Setup (0..7) (Byte)
+SETUP_SEL   equ 0x1A17      ; Ausgewaehlte Menue-Zeile im Cybforge Setup (0..9) (Byte)
+CFG_THEME   equ 0x1A18      ; 0=Cyberpunk Neon, 1=Matrix Green, 2=Amber CRT, 3=CGA Retro (Byte)
+CFG_ARENA   equ 0x1A19      ; 0=Classic Open, 1=Four Pillars, 2=The Maze (Byte)
+
+; Gameplay Erweiterungen (0x1A1A..0x1A35)
+GOLD_FOOD_X equ 0x1A1A      ; X-Position des Gold-Apfels (Byte, 0xFF wenn inaktiv)
+GOLD_FOOD_Y equ 0x1A1B      ; Y-Position des Gold-Apfels (Byte)
+GOLD_TIMER  equ 0x1A1C      ; Ticks verbleibend fuer Gold-Apfel (Word)
+APPLE_COUNT equ 0x1A1E      ; Zaehler normal gefressener Aepfel (Byte)
+TOP3_TABLE  equ 0x1A20      ; Top 3 Leaderboard: 3x (3 Bytes Name, 2 Bytes Score) = 15 Bytes (0x1A20..0x1A2E)
+CURRENT_NAME equ 0x1A30     ; 3 Bytes Puffer fuer Namenseingabe (0x1A30..0x1A32)
+CUR_CHAR_IDX equ 0x1A33     ; Aktiver Buchstabe (0..2) (Byte)
 """
 idx_org = part1.find("[ORG 0x0000]")
 line_end = part1.find("\n", idx_org) + 1
@@ -169,15 +180,9 @@ part2 = """
     mov ax, 0xB800
     mov es, ax              ; ES zeigt fest auf den VGA-Textspeicher!
 
-    ; Standardwerte fuer Cybforge Setup initialisieren
-    mov word [HIGH_SCORE], 0        ; Session High Score = 0
-    mov byte [CFG_SPEED], 0         ; Normal Speed
-    mov byte [CFG_WALLS], 0         ; Solid (Die on wall)
-    mov byte [CFG_SOUND], 0         ; Sound Enabled
-    mov byte [CFG_FACE],  0         ; Classic Smile
-    mov byte [CFG_LEN],   0         ; 4 Segments
-    mov byte [CFG_WIN],   0         ; 0 = Full Board (1044 Tiles!)
-    mov byte [CFG_DISP],  0         ; Auto 1080p
+    ; Gespeicherte Einstellungen & Top 3 Highscore aus CMOS NVRAM laden
+    call load_cmos_settings
+    call apply_color_theme
     mov byte [SETUP_SEL], 0         ; Zeile 0 ausgewaehlt
 
     ; =========================================================================
@@ -230,11 +235,8 @@ post_screen:
     mov ah, 0x07                    ; Light Gray
     call print_string
 
-    ; Zeile 14 & 15: Memory
-    mov di, (14 * 80 + 2) * 2
-    mov si, str_post_mem
-    mov ah, 0x07
-    call print_string
+    ; Zeile 14: Animierter RAM-Zaehler mit PC-Speaker-Ticks (0..640 KB)
+    call post_ram_counter
 
     mov di, (15 * 80 + 2) * 2
     mov si, str_post_ext
@@ -341,7 +343,7 @@ core_bios_setup:
     test al, al
     jz .setup_wait_tick
 
-    ; --- Navigation: W/S oder Pfeiltasten Oben/Unten ---
+    ; Navigation: W/S oder Pfeiltasten
     cmp al, 0x11                    ; 'W'
     je .sel_up
     cmp al, 0x48                    ; Up Arrow
@@ -352,7 +354,7 @@ core_bios_setup:
     cmp al, 0x50                    ; Down Arrow
     je .sel_down
 
-    ; --- Wert aendern / Auswaehlen: A/D, Pfeile Links/Rechts, ENTER, SPACE ---
+    ; Wert aendern / Auswaehlen: A/D, Pfeile, ENTER, SPACE
     cmp al, 0x1E                    ; 'A'
     je .val_prev
     cmp al, 0x4B                    ; Left Arrow
@@ -368,8 +370,7 @@ core_bios_setup:
     cmp al, 0x39                    ; SPACE
     je .val_next
 
-    ; --- ESC: Beenden & Snake starten ---
-    cmp al, 0x01                    ; ESC
+    cmp al, 0x01                    ; ESC -> Save & Boot
     je .exit_setup
 
 .setup_wait_tick:
@@ -385,13 +386,13 @@ core_bios_setup:
     dec byte [SETUP_SEL]
     jmp .redraw_setup
 .wrap_up:
-    mov byte [SETUP_SEL], 7         ; Max Zeilen-Index = 7
+    mov byte [SETUP_SEL], 9         ; Max Zeilen-Index = 9
     jmp .redraw_setup
 
 .sel_down:
     call sound_click
     mov al, [SETUP_SEL]
-    cmp al, 7
+    cmp al, 9
     jae .wrap_down
     inc byte [SETUP_SEL]
     jmp .redraw_setup
@@ -432,10 +433,28 @@ core_bios_setup:
     jmp .redraw_setup
 .p5:
     cmp al, 5
-    jne .redraw_setup
+    jne .p6
     dec byte [CFG_WIN]
     jns .redraw_setup
     mov byte [CFG_WIN], 3
+    jmp .redraw_setup
+.p6:
+    cmp al, 6
+    jne .p7
+    ; Color Theme: 0=Cyber, 1=Matrix, 2=Amber, 3=CGA
+    dec byte [CFG_THEME]
+    jns .th_prev_ok
+    mov byte [CFG_THEME], 3
+.th_prev_ok:
+    call apply_color_theme
+    jmp .redraw_setup
+.p7:
+    cmp al, 7
+    jne .redraw_setup
+    ; Game Arena: 0=Open, 1=Pillars, 2=Maze
+    dec byte [CFG_ARENA]
+    jns .redraw_setup
+    mov byte [CFG_ARENA], 2
     jmp .redraw_setup
 
 .val_next:
@@ -473,18 +492,36 @@ core_bios_setup:
     jmp .redraw_setup
 .n5:
     cmp al, 5
-    jne .redraw_setup
+    jne .n6
     inc byte [CFG_WIN]
     cmp byte [CFG_WIN], 4
     jb .redraw_setup
     mov byte [CFG_WIN], 0
     jmp .redraw_setup
+.n6:
+    cmp al, 6
+    jne .n7
+    inc byte [CFG_THEME]
+    cmp byte [CFG_THEME], 4
+    jb .th_next_ok
+    mov byte [CFG_THEME], 0
+.th_next_ok:
+    call apply_color_theme
+    jmp .redraw_setup
+.n7:
+    cmp al, 7
+    jne .redraw_setup
+    inc byte [CFG_ARENA]
+    cmp byte [CFG_ARENA], 3
+    jb .redraw_setup
+    mov byte [CFG_ARENA], 0
+    jmp .redraw_setup
 
 .val_enter:
     mov al, [SETUP_SEL]
-    cmp al, 6
+    cmp al, 8
     je .do_reset_defaults
-    cmp al, 7
+    cmp al, 9
     je .exit_setup
     jmp .val_next
 
@@ -496,10 +533,15 @@ core_bios_setup:
     mov byte [CFG_LEN],   0
     mov byte [CFG_WIN],   0
     mov byte [CFG_DISP],  0
+    mov byte [CFG_THEME], 0
+    mov byte [CFG_ARENA], 0
+    call save_cmos_settings
+    call apply_color_theme
     call sound_toggle
     jmp .redraw_setup
 
 .exit_setup:
+    call save_cmos_settings
     call sound_start
     jmp init_snake_game
 
@@ -525,7 +567,7 @@ draw_setup_screen:
     mov ax, 0x1F05
     rep stosw
 
-    ; 3. Haupt-Optionskasten (Zeile 3 bis 18, Spalte 6 bis 73)
+    ; 3. Haupt-Optionskasten (Zeile 3 bis 17, Spalte 6 bis 73)
     mov di, (3 * 80 + 6) * 2
     mov ax, 0x1F01                  ; '┌'
     stosw
@@ -540,7 +582,7 @@ draw_setup_screen:
     mov ah, 0x1E                    ; Yellow
     call print_string
 
-    mov cx, 14
+    mov cx, 13
     mov di, (4 * 80 + 6) * 2
 .sb_vert1:
     mov word [es:di], 0x1F06
@@ -548,7 +590,7 @@ draw_setup_screen:
     add di, 80 * 2
     loop .sb_vert1
 
-    mov di, (18 * 80 + 6) * 2
+    mov di, (17 * 80 + 6) * 2
     mov ax, 0x1F03                  ; '└'
     stosw
     mov cx, 66
@@ -557,8 +599,8 @@ draw_setup_screen:
     mov ax, 0x1F04                  ; '┘'
     stosw
 
-    ; 4. Hilfe-Kasten (Zeile 19 bis 23, Spalte 6 bis 73)
-    mov di, (19 * 80 + 6) * 2
+    ; 4. Hilfe-Kasten (Zeile 18 bis 23, Spalte 6 bis 73)
+    mov di, (18 * 80 + 6) * 2
     mov ax, 0x1F01                  ; '┌'
     stosw
     mov cx, 66
@@ -567,13 +609,13 @@ draw_setup_screen:
     mov ax, 0x1F02                  ; '┐'
     stosw
 
-    mov di, (19 * 80 + 10) * 2
+    mov di, (18 * 80 + 10) * 2
     mov si, str_box_title_help
     mov ah, 0x1E
     call print_string
 
-    mov cx, 3
-    mov di, (20 * 80 + 6) * 2
+    mov cx, 4
+    mov di, (19 * 80 + 6) * 2
 .sb_vert2:
     mov word [es:di], 0x1F06
     mov word [es:di + 67 * 2], 0x1F06
@@ -595,7 +637,7 @@ draw_setup_screen:
     mov ah, 0x1F
     call print_string
 
-    ; 6. Menue-Punkte zeichnen (Zeilen 0..7)
+    ; 6. Menue-Punkte zeichnen (Zeilen 0..9)
     ; Zeile 0: Game Speed (Row 4)
     mov bl, 0
     mov dh, 4
@@ -613,9 +655,9 @@ draw_setup_screen:
 .draw_spd_val:
     call draw_val_str
 
-    ; Zeile 1: Wall Collision (Row 6)
+    ; Zeile 1: Wall Collision (Row 5)
     mov bl, 1
-    mov dh, 6
+    mov dh, 5
     mov si, str_opt_walls
     call draw_menu_row
     mov si, str_val_wall_solid
@@ -625,9 +667,9 @@ draw_setup_screen:
 .draw_wall_val:
     call draw_val_str
 
-    ; Zeile 2: PC Speaker Sound (Row 8)
+    ; Zeile 2: PC Speaker Sound (Row 6)
     mov bl, 2
-    mov dh, 8
+    mov dh, 6
     mov si, str_opt_sound
     call draw_menu_row
     mov si, str_val_snd_on
@@ -637,9 +679,9 @@ draw_setup_screen:
 .draw_snd_val:
     call draw_val_str
 
-    ; Zeile 3: Snake Face Style (Row 10)
+    ; Zeile 3: Snake Face Style (Row 7)
     mov bl, 3
-    mov dh, 10
+    mov dh, 7
     mov si, str_opt_face
     call draw_menu_row
     mov si, str_val_face_smile
@@ -649,9 +691,9 @@ draw_setup_screen:
 .draw_face_val:
     call draw_val_str
 
-    ; Zeile 4: Starting Length (Row 12)
+    ; Zeile 4: Starting Length (Row 8)
     mov bl, 4
-    mov dh, 12
+    mov dh, 8
     mov si, str_opt_len
     call draw_menu_row
     mov si, str_val_len_4
@@ -666,9 +708,9 @@ draw_setup_screen:
 .draw_len_val:
     call draw_val_str
 
-    ; Zeile 5: Victory Target (Row 14)
+    ; Zeile 5: Victory Target (Row 9)
     mov bl, 5
-    mov dh, 14
+    mov dh, 9
     mov si, str_opt_win
     call draw_menu_row
     mov si, str_val_win_full
@@ -688,94 +730,144 @@ draw_setup_screen:
 .draw_win_val:
     call draw_val_str
 
-    ; Zeile 6: Reset Defaults (Row 16)
+    ; Zeile 6: Color Theme (Row 10)
     mov bl, 6
-    mov dh, 16
+    mov dh, 10
+    mov si, str_opt_theme
+    call draw_menu_row
+    mov si, str_val_theme_cyber
+    cmp byte [CFG_THEME], 1
+    jne .chk_th_m
+    mov si, str_val_theme_matr
+    jmp .draw_th_val
+.chk_th_m:
+    cmp byte [CFG_THEME], 2
+    jne .chk_th_a
+    mov si, str_val_theme_amber
+    jmp .draw_th_val
+.chk_th_a:
+    cmp byte [CFG_THEME], 3
+    jne .draw_th_val
+    mov si, str_val_theme_cga
+.draw_th_val:
+    call draw_val_str
+
+    ; Zeile 7: Game Arena (Row 11)
+    mov bl, 7
+    mov dh, 11
+    mov si, str_opt_arena
+    call draw_menu_row
+    mov si, str_val_arena_open
+    cmp byte [CFG_ARENA], 1
+    jne .chk_ar_p
+    mov si, str_val_arena_pil
+    jmp .draw_ar_val
+.chk_ar_p:
+    cmp byte [CFG_ARENA], 2
+    jne .draw_ar_val
+    mov si, str_val_arena_maze
+.draw_ar_val:
+    call draw_val_str
+
+    ; Zeile 8: Reset Defaults (Row 13)
+    mov bl, 8
+    mov dh, 13
     mov si, str_opt_reset
     call draw_menu_row
 
-    ; Zeile 7: Save & Boot Game (Row 17)
-    mov bl, 7
-    mov dh, 17
+    ; Zeile 9: Save & Boot Game (Row 14)
+    mov bl, 9
+    mov dh, 14
     mov si, str_opt_boot
     call draw_menu_row
 
-    ; 7. Dynamischen Hilfetext in Zeile 21 schreiben
-    mov di, (21 * 80 + 9) * 2
+    ; Info: Session High Score anzeigen bei Row 16
+    mov di, (16 * 80 + 10) * 2
+    mov si, str_hi_score_lbl
+    mov ah, 0x1E                    ; Yellow
+    call print_string
+    mov ax, [HIGH_SCORE]
+    call render_3digits_yellow
+
+    ; 7. Dynamischen Hilfetext in Zeile 20/21 schreiben
+    mov di, (20 * 80 + 9) * 2
     mov al, [SETUP_SEL]
     mov si, str_help_0
-    test al, al
-    jz .do_draw_help
-    cmp al, 1
-    jne .h2
+    cmp al, 0
+    je .do_print_help
     mov si, str_help_1
-    jmp .do_draw_help
-.h2:
-    cmp al, 2
-    jne .h3
+    cmp al, 1
+    je .do_print_help
     mov si, str_help_2
-    jmp .do_draw_help
-.h3:
-    cmp al, 3
-    jne .h4
+    cmp al, 2
+    je .do_print_help
     mov si, str_help_3
-    jmp .do_draw_help
-.h4:
-    cmp al, 4
-    jne .h5
+    cmp al, 3
+    je .do_print_help
     mov si, str_help_4
-    jmp .do_draw_help
-.h5:
-    cmp al, 5
-    jne .h6
+    cmp al, 4
+    je .do_print_help
     mov si, str_help_5
-    jmp .do_draw_help
-.h6:
-    cmp al, 6
-    jne .h7
+    cmp al, 5
+    je .do_print_help
     mov si, str_help_6
-    jmp .do_draw_help
-.h7:
+    cmp al, 6
+    je .do_print_help
     mov si, str_help_7
-.do_draw_help:
-    mov ah, 0x1F
+    cmp al, 7
+    je .do_print_help
+    mov si, str_help_8
+    cmp al, 8
+    je .do_print_help
+    mov si, str_help_9
+.do_print_help:
+    mov ah, 0x1E                    ; Yellow
     call print_string
     ret
 
-; Zeichnet eine Menue-Zeile mit Highlight wenn aktiv
-; Eingang: BL = Zeilen-Index (0..7), DH = Bildschirmzeile (Row), SI = Label
 draw_menu_row:
-    push bx
-    push dx
-    mov ah, 0x1F                    ; Standard: White on Blue
-    cmp bl, [SETUP_SEL]
-    jne .dmr_clear_bar
-    mov ah, 0x70                    ; Highlight: Black on Light Gray!
-.dmr_clear_bar:
+    ; Input: bl = row index (0..9), dh = screen row (Y), si = string
     push ax
-    xor dl, dl
-    mov al, 9
-    mov bl, dh
-    call xy_to_di
-    pop ax
     push di
-    mov al, ' '
-    mov cx, 62
-    rep stosw
-    pop di
-
-    pop dx
+    mov al, 10
+    mov ah, dh
+    push bx
+    mov bl, ah
+    call xy_to_di
     pop bx
+
+    ; Pfeil anzeigen wenn ausgewaehlt
+    mov ah, 0x1F                    ; Standard: White on Blue
+    cmp [SETUP_SEL], bl
+    jne .dm_no_arrow
+    mov ah, 0x1E                    ; Yellow
+    mov al, '>'
+    stosw
+    mov al, ' '
+    stosw
+    jmp .dm_print_txt
+.dm_no_arrow:
+    mov al, ' '
+    stosw
+    stosw
+.dm_print_txt:
     call print_string
+    pop di
+    pop ax
     ret
 
 draw_val_str:
+    push ax
+    push di
+    mov al, 38                      ; Spalte 38 fuer Wertanzeige
+    mov bl, dh                      ; Zeile dh
+    call xy_to_di
+    mov ah, 0x1A                    ; Bright Green
     call print_string
+    pop di
+    pop ax
     ret
 
-    ; =========================================================================
-    ; PHASE 3: SNAKE GAME INITIALISIERUNG MIT BIOS-SETUP-OPTIONEN
-    ; =========================================================================
 init_snake_game:
     call clear_screen_black
     call draw_game_board
@@ -813,6 +905,11 @@ init_snake_game:
     mov word [SCORE], 0
     mov word [RND_SEED], 0x1337
 
+    ; Gold-Apfel & Zaehler initialisieren
+    mov byte [GOLD_FOOD_X], 0xFF
+    mov word [GOLD_TIMER], 0
+    mov byte [APPLE_COUNT], 0
+
     call update_score_display
     call spawn_fruit
     call draw_snake
@@ -835,6 +932,7 @@ init_snake_game:
 .game_started:
     call sound_start
     call erase_start_box
+    call draw_arena_obstacles
     call draw_snake
     call draw_fruit
 
@@ -843,10 +941,7 @@ init_snake_game:
     ; =========================================================================
 game_loop:
     ; 1. Mini-Ticks Schleife gemaess CFG_SPEED
-    ; Spuerbar reaktionsschnelleres, praezises Tempo (nur etwas schneller fuer snappy Input):
-    ; Normal: 10 Ticks (~150ms, ~6.6 Schritte/Sekunde)
-    ; Fast:    7 Ticks (~105ms, ~9.5 Schritte/Sekunde)
-    ; Slow:   14 Ticks (~210ms, ~4.7 Schritte/Sekunde)
+    ; Normal: 10 Ticks (~150ms), Fast: 7 Ticks (~105ms), Slow: 14 Ticks (~210ms)
     mov bp, 10
     cmp byte [CFG_SPEED], 1
     jne .chk_spd_slow
@@ -859,7 +954,7 @@ game_loop:
 
 .tick_loop:
     call handle_input
-    mov ecx, 3800000                ; ~15 ms Mini-Tick fuer schnelle Tastenabfrage
+    mov ecx, 3800000                ; ~15 ms Mini-Tick
     call delay_cycles
     dec bp
     jnz .tick_loop
@@ -869,7 +964,6 @@ game_loop:
     mov [SNAKE_DIR], al
     mov byte [DIR_LOCKED], 0
 
-    ; Falls in diesem Schritt ein 2. Tastendruck (um die Ecke) gepuffert wurde:
     mov al, [QUEUED_DIR]
     cmp al, 0xFF
     je .no_queued_dir
@@ -934,15 +1028,21 @@ game_loop:
     je .no_wall_collision
 
     cmp al, 10
-    jle game_over
+    jle .do_crash
     cmp al, 69
-    jge game_over
+    jge .do_crash
     cmp bl, 3
-    jle game_over
+    jle .do_crash
     cmp bl, 22
-    jge game_over
+    jge .do_crash
 
 .no_wall_collision:
+    ; Kollision mit Arena-Hindernissen pruefen (Saeulen oder Labyrinth)
+    mov al, [NEW_HEAD_X]
+    mov bl, [NEW_HEAD_Y]
+    call is_arena_wall
+    jz .do_crash
+
     ; 5. Kollision mit eigenem Koerper pruefen (Schwanzspitze zieht weg)
     mov cx, [SNAKE_LEN]
     dec cx
@@ -952,13 +1052,42 @@ game_loop:
     cmp al, [SNAKE_X + si]
     jne .no_body_hit
     cmp bl, [SNAKE_Y + si]
-    je game_over
+    je .do_crash
 .no_body_hit:
     inc si
     loop .self_chk_loop
 
 .no_body_collision:
-    ; 6. Pruefen ob Frucht gefressen wurde
+    ; 6. Gold-Apfel Timer aktualisieren & Pruefen ob Gold-Apfel gefressen
+    cmp byte [GOLD_FOOD_X], 0xFF
+    je .chk_eat_regular
+
+    dec word [GOLD_TIMER]
+    jz .gold_expired
+
+    ; Countdown-Anzeige auf HUD bei (34, 1): "GOLD: 0Xs"
+    call update_gold_hud
+
+    ; Pruefen ob Gold-Apfel gefressen wurde
+    mov al, [NEW_HEAD_X]
+    mov bl, [NEW_HEAD_Y]
+    cmp al, [GOLD_FOOD_X]
+    jne .chk_eat_regular
+    cmp bl, [GOLD_FOOD_Y]
+    jne .chk_eat_regular
+
+    ; --- GOLD-APFEL GEFRESSEN! (+50 Punkte) ---
+    add word [SCORE], 50
+    call sound_golden_apple
+    call erase_gold_apple
+    call update_score_display
+    jmp .chk_eat_regular
+
+.gold_expired:
+    call erase_gold_apple
+
+.chk_eat_regular:
+    ; 7. Pruefen ob regulaere Frucht gefressen wurde
     mov al, [NEW_HEAD_X]
     mov bl, [NEW_HEAD_Y]
     cmp al, [FOOD_X]
@@ -966,10 +1095,23 @@ game_loop:
     cmp bl, [FOOD_Y]
     jne .normal_move
 
-    ; --- FRUCHT GEFRESSEN! ---
+    ; --- REGULAERE FRUCHT GEFRESSEN! ---
     inc word [SCORE]
+    inc byte [APPLE_COUNT]
     call update_score_display
     call sound_eat_fruit
+
+    ; Alle 5 Aepfel einen Gold-Apfel spawnen (falls nicht schon einer aktiv)
+    cmp byte [GOLD_FOOD_X], 0xFF
+    jne .no_new_gold
+    mov al, [APPLE_COUNT]
+    xor ah, ah
+    mov cl, 5
+    div cl
+    test ah, ah
+    jnz .no_new_gold
+    call spawn_golden_apple
+.no_new_gold:
 
     ; Schlange verlaengern
     mov ax, [SNAKE_LEN]
@@ -1051,13 +1193,17 @@ game_loop:
     call draw_snake
     jmp game_loop
 
+.do_crash:
+    call crash_dissolve_animation
+    jmp game_over
+
     ; =========================================================================
     ; PHASE 5A: VICTORY SCREEN (Trophäe & Sieges-Fanfare)
     ; =========================================================================
 victory_screen:
     call sound_victory
 
-    ; Spielfeld-Innenbereich mit Schwarz loeschen (Spalten 11..68, Zeilen 4..21)
+    ; Spielfeld-Innenbereich loeschen
     mov dh, 4
 .clr_win_rows:
     mov al, 11
@@ -1075,101 +1221,89 @@ victory_screen:
     mov bl, 4
     call xy_to_di
     mov si, str_vic_hdr1
-    mov ah, 0x0E                    ; Yellow Star Banner
+    mov ah, 0x0E
     call print_string
 
     mov al, 28
     mov bl, 5
     call xy_to_di
     mov si, str_vic_hdr2
-    mov ah, 0x0A                    ; Bright Green
+    mov ah, 0x0A
     call print_string
 
-    ; Gold-Trophäe (Zentriert um Spalte 40)
+    ; Gold-Trophäe
     mov al, 32
     mov bl, 7
     call xy_to_di
     mov si, str_vic_t1
-    mov ah, 0x0E                    ; Gold
+    mov ah, 0x0E
     call print_string
-
     mov al, 31
     mov bl, 8
     call xy_to_di
     mov si, str_vic_t2
     mov ah, 0x0E
     call print_string
-
     mov al, 32
     mov bl, 9
     call xy_to_di
     mov si, str_vic_t3
     mov ah, 0x0E
     call print_string
-
     mov al, 28
     mov bl, 10
     call xy_to_di
     mov si, str_vic_t4
-    mov ah, 0x0B                    ; Bright Cyan Handles & Gold
+    mov ah, 0x0B
     call print_string
-
     mov al, 32
     mov bl, 11
     call xy_to_di
     mov si, str_vic_t5
     mov ah, 0x0E
     call print_string
-
     mov al, 31
     mov bl, 12
     call xy_to_di
     mov si, str_vic_t6
     mov ah, 0x0E
     call print_string
-
     mov al, 32
     mov bl, 13
     call xy_to_di
     mov si, str_vic_t7
     mov ah, 0x0E
     call print_string
-
     mov al, 37
     mov bl, 14
     call xy_to_di
     mov si, str_vic_t8
     mov ah, 0x0E
     call print_string
-
     mov al, 34
     mov bl, 15
     call xy_to_di
     mov si, str_vic_t9
     mov ah, 0x0E
     call print_string
-
     mov al, 33
     mov bl, 16
     call xy_to_di
     mov si, str_vic_t10
     mov ah, 0x0E
     call print_string
-
     mov al, 33
     mov bl, 17
     call xy_to_di
     mov si, str_vic_t11
-    mov ah, 0x0F                    ; Bright White Plaque
+    mov ah, 0x0F
     call print_string
-
     mov al, 33
     mov bl, 18
     call xy_to_di
     mov si, str_vic_t12
-    mov ah, 0x0F                    ; Bright White Plaque
+    mov ah, 0x0F
     call print_string
-
     mov al, 33
     mov bl, 19
     call xy_to_di
@@ -1181,10 +1315,9 @@ victory_screen:
     mov bl, 21
     call xy_to_di
     mov si, str_vic_status
-    mov ah, 0x0B                    ; Bright Cyan
+    mov ah, 0x0B
     call print_string
 
-    ; Zeile 24 sauber loeschen
     mov al, 0
     mov bl, 24
     call xy_to_di
@@ -1192,104 +1325,133 @@ victory_screen:
     mov ax, 0x0720
     rep stosw
 
-    ; Footer auf Zeile 24 zentriert schreiben
     mov al, 17
     mov bl, 24
     call xy_to_di
     mov si, str_vic_footer
-    mov ah, 0x07                    ; Light Gray
+    mov ah, 0x07
     call print_string
 
     call drain_kbd
 
 .wait_vic_key:
     call read_key
-    cmp al, 0x1C                    ; ENTER -> Direkt neues Spiel starten
+    cmp al, 0x1C
     je init_snake_game
-    cmp al, 0x01                    ; ESC -> Zurueck ins BIOS Setup
+    cmp al, 0x01
     je core_bios_setup
     mov ecx, 30000000
     call delay_cycles
     jmp .wait_vic_key
 
     ; =========================================================================
-    ; PHASE 5: GAME OVER MODAL DIALOG & RESTART
+    ; PHASE 5: GAME OVER MODAL DIALOG & TOP 3 HALL OF CHAMPIONS
     ; =========================================================================
 game_over:
     call sound_game_over
 
-    ; Red Modal Box fuer GAME OVER (Cols 24..56, Rows 9..15)
-    mov al, 24
-    mov bl, 9
+    ; Pruefen ob Score fuer Top 3 qualifiziert ist -> Namenseingabe!
+    call check_top3_qualification
+
+    ; Red Modal Box fuer GAME OVER (Cols 21..59, Rows 7..19)
+    mov al, 21
+    mov bl, 7
     call xy_to_di
-    mov ax, 0x0C01                  ; '╔' Red
-    stosw
-    mov cx, 31
-    mov ax, 0x0C05                  ; '═' Red
+    mov ax, 0x0C01
+    stosw ;  '╔' Red
+    mov cx, 37
+    mov ax, 0x0C05
     rep stosw
-    mov ax, 0x0C02                  ; '╗' Red
+    mov ax, 0x0C02
     stosw
 
-    mov dh, 10
+    mov dh, 8
 .go_box_mid:
-    mov al, 24
+    mov al, 21
     mov bl, dh
     call xy_to_di
-    mov ax, 0x0C06                  ; '║' Red
+    mov ax, 0x0C06
     stosw
-    mov cx, 31
-    mov ax, 0x0720                  ; Blank space
+    mov cx, 37
+    mov ax, 0x0720
     rep stosw
-    mov ax, 0x0C06                  ; '║' Red
+    mov ax, 0x0C06
     stosw
     inc dh
-    cmp dh, 15
+    cmp dh, 19
     jb .go_box_mid
 
-    mov al, 24
-    mov bl, 15
+    mov al, 21
+    mov bl, 19
     call xy_to_di
-    mov ax, 0x0C03                  ; '╚' Red
+    mov ax, 0x0C03
     stosw
-    mov cx, 31
-    mov ax, 0x0C05                  ; '═' Red
+    mov cx, 37
+    mov ax, 0x0C05
     rep stosw
-    mov ax, 0x0C04                  ; '╝' Red
+    mov ax, 0x0C04
     stosw
 
-    ; Row 11: "G A M E   O V E R" in Bright Red
+    ; Row 8: "G A M E   O V E R"
     mov al, 31
-    mov bl, 11
+    mov bl, 8
     call xy_to_di
     mov si, str_game_over
-    mov ah, 0x0C                    ; Bright Red
+    mov ah, 0x0C
     call print_string
 
-    ; Row 12: "Final Score: 000" in Yellow
+    ; Row 9: "Final Score: XXX"
     mov al, 32
-    mov bl, 12
+    mov bl, 9
     call xy_to_di
     mov si, str_final_score_lbl
-    mov ah, 0x0E                    ; Yellow
+    mov ah, 0x0E
     call print_string
     mov ax, [SCORE]
     call render_3digits_yellow
 
-    ; Row 14: "[ENTER] Restart   [ESC] Setup" in Light Cyan
-    mov al, 26
-    mov bl, 14
+    ; Row 10: Divider
+    mov al, 22
+    mov bl, 10
+    call xy_to_di
+    mov cx, 37
+    mov ax, 0x0C05
+    rep stosw
+
+    ; Row 11: "HALL OF CHAMPIONS"
+    mov al, 31
+    mov bl, 11
+    call xy_to_di
+    mov si, str_hall_title
+    mov ah, 0x0B
+    call print_string
+
+    ; Row 13..15: Top 1, Top 2, Top 3 anzeigen
+    call draw_top3_rows
+
+    ; Row 16: Divider
+    mov al, 22
+    mov bl, 16
+    call xy_to_di
+    mov cx, 37
+    mov ax, 0x0C05
+    rep stosw
+
+    ; Row 18: "[ENTER] Restart   [ESC] Setup"
+    mov al, 25
+    mov bl, 18
     call xy_to_di
     mov si, str_go_restart_info
-    mov ah, 0x0B                    ; Light Cyan
+    mov ah, 0x0B
     call print_string
 
     call drain_kbd
 
 .wait_enter:
     call read_key
-    cmp al, 0x1C                    ; ENTER -> Restart
+    cmp al, 0x1C
     je .do_restart
-    cmp al, 0x01                    ; ESC -> Setup
+    cmp al, 0x01
     je .do_setup
     mov ecx, 30000000
     call delay_cycles
@@ -1304,44 +1466,144 @@ game_over:
     jmp core_bios_setup
 
     ; =========================================================================
-    ; PHASE 6: INPUT HANDLER (WASD + Arrows + ESC)
+    ; PHASE 6: INPUT HANDLER (WASD + Arrows + ESC + Pause)
     ; =========================================================================
 handle_input:
     call read_key
     test al, al
     jz .input_done
 
-    cmp al, 0x01                    ; ESC -> Ab ins BIOS Setup
-    jne .chk_wasd
-    pop ax                          ; Stack-Ruecksprung bereinigen
+    cmp al, 0x01                    ; ESC -> Setup
+    jne .chk_pause
+    pop ax                          ; Stack bereinigen
     call sound_click
     jmp core_bios_setup
 
+.chk_pause:
+    cmp al, 0x19                    ; 'P'
+    je .do_pause
+    cmp al, 0x39                    ; SPACE
+    je .do_pause
+    jmp .chk_wasd
+
+.do_pause:
+    call sound_pause
+    ; Pause Modal Box (Cols 28..52, Rows 10..14)
+    mov al, 28
+    mov bl, 10
+    call xy_to_di
+    mov ax, 0x0B01
+    stosw
+    mov cx, 23
+    mov ax, 0x0B05
+    rep stosw
+    mov ax, 0x0B02
+    stosw
+
+    mov dh, 11
+.p_box_mid:
+    mov al, 28
+    mov bl, dh
+    call xy_to_di
+    mov ax, 0x0B06
+    stosw
+    mov cx, 23
+    mov ax, 0x0720
+    rep stosw
+    mov ax, 0x0B06
+    stosw
+    inc dh
+    cmp dh, 14
+    jb .p_box_mid
+
+    mov al, 28
+    mov bl, 14
+    call xy_to_di
+    mov ax, 0x0B03
+    stosw
+    mov cx, 23
+    mov ax, 0x0B05
+    rep stosw
+    mov ax, 0x0B04
+    stosw
+
+    mov al, 35
+    mov bl, 11
+    call xy_to_di
+    mov si, str_paused_lbl
+    mov ah, 0x0E
+    call print_string
+
+    mov al, 30
+    mov bl, 13
+    call xy_to_di
+    mov si, str_pause_resume
+    mov ah, 0x0B
+    call print_string
+
+    call drain_kbd
+
+.wait_pause_key:
+    call read_key
+    cmp al, 0x19
+    je .resume_game
+    cmp al, 0x39
+    je .resume_game
+    cmp al, 0x01
+    je .pause_to_setup
+    mov ecx, 30000000
+    call delay_cycles
+    jmp .wait_pause_key
+
+.pause_to_setup:
+    call sound_click
+    pop ax                          ; Stack bereinigen
+    jmp core_bios_setup
+
+.resume_game:
+    call sound_pause
+    ; Box loeschen & Untergrund wiederherstellen
+    mov dh, 10
+.p_clr:
+    mov al, 28
+    mov bl, dh
+    call xy_to_di
+    mov cx, 25
+    mov ax, 0x0720
+    rep stosw
+    inc dh
+    cmp dh, 15
+    jb .p_clr
+
+    call draw_arena_obstacles
+    call draw_snake
+    call draw_fruit
+    cmp byte [GOLD_FOOD_X], 0xFF
+    je .input_done
+    mov al, [GOLD_FOOD_X]
+    mov bl, [GOLD_FOOD_Y]
+    call xy_to_di
+    mov ax, 0x0E08
+    stosw
+    ret
+
 .chk_wasd:
-    ; 'W' (0x11) / Up (0x48) -> Up (0)
-    ; 'D' (0x20) / Right (0x4D) -> Right (1)
-    ; 'S' (0x1F) / Down (0x50) -> Down (2)
-    ; 'A' (0x1E) / Left (0x4B) -> Left (3)
     cmp al, 0x11
     je .is_up
     cmp al, 0x48
     je .is_up
-
     cmp al, 0x20
     je .is_right
     cmp al, 0x4D
     je .is_right
-
     cmp al, 0x1F
     je .is_down
     cmp al, 0x50
     je .is_down
-
     cmp al, 0x1E
     je .is_left
     cmp al, 0x4B
     je .is_left
-
     jmp .input_done
 
 .is_up:
@@ -1360,12 +1622,11 @@ handle_input:
     cmp byte [DIR_LOCKED], 0
     jne .chk_queue
 
-    ; Erste Drehung im aktuellen Schritt:
     mov bl, [SNAKE_DIR]
-    cmp cl, bl                      ; Gleiche Richtung -> ignorieren
+    cmp cl, bl
     je .input_done
-    xor bl, 2                       ; Entgegengesetzte Richtung?
-    cmp cl, bl                      ; 180° Wende verboten!
+    xor bl, 2
+    cmp cl, bl
     je .input_done
 
     mov [NEXT_DIR], cl
@@ -1373,15 +1634,13 @@ handle_input:
     ret
 
 .chk_queue:
-    ; Zweite Drehung vormerken (z.B. schneller Doppel-Klick um die Ecke):
     mov bl, [NEXT_DIR]
-    cmp cl, bl                      ; Gleiche Richtung wie NEXT_DIR -> ignorieren
-    je .input_done
-    xor bl, 2                       ; Entgegengesetzt zu NEXT_DIR verboten!
     cmp cl, bl
     je .input_done
-
-    mov [QUEUED_DIR], cl            ; Im Puffer fuer den naechsten Schritt vormerken!
+    xor bl, 2
+    cmp cl, bl
+    je .input_done
+    mov [QUEUED_DIR], cl
 
 .input_done:
     ret
@@ -1390,19 +1649,19 @@ handle_input:
     ; PHASE 7: GRAFIK & ZEICHENFUNKTIONEN
     ; =========================================================================
 draw_game_board:
-    ; Titel links: "CYBFORGE SNAKE" (Cyan) + "v2.1" (Light Gray)
+    ; Titel links: "CYBFORGE SNAKE" + "v2.2"
     mov al, 10
     mov bl, 1
     call xy_to_di
     mov si, str_game_title
-    mov ah, 0x0B                    ; Cyan
+    mov ah, 0x0B
     call print_string
 
     mov al, 25
     mov bl, 1
     call xy_to_di
     mov si, str_game_ver
-    mov ah, 0x07                    ; Light Gray
+    mov ah, 0x07
     call print_string
 
     ; High Score Label: "HIGH: " at (50, 1)
@@ -1410,7 +1669,7 @@ draw_game_board:
     mov bl, 1
     call xy_to_di
     mov si, str_hi_score_lbl
-    mov ah, 0x0E                    ; Yellow
+    mov ah, 0x0E
     call print_string
 
     ; Score Label: "SCORE: " at (63, 1)
@@ -1418,7 +1677,7 @@ draw_game_board:
     mov bl, 1
     call xy_to_di
     mov si, str_score_lbl
-    mov ah, 0x0F                    ; Bright White
+    mov ah, 0x0F
     call print_string
 
     ; Steuerungsanzeige unten at Y=24
@@ -1426,19 +1685,19 @@ draw_game_board:
     mov bl, 24
     call xy_to_di
     mov si, str_controls
-    mov ah, 0x07                    ; Light Gray
+    mov ah, 0x07
     call print_string
 
-    ; Spielfeldrahmen (X: 10..69, Y: 3..22) in Neon-Cyan (0x0B)
+    ; Spielfeldrahmen (X: 10..69, Y: 3..22)
     mov al, 10
     mov bl, 3
     call xy_to_di
-    mov ax, 0x0B01                  ; '╔'
+    mov ax, 0x0B01
     stosw
     mov cx, 58
-    mov ax, 0x0B05                  ; '═'
+    mov ax, 0x0B05
     rep stosw
-    mov ax, 0x0B02                  ; '╗'
+    mov ax, 0x0B02
     stosw
 
     mov cx, 18
@@ -1447,11 +1706,11 @@ draw_game_board:
     mov al, 10
     mov bl, dh
     call xy_to_di
-    mov ax, 0x0B06                  ; '║'
+    mov ax, 0x0B06
     stosw
     mov al, 69
     call xy_to_di
-    mov ax, 0x0B06                  ; '║'
+    mov ax, 0x0B06
     stosw
     inc dh
     loop .vert_loop
@@ -1459,84 +1718,207 @@ draw_game_board:
     mov al, 10
     mov bl, 22
     call xy_to_di
-    mov ax, 0x0B03                  ; '╚'
+    mov ax, 0x0B03
     stosw
     mov cx, 58
-    mov ax, 0x0B05                  ; '═'
+    mov ax, 0x0B05
     rep stosw
-    mov ax, 0x0B04                  ; '╝'
+    mov ax, 0x0B04
     stosw
 
-    ; Spielfeld-Innenbereich mit Schwarz saeubern (Spalten 11..68, Zeilen 4..21)
+    ; Spielfeld-Innenbereich loeschen
     mov dh, 4
 .clr_inner:
     mov al, 11
     mov bl, dh
     call xy_to_di
     mov cx, 58
-    mov ax, 0x0720                  ; Leerzeichen
+    mov ax, 0x0720
     rep stosw
     inc dh
     cmp dh, 22
     jb .clr_inner
+
+    ; Arena-Hindernisse zeichnen
+    call draw_arena_obstacles
     ret
 
-draw_start_box:
-    ; Top border: (24, 9)
+draw_arena_obstacles:
+    cmp byte [CFG_ARENA], 1
+    je .draw_pillars
+    cmp byte [CFG_ARENA], 2
+    je .draw_maze
+    ret
+
+.draw_pillars:
+    ; Pillar 1: (24, 8)
+    mov al, 24
+    mov bl, 8
+    call xy_to_di
+    mov word [es:di], 0x0B01
+    mov word [es:di+2], 0x0B02
     mov al, 24
     mov bl, 9
     call xy_to_di
-    mov ax, 0x0B01                  ; '╔'
+    mov word [es:di], 0x0B03
+    mov word [es:di+2], 0x0B04
+
+    ; Pillar 2: (54, 8)
+    mov al, 54
+    mov bl, 8
+    call xy_to_di
+    mov word [es:di], 0x0B01
+    mov word [es:di+2], 0x0B02
+    mov al, 54
+    mov bl, 9
+    call xy_to_di
+    mov word [es:di], 0x0B03
+    mov word [es:di+2], 0x0B04
+
+    ; Pillar 3: (24, 16)
+    mov al, 24
+    mov bl, 16
+    call xy_to_di
+    mov word [es:di], 0x0B01
+    mov word [es:di+2], 0x0B02
+    mov al, 24
+    mov bl, 17
+    call xy_to_di
+    mov word [es:di], 0x0B03
+    mov word [es:di+2], 0x0B04
+
+    ; Pillar 4: (54, 16)
+    mov al, 54
+    mov bl, 16
+    call xy_to_di
+    mov word [es:di], 0x0B01
+    mov word [es:di+2], 0x0B02
+    mov al, 54
+    mov bl, 17
+    call xy_to_di
+    mov word [es:di], 0x0B03
+    mov word [es:di+2], 0x0B04
+    ret
+
+.draw_maze:
+    mov al, 20
+    mov bl, 9
+    call xy_to_di
+    mov cx, 26
+    mov ax, 0x0B05
+    rep stosw
+    mov al, 34
+    mov bl, 16
+    call xy_to_di
+    mov cx, 26
+    mov ax, 0x0B05
+    rep stosw
+    ret
+
+is_arena_wall:
+    cmp byte [CFG_ARENA], 1
+    je .chk_pil
+    cmp byte [CFG_ARENA], 2
+    je .chk_mz
+    test sp, sp
+    ret
+
+.chk_pil:
+    cmp al, 24
+    je .chk_pil_y
+    cmp al, 25
+    je .chk_pil_y
+    cmp al, 54
+    je .chk_pil_y
+    cmp al, 55
+    je .chk_pil_y
+    test sp, sp
+    ret
+.chk_pil_y:
+    cmp bl, 8
+    je .hit_wall
+    cmp bl, 9
+    je .hit_wall
+    cmp bl, 16
+    je .hit_wall
+    cmp bl, 17
+    je .hit_wall
+    test sp, sp
+    ret
+
+.chk_mz:
+    cmp bl, 9
+    jne .chk_mz_w2
+    cmp al, 20
+    jb .no_mz_hit
+    cmp al, 45
+    jbe .hit_wall
+.chk_mz_w2:
+    cmp bl, 16
+    jne .no_mz_hit
+    cmp al, 34
+    jb .no_mz_hit
+    cmp al, 59
+    jbe .hit_wall
+.no_mz_hit:
+    test sp, sp
+    ret
+
+.hit_wall:
+    xor al, al                      ; ZF = 1
+    ret
+
+draw_start_box:
+    mov al, 24
+    mov bl, 9
+    call xy_to_di
+    mov ax, 0x0B01
     stosw
     mov cx, 31
-    mov ax, 0x0B05                  ; '═'
+    mov ax, 0x0B05
     rep stosw
-    mov ax, 0x0B02                  ; '╗'
+    mov ax, 0x0B02
     stosw
 
-    ; Middle rows 10..14
     mov dh, 10
 .start_box_mid:
     mov al, 24
     mov bl, dh
     call xy_to_di
-    mov ax, 0x0B06                  ; '║'
+    mov ax, 0x0B06
     stosw
     mov cx, 31
-    mov ax, 0x0720                  ; Blank space
+    mov ax, 0x0720
     rep stosw
-    mov ax, 0x0B06                  ; '║'
+    mov ax, 0x0B06
     stosw
     inc dh
     cmp dh, 15
     jb .start_box_mid
 
-    ; Bottom border: (24, 15)
     mov al, 24
     mov bl, 15
     call xy_to_di
-    mov ax, 0x0B03                  ; '╚'
+    mov ax, 0x0B03
     stosw
     mov cx, 31
-    mov ax, 0x0B05                  ; '═'
+    mov ax, 0x0B05
     rep stosw
-    mov ax, 0x0B04                  ; '╝'
+    mov ax, 0x0B04
     stosw
 
-    ; Title inside box: (30, 11) -> "CYBFORGE RETRO SNAKE" (20 chars)
     mov al, 30
     mov bl, 11
     call xy_to_di
     mov si, str_start_title
-    mov ah, 0x0E                    ; Yellow
+    mov ah, 0x0E
     call print_string
 
-    ; Press enter: (29, 13) -> "Press [ENTER] to Start" (22 chars)
     mov al, 29
     mov bl, 13
     call xy_to_di
     mov si, str_press_enter
-    mov ah, 0x0A                    ; Bright Green
+    mov ah, 0x0A
     call print_string
     ret
 
@@ -1555,19 +1937,17 @@ erase_start_box:
     ret
 
 draw_snake:
-    ; Kopf zeichnen gemaess CFG_FACE (0x07 Smile vs 0x0A Sunglasses)
     mov al, [SNAKE_X]
     mov bl, [SNAKE_Y]
     call xy_to_di
-    mov al, 0x07                    ; Default: Classic Smile
+    mov al, 0x07
     cmp byte [CFG_FACE], 1
     jne .draw_head_glyph
-    mov al, 0x0A                    ; Cool Sunglasses!
+    mov al, 0x0A
 .draw_head_glyph:
-    mov ah, 0x0A                    ; Bright Green
+    mov ah, 0x0A
     stosw
 
-    ; Koerpersegmente (Glyph 0x09)
     mov cx, [SNAKE_LEN]
     dec cx
     jz .draw_snake_done
@@ -1576,7 +1956,7 @@ draw_snake:
     mov al, [SNAKE_X + si]
     mov bl, [SNAKE_Y + si]
     call xy_to_di
-    mov ax, 0x0209                  ; Green Body Dragon Scales (0x09)
+    mov ax, 0x0209
     stosw
     inc si
     loop .body_loop
@@ -1587,24 +1967,21 @@ draw_fruit:
     mov al, [FOOD_X]
     mov bl, [FOOD_Y]
     call xy_to_di
-    mov ax, 0x0C08                  ; Bright Red Apple (0x08)
+    mov ax, 0x0C08
     stosw
     ret
 
 spawn_fruit:
     push cx
     push si
-    mov bp, 100                     ; Bis zu 100 Versuche
+    mov bp, 100
 .try_spawn:
-    ; Zufalls-X im Bereich [11..68] (58 Spalten)
     call get_random
     xor dx, dx
     mov cx, 58
     div cx
     add dl, 11
     mov [FOOD_X], dl
-
-    ; Zufalls-Y im Bereich [4..21] (18 Zeilen)
     call get_random
     xor dx, dx
     mov cx, 18
@@ -1612,7 +1989,13 @@ spawn_fruit:
     add dl, 4
     mov [FOOD_Y], dl
 
-    ; Pruefen ob (FOOD_X, FOOD_Y) auf einem Schlangensegment liegt
+    ; Nicht auf Arena-Hindernis
+    mov al, [FOOD_X]
+    mov bl, [FOOD_Y]
+    call is_arena_wall
+    jz .retry_food
+
+    ; Nicht auf Schlange
     mov cx, [SNAKE_LEN]
     xor si, si
     mov al, [FOOD_X]
@@ -1621,7 +2004,7 @@ spawn_fruit:
     cmp al, [SNAKE_X + si]
     jne .chk_food_next
     cmp ah, [SNAKE_Y + si]
-    je .retry_food                  ; Kollision mit Schlange -> Neuer Versuch!
+    je .retry_food
 .chk_food_next:
     inc si
     loop .chk_food_body
@@ -1630,14 +2013,115 @@ spawn_fruit:
 .retry_food:
     dec bp
     jnz .try_spawn
-
 .spawn_ok:
     pop si
     pop cx
     ret
 
+spawn_golden_apple:
+    push cx
+    push si
+    mov bp, 100
+.try_gold:
+    call get_random
+    xor dx, dx
+    mov cx, 58
+    div cx
+    add dl, 11
+    mov [GOLD_FOOD_X], dl
+    call get_random
+    xor dx, dx
+    mov cx, 18
+    div cx
+    add dl, 4
+    mov [GOLD_FOOD_Y], dl
+
+    ; Nicht auf regulärem Apfel
+    mov al, [GOLD_FOOD_X]
+    cmp al, [FOOD_X]
+    jne .g_chk_wall
+    mov al, [GOLD_FOOD_Y]
+    cmp al, [FOOD_Y]
+    je .retry_gold
+.g_chk_wall:
+    mov al, [GOLD_FOOD_X]
+    mov bl, [GOLD_FOOD_Y]
+    call is_arena_wall
+    jz .retry_gold
+
+    ; Nicht auf Schlange
+    mov cx, [SNAKE_LEN]
+    xor si, si
+    mov al, [GOLD_FOOD_X]
+    mov ah, [GOLD_FOOD_Y]
+.chk_gold_body:
+    cmp al, [SNAKE_X + si]
+    jne .chk_gold_next
+    cmp ah, [SNAKE_Y + si]
+    je .retry_gold
+.chk_gold_next:
+    inc si
+    loop .chk_gold_body
+
+    ; Gold-Apfel zeichnen & Timer setzen (~8s = 55 Ticks)
+    mov word [GOLD_TIMER], 55
+    mov al, [GOLD_FOOD_X]
+    mov bl, [GOLD_FOOD_Y]
+    call xy_to_di
+    mov ax, 0x0E08
+    stosw ;  Bright Yellow / Gold Apple
+    call sound_golden_spawn
+    jmp .gold_spawn_ok
+
+.retry_gold:
+    dec bp
+    jnz .try_gold
+    mov byte [GOLD_FOOD_X], 0xFF
+.gold_spawn_ok:
+    pop si
+    pop cx
+    ret
+
+erase_gold_apple:
+    cmp byte [GOLD_FOOD_X], 0xFF
+    je .no_erase_gold
+    mov al, [GOLD_FOOD_X]
+    mov bl, [GOLD_FOOD_Y]
+    call xy_to_di
+    mov word [es:di], 0x0720
+    mov byte [GOLD_FOOD_X], 0xFF
+    ; Countdown-Text auf HUD loeschen
+    mov al, 34
+    mov bl, 1
+    call xy_to_di
+    mov cx, 10
+    mov ax, 0x0720
+    rep stosw
+.no_erase_gold:
+    ret
+
+update_gold_hud:
+    mov al, 34
+    mov bl, 1
+    call xy_to_di
+    mov si, str_gold_lbl
+    mov ah, 0x0E
+    call print_string
+
+    ; Sekunden = GOLD_TIMER / 7
+    mov ax, [GOLD_TIMER]
+    xor dx, dx
+    mov cx, 7
+    div cx
+    ; Zeige Sekunde 1-stellig + 's'
+    add al, '0'
+    mov ah, 0x0E
+    stosw
+    mov al, 's'
+    stosw
+    ret
+
 get_random:
-    ; LCG: SEED = (SEED * 25173 + 13849)
     mov ax, [RND_SEED]
     mov cx, 25173
     mul cx
@@ -1651,21 +2135,18 @@ update_score_display:
     push cx
     push dx
 
-    ; High Score aktualisieren falls noetig
     mov ax, [SCORE]
     cmp ax, [HIGH_SCORE]
     jbe .render_hi
     mov [HIGH_SCORE], ax
 
 .render_hi:
-    ; High Score Wert dreistellig bei (56, 1) in Gelb
     mov al, 56
     mov bl, 1
     call xy_to_di
     mov ax, [HIGH_SCORE]
     call render_3digits_yellow
 
-    ; Score Wert dreistellig bei (70, 1) in Weiss
     mov al, 70
     mov bl, 1
     call xy_to_di
@@ -1683,7 +2164,7 @@ render_3digits_yellow:
     mov cx, 100
     div cx
     add al, '0'
-    mov ah, 0x0E                    ; Yellow
+    mov ah, 0x0E
     stosw
     mov ax, dx
     xor dx, dx
@@ -1703,7 +2184,7 @@ render_3digits_white:
     mov cx, 100
     div cx
     add al, '0'
-    mov ah, 0x0F                    ; Bright White
+    mov ah, 0x0F
     stosw
     mov ax, dx
     xor dx, dx
@@ -1719,8 +2200,615 @@ render_3digits_white:
     ret
 
     ; =========================================================================
-    ; PHASE 8: HILFSFUNKTIONEN & SOUND ENGINE
+    ; PHASE 8: CRASH DISSOLVE, TOP 3 LEADERBOARD & SOUND ENGINE
     ; =========================================================================
+crash_dissolve_animation:
+    ; 1. Tiefer Crash-Buzz
+    mov bx, 0x1200                  ; ~150 Hz
+    call start_tone
+    mov ecx, 15000000               ; ~60 ms
+    call delay_cycles
+    call stop_tone
+
+    ; 2. 2x Rot/Weiss blinken
+    mov cx, 2
+.flash_loop:
+    push cx
+    mov cx, [SNAKE_LEN]
+    xor si, si
+.fl_red:
+    mov al, [SNAKE_X + si]
+    mov bl, [SNAKE_Y + si]
+    call xy_to_di
+    mov byte [es:di+1], 0x0C        ; Bright Red
+    inc si
+    loop .fl_red
+    mov ecx, 10000000
+    call delay_cycles
+
+    mov cx, [SNAKE_LEN]
+    xor si, si
+.fl_wht:
+    mov al, [SNAKE_X + si]
+    mov bl, [SNAKE_Y + si]
+    call xy_to_di
+    mov byte [es:di+1], 0x0F        ; Bright White
+    inc si
+    loop .fl_wht
+    mov ecx, 10000000
+    call delay_cycles
+    pop cx
+    loop .flash_loop
+
+    ; 3. Zerfall von Schwanz zu Kopf mit Pop-Sounds
+    mov si, [SNAKE_LEN]
+    dec si
+.dissolve_loop:
+    mov al, [SNAKE_X + si]
+    mov bl, [SNAKE_Y + si]
+    call xy_to_di
+    mov word [es:di], 0x0720
+    mov bx, 0x0600
+    sub bx, si
+    call start_tone
+    mov ecx, 1200000
+    call delay_cycles
+    call stop_tone
+    mov ecx, 3000000
+    call delay_cycles
+    dec si
+    jns .dissolve_loop
+    ret
+
+check_top3_qualification:
+    mov ax, [SCORE]
+    cmp ax, [TOP3_TABLE + 13]       ; Vergleiche mit Platz 3
+    jbe .no_qualification
+
+    ; Neuer Rekord! Initialen-Eingabedialog anzeigen
+    call enter_initials_dialog
+
+    ; In TOP3_TABLE an der passenden Stelle einfuegen
+    push es
+    push ds
+    pop es
+
+    mov ax, [SCORE]
+    cmp ax, [TOP3_TABLE + 3]        ; Besser als Platz 1?
+    ja .insert_pos1
+
+    cmp ax, [TOP3_TABLE + 8]        ; Besser als Platz 2?
+    ja .insert_pos2
+
+    ; Platz 3 ersetzen
+    mov si, CURRENT_NAME
+    mov di, TOP3_TABLE + 10
+    mov cx, 3
+    rep movsb
+    mov ax, [SCORE]
+    mov [TOP3_TABLE + 13], ax
+    jmp .save_top3_done
+
+.insert_pos2:
+    ; Platz 2 -> Platz 3 verschieben
+    mov si, TOP3_TABLE + 5
+    mov di, TOP3_TABLE + 10
+    mov cx, 5
+    rep movsb
+    ; Neuen auf Platz 2 setzen
+    mov si, CURRENT_NAME
+    mov di, TOP3_TABLE + 5
+    mov cx, 3
+    rep movsb
+    mov ax, [SCORE]
+    mov [TOP3_TABLE + 8], ax
+    jmp .save_top3_done
+
+.insert_pos1:
+    ; Platz 2 -> Platz 3
+    mov si, TOP3_TABLE + 5
+    mov di, TOP3_TABLE + 10
+    mov cx, 5
+    rep movsb
+    ; Platz 1 -> Platz 2
+    mov si, TOP3_TABLE + 0
+    mov di, TOP3_TABLE + 5
+    mov cx, 5
+    rep movsb
+    ; Neuen auf Platz 1
+    mov si, CURRENT_NAME
+    mov di, TOP3_TABLE + 0
+    mov cx, 3
+    rep movsb
+    mov ax, [SCORE]
+    mov [TOP3_TABLE + 3], ax
+    mov [HIGH_SCORE], ax
+
+.save_top3_done:
+    pop es
+    call save_cmos_settings
+    call sound_golden_apple
+.no_qualification:
+    ret
+
+enter_initials_dialog:
+    mov byte [CURRENT_NAME + 0], 'A'
+    mov byte [CURRENT_NAME + 1], 'A'
+    mov byte [CURRENT_NAME + 2], 'A'
+    mov byte [CUR_CHAR_IDX], 0
+
+    ; Dialog-Box zentriert (Cols 25..55, Rows 9..16)
+    mov al, 25
+    mov bl, 9
+    call xy_to_di
+    mov ax, 0x0E01
+    stosw
+    mov cx, 29
+    mov ax, 0x0E05
+    rep stosw
+    mov ax, 0x0E02
+    stosw
+
+    mov dh, 10
+.init_box_mid:
+    mov al, 25
+    mov bl, dh
+    call xy_to_di
+    mov ax, 0x0E06
+    stosw
+    mov cx, 29
+    mov ax, 0x0720
+    rep stosw
+    mov ax, 0x0E06
+    stosw
+    inc dh
+    cmp dh, 16
+    jb .init_box_mid
+
+    mov al, 25
+    mov bl, 16
+    call xy_to_di
+    mov ax, 0x0E03
+    stosw
+    mov cx, 29
+    mov ax, 0x0E05
+    rep stosw
+    mov ax, 0x0E04
+    stosw
+
+    mov al, 30
+    mov bl, 10
+    call xy_to_di
+    mov si, str_new_rec_lbl
+    mov ah, 0x0E
+    call print_string
+
+    mov al, 33
+    mov bl, 11
+    call xy_to_di
+    mov si, str_score_lbl
+    mov ah, 0x0F
+    call print_string
+    mov ax, [SCORE]
+    call render_3digits_white
+
+    mov al, 28
+    mov bl, 14
+    call xy_to_di
+    mov si, str_init_nav
+    mov ah, 0x07
+    call print_string
+
+    mov al, 32
+    mov bl, 15
+    call xy_to_di
+    mov si, str_init_confirm
+    mov ah, 0x0B
+    call print_string
+
+.redraw_initials:
+    mov al, 37
+    mov bl, 13
+    call xy_to_di
+    xor si, si
+.show_chars:
+    mov al, [CURRENT_NAME + si]
+    mov ah, 0x0E
+    cmp si, [CUR_CHAR_IDX]
+    jne .not_act_char
+    mov ah, 0x2F                    ; Bright White on Green
+.not_act_char:
+    stosw
+    mov al, ' '
+    mov ah, 0x07
+    stosw
+    inc si
+    cmp si, 3
+    jb .show_chars
+
+    call drain_kbd
+
+.initials_input:
+    call read_key
+    test al, al
+    jz .init_wait
+
+    cmp al, 0x1C
+    je .init_done
+
+    cmp al, 0x4B
+    je .char_left
+    cmp al, 0x1E
+    je .char_left
+
+    cmp al, 0x4D
+    je .char_right
+    cmp al, 0x20
+    je .char_right
+
+    cmp al, 0x48
+    je .char_up
+    cmp al, 0x11
+    je .char_up
+
+    cmp al, 0x50
+    je .char_down
+    cmp al, 0x1F
+    je .char_down
+
+.init_wait:
+    mov ecx, 25000000
+    call delay_cycles
+    jmp .initials_input
+
+.char_left:
+    call sound_click
+    cmp byte [CUR_CHAR_IDX], 0
+    je .wrap_ch_l
+    dec byte [CUR_CHAR_IDX]
+    jmp .redraw_initials
+.wrap_ch_l:
+    mov byte [CUR_CHAR_IDX], 2
+    jmp .redraw_initials
+
+.char_right:
+    call sound_click
+    cmp byte [CUR_CHAR_IDX], 2
+    jae .wrap_ch_r
+    inc byte [CUR_CHAR_IDX]
+    jmp .redraw_initials
+.wrap_ch_r:
+    mov byte [CUR_CHAR_IDX], 0
+    jmp .redraw_initials
+
+.char_up:
+    call sound_click
+    mov bx, [CUR_CHAR_IDX]
+    and bx, 3
+    inc byte [CURRENT_NAME + bx]
+    cmp byte [CURRENT_NAME + bx], 'Z'
+    jbe .redraw_initials
+    mov byte [CURRENT_NAME + bx], 'A'
+    jmp .redraw_initials
+
+.char_down:
+    call sound_click
+    mov bx, [CUR_CHAR_IDX]
+    and bx, 3
+    dec byte [CURRENT_NAME + bx]
+    cmp byte [CURRENT_NAME + bx], 'A'
+    jae .redraw_initials
+    mov byte [CURRENT_NAME + bx], 'Z'
+    jmp .redraw_initials
+
+.init_done:
+    call sound_toggle
+    ret
+
+draw_top3_rows:
+    ; Platz 1 (Row 13)
+    mov al, 25
+    mov bl, 13
+    call xy_to_di
+    mov si, str_top1_pfx
+    mov ah, 0x0E
+    call print_string
+    mov si, TOP3_TABLE + 0
+    mov ah, 0x0F
+    call print_3chars
+    mov si, str_dots
+    mov ah, 0x07
+    call print_string
+    mov ax, [TOP3_TABLE + 3]
+    call render_3digits_yellow
+
+    ; Platz 2 (Row 14)
+    mov al, 25
+    mov bl, 14
+    call xy_to_di
+    mov si, str_top2_pfx
+    mov ah, 0x07
+    call print_string
+    mov si, TOP3_TABLE + 5
+    mov ah, 0x0F
+    call print_3chars
+    mov si, str_dots
+    mov ah, 0x07
+    call print_string
+    mov ax, [TOP3_TABLE + 8]
+    call render_3digits_white
+
+    ; Platz 3 (Row 15)
+    mov al, 25
+    mov bl, 15
+    call xy_to_di
+    mov si, str_top3_pfx
+    mov ah, 0x07
+    call print_string
+    mov si, TOP3_TABLE + 10
+    mov ah, 0x0F
+    call print_3chars
+    mov si, str_dots
+    mov ah, 0x07
+    call print_string
+    mov ax, [TOP3_TABLE + 13]
+    call render_3digits_white
+    ret
+
+print_3chars:
+    lodsb
+    stosw
+    lodsb
+    stosw
+    lodsb
+    stosw
+    ret
+
+    ; --- CMOS NVRAM PERSISTENZ (0x70 / 0x71) ---
+cmos_read_byte:
+    out 0x70, al
+    jmp $+2
+    in al, 0x71
+    ret
+
+cmos_write_byte:
+    push ax
+    out 0x70, al
+    jmp $+2
+    mov al, ah
+    out 0x71, al
+    pop ax
+    ret
+
+load_cmos_settings:
+    ; Pruefen ob Signatur 0xCB bei Index 0x40 steht
+    mov al, 0x40
+    call cmos_read_byte
+    cmp al, 0xCB
+    jne .cmos_invalid
+
+    ; Checksumme berechnen
+    xor bl, bl
+    mov cl, 0x40
+.chk_loop:
+    mov al, cl
+    call cmos_read_byte
+    xor bl, al
+    inc cl
+    cmp cl, 0x59
+    jb .chk_loop
+
+    mov al, 0x59
+    call cmos_read_byte
+    cmp al, bl
+    jne .cmos_invalid
+
+    ; Gueltige Konfiguration laden!
+    mov al, 0x41
+    call cmos_read_byte
+    mov [CFG_SPEED], al
+    mov al, 0x42
+    call cmos_read_byte
+    mov [CFG_WALLS], al
+    mov al, 0x43
+    call cmos_read_byte
+    mov [CFG_SOUND], al
+    mov al, 0x44
+    call cmos_read_byte
+    mov [CFG_FACE], al
+    mov al, 0x45
+    call cmos_read_byte
+    mov [CFG_LEN], al
+    mov al, 0x46
+    call cmos_read_byte
+    mov [CFG_WIN], al
+    mov al, 0x47
+    call cmos_read_byte
+    mov [CFG_DISP], al
+    mov al, 0x48
+    call cmos_read_byte
+    mov [CFG_THEME], al
+    mov al, 0x49
+    call cmos_read_byte
+    mov [CFG_ARENA], al
+
+    ; Top 3 Leaderboard laden (15 Bytes)
+    mov cl, 0x4A
+    mov di, TOP3_TABLE
+.load_top3_loop:
+    mov al, cl
+    call cmos_read_byte
+    mov [di], al
+    inc di
+    inc cl
+    cmp cl, 0x59
+    jb .load_top3_loop
+
+    mov ax, [TOP3_TABLE + 3]
+    mov [HIGH_SCORE], ax
+    ret
+
+.cmos_invalid:
+    ; Werkseinstellungen
+    mov byte [CFG_SPEED], 0
+    mov byte [CFG_WALLS], 0
+    mov byte [CFG_SOUND], 0
+    mov byte [CFG_FACE],  0
+    mov byte [CFG_LEN],   0
+    mov byte [CFG_WIN],   0
+    mov byte [CFG_DISP],  0
+    mov byte [CFG_THEME], 0
+    mov byte [CFG_ARENA], 0
+
+    ; Default Top 3: CYB (30), JON (20), ACE (10)
+    mov byte [TOP3_TABLE + 0], 'C'
+    mov byte [TOP3_TABLE + 1], 'Y'
+    mov byte [TOP3_TABLE + 2], 'B'
+    mov word [TOP3_TABLE + 3], 30
+
+    mov byte [TOP3_TABLE + 5], 'J'
+    mov byte [TOP3_TABLE + 6], 'O'
+    mov byte [TOP3_TABLE + 7], 'N'
+    mov word [TOP3_TABLE + 8], 20
+
+    mov byte [TOP3_TABLE + 10], 'A'
+    mov byte [TOP3_TABLE + 11], 'C'
+    mov byte [TOP3_TABLE + 12], 'E'
+    mov word [TOP3_TABLE + 13], 10
+
+    mov word [HIGH_SCORE], 30
+    call save_cmos_settings
+    ret
+
+save_cmos_settings:
+    mov al, 0x40
+    mov ah, 0xCB
+    call cmos_write_byte
+    mov al, 0x41
+    mov ah, [CFG_SPEED]
+    call cmos_write_byte
+    mov al, 0x42
+    mov ah, [CFG_WALLS]
+    call cmos_write_byte
+    mov al, 0x43
+    mov ah, [CFG_SOUND]
+    call cmos_write_byte
+    mov al, 0x44
+    mov ah, [CFG_FACE]
+    call cmos_write_byte
+    mov al, 0x45
+    mov ah, [CFG_LEN]
+    call cmos_write_byte
+    mov al, 0x46
+    mov ah, [CFG_WIN]
+    call cmos_write_byte
+    mov al, 0x47
+    mov ah, [CFG_DISP]
+    call cmos_write_byte
+    mov al, 0x48
+    mov ah, [CFG_THEME]
+    call cmos_write_byte
+    mov al, 0x49
+    mov ah, [CFG_ARENA]
+    call cmos_write_byte
+
+    ; Top 3 Leaderboard schreiben
+    mov cl, 0x4A
+    mov si, TOP3_TABLE
+.save_top3_loop:
+    mov al, cl
+    mov ah, [si]
+    call cmos_write_byte
+    inc si
+    inc cl
+    cmp cl, 0x59
+    jb .save_top3_loop
+
+    ; Checksumme berechnen & schreiben
+    xor bl, bl
+    mov cl, 0x40
+.save_chk:
+    mov al, cl
+    call cmos_read_byte
+    xor bl, al
+    inc cl
+    cmp cl, 0x59
+    jb .save_chk
+
+    mov al, 0x59
+    mov ah, bl
+    call cmos_write_byte
+    ret
+
+    ; --- VGA HARDWARE DAC THEMES ---
+apply_color_theme:
+    push ax
+    push si
+    push cx
+    push dx
+
+    mov al, [CFG_THEME]
+    and al, 3
+    xor ah, ah
+    mov si, ax
+    mov cx, 48
+    mul cl
+    mov si, ax
+    add si, palette_themes_table
+
+    mov dx, 0x3C8
+    xor al, al
+    out dx, al                      ; Start bei Farb-Index 0
+    mov dx, 0x3C9
+    mov cx, 48
+.dac_loop:
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    loop .dac_loop
+
+    pop dx
+    pop cx
+    pop si
+    pop ax
+    ret
+
+    ; --- ANIMIERTER POST RAM COUNTER ---
+post_ram_counter:
+    mov di, (14 * 80 + 2) * 2
+    mov si, str_post_mem_lbl
+    mov ah, 0x07
+    call print_string
+
+    xor bp, bp
+.ram_cnt_loop:
+    mov al, 16
+    mov bl, 14
+    call xy_to_di
+    mov ax, bp
+    call render_3digits_yellow
+    mov si, str_kb_suffix
+    mov ah, 0x07
+    call print_string
+
+    ; Hardware-Speaker-Tick (~2 ms)
+    mov bx, 0x0480
+    call start_tone
+    mov ecx, 500000
+    call delay_cycles
+    call stop_tone
+
+    mov ecx, 12000000
+    call delay_cycles
+    add bp, 64
+    cmp bp, 640
+    jbe .ram_cnt_loop
+
+    mov si, str_ok_suffix
+    mov ah, 0x0A
+    call print_string
+    ret
+
 dummy_isr:
     iret
 
@@ -1749,12 +2837,12 @@ xy_to_di:
     push bx
     xor bh, bh
     mov di, bx
-    shl di, 4                       ; Y * 16
-    shl bx, 6                       ; Y * 64
-    add di, bx                      ; Y * 80
+    shl di, 4
+    shl bx, 6
+    add di, bx
     xor ah, ah
-    add di, ax                      ; Y * 80 + X
-    shl di, 1                       ; (Y * 80 + X) * 2
+    add di, ax
+    shl di, 1
     pop bx
     pop ax
     ret
@@ -1784,7 +2872,7 @@ read_key:
     jz .no_key
     in al, 0x60
     test al, 0x80
-    jnz .rk_loop                   ; Break-Codes (Taste losgelassen) direkt verwerfen
+    jnz .rk_loop
     ret
 .no_key:
     xor al, al
@@ -1794,14 +2882,14 @@ start_tone:
     cmp byte [CFG_SOUND], 0
     jne .muted
     push ax
-    mov al, 0xB6                    ; Channel 2, LSB/MSB, Mode 3 square wave
+    mov al, 0xB6
     out 0x43, al
     mov al, bl
     out 0x42, al
     mov al, bh
     out 0x42, al
     in al, 0x61
-    or al, 0x03                     ; Speaker enable
+    or al, 0x03
     out 0x61, al
     pop ax
 .muted:
@@ -1822,7 +2910,7 @@ set_tone_freq:
 stop_tone:
     push ax
     in al, 0x61
-    and al, 0xFC                    ; Speaker disable
+    and al, 0xFC
     out 0x61, al
     pop ax
     ret
@@ -1831,14 +2919,13 @@ sound_eat_fruit:
     push ax
     push bx
     push ecx
-    ; Angenehmer zweitoeniger Pickup-Chime (G5 -> C6, ~100 ms)
-    mov bx, 0x05F2                  ; G5 (784 Hz)
+    mov bx, 0x05F2
     call start_tone
-    mov ecx, 8750000                ; ~35 ms
+    mov ecx, 8750000
     call delay_cycles
-    mov bx, 0x0474                  ; C6 (1046 Hz)
+    mov bx, 0x0474
     call set_tone_freq
-    mov ecx, 16250000               ; ~65 ms
+    mov ecx, 16250000
     call delay_cycles
     call stop_tone
     pop ecx
@@ -1850,22 +2937,21 @@ sound_game_over:
     push ax
     push bx
     push ecx
-    ; Warmer melancholischer Moll-Abgang (C5 -> Ab4 -> G4 -> Eb4, ~370 ms)
-    mov bx, 0x08E9                  ; C5 (523 Hz)
+    mov bx, 0x08E9
     call start_tone
-    mov ecx, 17500000               ; ~70 ms
+    mov ecx, 17500000
     call delay_cycles
-    mov bx, 0x0B3B                  ; Ab4 (415 Hz)
+    mov bx, 0x0B3B
     call set_tone_freq
-    mov ecx, 20000000               ; ~80 ms
+    mov ecx, 20000000
     call delay_cycles
-    mov bx, 0x0BE4                  ; G4 (392 Hz)
+    mov bx, 0x0BE4
     call set_tone_freq
-    mov ecx, 20000000               ; ~80 ms
+    mov ecx, 20000000
     call delay_cycles
-    mov bx, 0x0EFD                  ; Eb4 (311 Hz)
+    mov bx, 0x0EFD
     call set_tone_freq
-    mov ecx, 35000000               ; ~140 ms
+    mov ecx, 35000000
     call delay_cycles
     call stop_tone
     pop ecx
@@ -1877,14 +2963,13 @@ sound_start:
     push ax
     push bx
     push ecx
-    ; Dynamischer, freundlicher Start-Akkord (E5 -> A5, ~100 ms)
-    mov bx, 0x0713                  ; E5 (659 Hz)
+    mov bx, 0x0713
     call start_tone
-    mov ecx, 10000000               ; ~40 ms
+    mov ecx, 10000000
     call delay_cycles
-    mov bx, 0x054C                  ; A5 (880 Hz)
+    mov bx, 0x054C
     call set_tone_freq
-    mov ecx, 15000000               ; ~60 ms
+    mov ecx, 15000000
     call delay_cycles
     call stop_tone
     pop ecx
@@ -1896,30 +2981,29 @@ sound_victory:
     push ax
     push bx
     push ecx
-    ; Grosse 6-Ton Siegesfanfare (C5 -> E5 -> G5 -> C6 -> G5 -> C6, ~580 ms)
-    mov bx, 0x08E9                  ; C5
+    mov bx, 0x08E9
     call start_tone
-    mov ecx, 17500000               ; ~70 ms
+    mov ecx, 17500000
     call delay_cycles
-    mov bx, 0x0713                  ; E5
+    mov bx, 0x0713
     call set_tone_freq
-    mov ecx, 17500000               ; ~70 ms
+    mov ecx, 17500000
     call delay_cycles
-    mov bx, 0x05F2                  ; G5
+    mov bx, 0x05F2
     call set_tone_freq
-    mov ecx, 17500000               ; ~70 ms
+    mov ecx, 17500000
     call delay_cycles
-    mov bx, 0x0474                  ; C6
+    mov bx, 0x0474
     call set_tone_freq
-    mov ecx, 25000000               ; ~100 ms
+    mov ecx, 25000000
     call delay_cycles
-    mov bx, 0x05F2                  ; G5
+    mov bx, 0x05F2
     call set_tone_freq
-    mov ecx, 17500000               ; ~70 ms
+    mov ecx, 17500000
     call delay_cycles
-    mov bx, 0x0474                  ; C6
+    mov bx, 0x0474
     call set_tone_freq
-    mov ecx, 50000000               ; ~200 ms
+    mov ecx, 50000000
     call delay_cycles
     call stop_tone
     pop ecx
@@ -1931,7 +3015,7 @@ sound_click:
     push ax
     push bx
     push ecx
-    mov bx, 0x054C                  ; A5 (880 Hz) ~15 ms
+    mov bx, 0x054C
     call start_tone
     mov ecx, 3750000
     call delay_cycles
@@ -1945,13 +3029,74 @@ sound_toggle:
     push ax
     push bx
     push ecx
-    mov bx, 0x0474                  ; C6 (1046 Hz) ~15 ms
+    mov bx, 0x0474
     call start_tone
     mov ecx, 3750000
     call delay_cycles
-    mov bx, 0x0389                  ; E6 (1318 Hz) ~25 ms
+    mov bx, 0x0389
     call set_tone_freq
     mov ecx, 6250000
+    call delay_cycles
+    call stop_tone
+    pop ecx
+    pop bx
+    pop ax
+    ret
+
+sound_golden_apple:
+    push ax
+    push bx
+    push ecx
+    mov bx, 0x05F2
+    call start_tone
+    mov ecx, 10000000
+    call delay_cycles
+    mov bx, 0x04B7
+    call set_tone_freq
+    mov ecx, 10000000
+    call delay_cycles
+    mov bx, 0x0389
+    call set_tone_freq
+    mov ecx, 25000000
+    call delay_cycles
+    call stop_tone
+    pop ecx
+    pop bx
+    pop ax
+    ret
+
+sound_golden_spawn:
+    push ax
+    push bx
+    push ecx
+    mov bx, 0x054C
+    call start_tone
+    mov ecx, 6000000
+    call delay_cycles
+    mov bx, 0x0389
+    call set_tone_freq
+    mov ecx, 10000000
+    call delay_cycles
+    call stop_tone
+    pop ecx
+    pop bx
+    pop ax
+    ret
+
+sound_pause:
+    push ax
+    push bx
+    push ecx
+    mov bx, 0x054C
+    call start_tone
+    mov ecx, 3000000
+    call delay_cycles
+    call stop_tone
+    mov ecx, 4000000
+    call delay_cycles
+    mov bx, 0x0713
+    call start_tone
+    mov ecx, 3000000
     call delay_cycles
     call stop_tone
     pop ecx
@@ -1966,7 +3111,7 @@ sound_toggle:
 str_post_hdr1:
     db "Cybforge Retro BIOS (C)2026 Cybforge Systems Inc.", 0
 str_post_hdr2:
-    db "BIOS Date: 10/24/2026  Ver: 2.16.01-PRO", 0
+    db "BIOS Date: 11/01/2026  Ver: 2.20.00-PRO", 0
 str_post_cpu:
     db "CPU Type    : Genuine x86 Processor @ 3.50 GHz", 0
 str_post_coproc:
@@ -2078,17 +3223,46 @@ str_help_6:
 str_help_7:
     db "Save configuration settings and immediately boot into Snake.", 0
 
+; --- Cybforge Setup Utility Strings (Updated) ---
+str_opt_theme:
+    db "Color Theme       : ", 0
+str_opt_arena:
+    db "Game Arena        : ", 0
+
+str_val_theme_cyber:
+    db "< Cyberpunk Neon >", 0
+str_val_theme_matr:
+    db "< Matrix Green   >", 0
+str_val_theme_amber:
+    db "< Amber CRT      >", 0
+str_val_theme_cga:
+    db "< CGA Retro      >", 0
+
+str_val_arena_open:
+    db "< Classic Open   >", 0
+str_val_arena_pil:
+    db "< Four Pillars   >", 0
+str_val_arena_maze:
+    db "< The Maze       >", 0
+
+str_help_8:
+    db "Reset all BIOS and game settings back to factory defaults.", 0
+str_help_9:
+    db "Save settings to CMOS NVRAM and immediately boot into Snake.", 0
+
 ; --- Snake Game Strings ---
 str_game_title:
     db "CYBFORGE SNAKE", 0
 str_game_ver:
-    db "v2.1", 0
+    db "v2.2", 0
 str_hi_score_lbl:
     db "HIGH: ", 0
 str_score_lbl:
     db "SCORE: ", 0
+str_gold_lbl:
+    db "GOLD: ", 0
 str_controls:
-    db "Controls: [WASD / Arrows] Move    [ESC] BIOS Setup    [ENTER] Start", 0
+    db "Controls: [WASD / Arrows] Move   [P / SPACE] Pause   [ESC] Setup", 0
 
 ; Start Modal Box Strings
 str_start_title:
@@ -2096,13 +3270,45 @@ str_start_title:
 str_press_enter:
     db "Press [ENTER] to Start", 0
 
-; Game Over Modal Box Strings
+; Pause Modal Box Strings
+str_paused_lbl:
+    db "P A U S E D", 0
+str_pause_resume:
+    db "[P / SPACE] Continue", 0
+
+; Game Over & Hall of Champions Strings
 str_game_over:
     db "G A M E   O V E R", 0
 str_final_score_lbl:
     db "Final Score: ", 0
+str_hall_title:
+    db "HALL OF CHAMPIONS", 0
+str_top1_pfx:
+    db "1. ", 0
+str_top2_pfx:
+    db "2. ", 0
+str_top3_pfx:
+    db "3. ", 0
+str_dots:
+    db " ........ ", 0
 str_go_restart_info:
     db "[ENTER] Restart   [ESC] Setup", 0
+
+; New High Score Initials Dialog Strings
+str_new_rec_lbl:
+    db "N E W   R E C O R D !", 0
+str_init_nav:
+    db "[Arrows] Change Initials", 0
+str_init_confirm:
+    db "[ENTER] Confirm", 0
+
+; POST RAM Counter Strings
+str_post_mem_lbl:
+    db "Base Memory : ", 0
+str_kb_suffix:
+    db " KB", 0
+str_ok_suffix:
+    db " OK", 0
 
 ; Setup Victory Target Strings
 str_opt_win:
@@ -2151,6 +3357,24 @@ str_vic_status:
     db "BOARD STATUS: 100% COMPLETE!", 0
 str_vic_footer:
     db "Controls: [ENTER] Play Again   [ESC] BIOS Setup", 0
+
+; Hardware VGA DAC Palette Themes (4 Themes x 48 Bytes = 192 Bytes)
+palette_themes_table:
+    ; Theme 0: Cyberpunk Neon
+    db 0, 0, 0,    0, 16, 45,  0, 52, 18,  0, 48, 56,  50, 8, 8,   48, 10, 48, 50, 30, 0,  45, 45, 48
+    db 20, 20, 24, 15, 35, 63, 15, 63, 25, 10, 60, 63, 63, 14, 18, 63, 20, 60, 63, 56, 12, 63, 63, 63
+
+    ; Theme 1: Matrix Green (Phosphor CRT)
+    db 0, 0, 0,    0, 20, 4,   0, 40, 8,   0, 52, 12,  0, 25, 5,   0, 35, 8,   0, 45, 10,  0, 48, 12
+    db 0, 15, 3,   0, 35, 8,   0, 63, 15,  8, 60, 16,  0, 50, 10,  4, 55, 12,  16, 63, 20, 35, 63, 35
+
+    ; Theme 2: Amber CRT (Warm Terminal)
+    db 0, 0, 0,    20, 10, 0,  35, 18, 0,  45, 24, 0,  30, 14, 0,  40, 20, 0,  48, 26, 0,  50, 28, 0
+    db 15, 7, 0,   35, 18, 0,  58, 34, 0,  63, 40, 0,  45, 22, 0,  52, 28, 0,  63, 48, 5,  63, 58, 20
+
+    ; Theme 3: CGA Retro (1981 IBM Classic)
+    db 0, 0, 0,    0, 0, 42,   0, 42, 0,   0, 42, 42,  42, 0, 0,   42, 0, 42,  42, 21, 0,  42, 42, 42
+    db 21, 21, 21, 21, 21, 63, 21, 63, 21, 21, 63, 63, 63, 21, 21, 63, 21, 63, 63, 63, 21, 63, 63, 63
 """
 
 part3_tables = content[content.find("vga_seq_table:"):content.find("font_table:")]

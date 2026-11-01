@@ -1,62 +1,87 @@
-# Cybforge Retro BIOS & Snake v2.1
+# Cybforge Retro BIOS & Snake v2.2 (Ultimate Expansion)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-x86%2016--bit%20Real%20Mode-lightgrey.svg)](#)
 [![Format](https://img.shields.io/badge/ROM-64KB%20Binary-green.svg)](#)
 [![Emulator](https://img.shields.io/badge/Emulator-QEMU%20x86__64-orange.svg)](#)
+[![Version](https://img.shields.io/badge/Version-2.2%20Ultimate%20Expansion-brightgreen.svg)](#)
 
-A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIOS-style POST diagnostic sequence, offers a full **Cybforge Retro BIOS Setup Utility**, and directly launches a playable, retro **Snake Game v2.1** in pure assembly.
+A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIOS-style POST diagnostic sequence, offers an expanded **Cybforge Retro BIOS Setup Utility** with CMOS NVRAM persistence, hardware VGA DAC themes, selectable arenas, and directly launches an arcade **Snake Game v2.2** in pure assembly.
 
-![Cybforge Snake Gameplay](assets/screenshot_gameplay.png)
+![Cybforge Snake Matrix Green Gameplay](assets/screenshot_gameplay.png)
 
 ---
 
-## Highlights & Features
+## Visual Showcase Gallery
 
-### 1. Bare-Metal x86 System Bringup
-* **Reset Vector:** Hardware reset entry point at `0xF000:0xFFF0` mapped to physical top-of-ROM (`0xFFFF0`).
-* **Cache & MTRR Initialization:** CR0 Cache Disable/Enable sequence, Cache-as-RAM (CAR), and MTRR WB memory type setup.
-* **8259 PIC & 8254 PIT:** Complete dual 8259 Interrupt Controller remapping and PIT channel 0/2 timing initialization.
-* **8042 Keyboard Controller Setup:** Hardware translation enabled via 8042 Controller Command Byte (`0x60 -> 0x40`), standardizing keyboard input into clean PS/2 Scancode Set 1.
-* **UART Serial Diagnostics:** COM1 (`0x3F8`) configured for 115,200 Baud, 8N1 debugging output.
-* **VGA Register Bringup:** Pure hardware VGA programming through Sequencer (`0x3C4`), CRT Controller (`0x3D4`), Graphics Controller (`0x3CE`), Attribute Controller (`0x3C0`), and DAC Palette (`0x3C8`).
+| POST RAM Counter (0..640 KB OK) | Cybforge BIOS Setup Utility (10 Rows) |
+| :---: | :---: |
+| ![POST Screen](assets/screenshot_post.png) | ![BIOS Setup](assets/screenshot_setup.png) |
 
-### 2. Cybforge POST Screen
-* **Authentic AMIBIOS POST Aesthetic:** Clean diagnostic text mode display with CPU, Co-Processor, Memory, Video, Keyboard, and Drive statistics.
-* **Custom Cybforge Hexagonal Logo:** High-resolution 60-tile custom font loaded directly into VGA Plane 2 font memory (`0x80..0xBB`) and rendered on the right side of the screen in bright cyan.
-* **Adaptive Screen Detection:** Automatic display resolution detection with zero CPU overhead using GPU-accelerated OpenGL scaling (`gtk,gl=on,zoom-to-fit=on`).
-* **Interactive Boot Timing:** 3-second auto-boot countdown directly into Snake, with immediate start on `[ENTER]` or Setup entry on `[F12]` / `[DEL]`.
+| In-Game Pause Modal Dialog `[P]` | Amber CRT Theme & The Maze Arena |
+| :---: | :---: |
+| ![In-Game Pause](assets/screenshot_paused.png) | ![The Maze Amber](assets/screenshot_maze_amber.png) |
 
-### 3. Cybforge Retro BIOS Setup Utility
-* Classic blue AMIBIOS-style Setup interface accessed via `[F12]` or `[DEL]`.
-* **Configurable Game & Hardware Parameters:**
-  * **Game Speed:** `< Normal (120ms) >`, `< Fast (80ms) >`, `< Slow (160ms) >`
-  * **Wall Collision:** `< Solid (Crash) >` (classic die on wall) or `< Wrap-Around >` (teleport across screen)
-  * **PC Speaker Sound:** `< Enabled >` or `< Disabled >`
-  * **Snake Face Style:** `< Classic Smile >` (glyph `0x07`) or `< Cool Shades >` (glyph `0x0A`)
-  * **Starting Length:** `< 4 Segments >`, `< 3 Segments >`, `< 6 Segments >`
-  * **Victory Target:** `< Full Board (1044) >` *(complete field takeover)*, `< 25 Apples >`, `< 50 Apples >`, `< 100 Apples >`
-  * **Reset Defaults & Save & Boot:** Factory reset or instant boot to game.
+| New High Score Initials Entry `[A A A]` | Hall of Champions Top 3 Leaderboard |
+| :---: | :---: |
+| ![Initials Dialog](assets/screenshot_initials.png) | ![Hall of Champions](assets/screenshot_gameover.png) |
 
-### 4. The Snake Game (Version 2.1 Overhaul)
-* **True 16-Scanline Pixel-Art Glyphs (Plane 2 Direct Loading):**
-  * **Double Neon Cyan Border:** High-precision connecting corners and double lines (`0x01`..`0x06`).
-  * **Cute Smiling Snake Head:** Expressive eyes and cheeks (`0x07`).
-  * **Cyberpunk Sunglasses Head:** Angular shades with white specular glare (`0x0A`).
-  * **Glossy 3D Apple:** Realistic curved leaf, wooden stem, and spherical 3D specular shine (`0x08`).
-  * **Dragon Scale Body Segments:** Seamlessly interlocking scales with zero vertical/horizontal gaps (`0x09`).
-* **Centered Modal Dialogs:**
-  * **Start Window:** Centered double-box with `Press [ENTER] to Start`.
-  * **Game Over Window:** Centered red modal box showing `Final Score: XXX` and action prompts, clearing background text to eliminate visual overlap.
-* **Harmonic, Glitch-Free Audio Engine:**
-  * Uses non-destructive PIT Channel 2 updates (`set_tone_freq`) to eliminate clicks and popping.
-  * Musical intervals: Warm G5->C6 pickup chime, melancholic C5->Ab4->G4->Eb4 Game Over descent, upbeat E5->A5 launch sound, and triumphant 6-note Victory fanfare.
-  * Low-latency DirectSound configuration (`-audiodev dsound,id=snd0,latency=20000`).
-* **High Score Tracking:** Session `HIGH_SCORE` (`0x1A0E`) dynamically preserved and displayed on the HUD.
-* **Safe Apple Spawning:** Guarantees apples never spawn on top of existing snake segments.
-* **Fluid Controls & Shortcuts:** `[WASD]` and `[Arrow Keys]` with single-turn locking and instant `[ESC]` shortcut to BIOS Setup.
+| Victory Trophy Screen (Complete Board Takeover) |
+| :---: |
+| ![Victory Trophy](assets/screenshot_victory.png) |
 
-![Game Over Modal Screen](assets/screenshot_gameover.png)
+---
+
+## Ultimate Expansion (v2.2) Feature Pack
+
+### 1. Animated POST Base RAM Counter
+* Fast, audible memory test animating from `0 KB` to `640 KB OK` in `64 KB` increments.
+* Real PC speaker hardware click on every increment using timer counter pulses.
+* Displays alongside CPU, Co-Processor, Display, Keyboard, PIT Timer, and Disk diagnostics.
+
+### 2. VGA Hardware DAC Color Themes
+Switches the 16 text-mode color registers via VGA DAC ports `0x3C8` / `0x3C9`:
+* **Cyberpunk Neon (Default):** Deep neon blue background with electric green, bright yellow, and radiant cyan.
+* **Matrix Green:** Monochrome green phosphor terminal with dark phosphor greens and blazing lime-green highlights.
+* **Amber CRT:** Warm 1980s amber/orange monochrome terminal with soft amber backgrounds and golden text.
+* **CGA Retro:** Faithful 1981 IBM PC CGA 16-color palette (pure primary RGB and crisp high-intensity tones).
+* Real-time palette updates live inside the BIOS Setup screen!
+
+### 3. CMOS NVRAM Non-Volatile Persistence
+* Reads and writes configuration data and leaderboard scores to extended CMOS RTC NVRAM registers (`0x40`..`0x59`) via I/O ports `0x70` and `0x71`.
+* **Integrity Validation:** Signature byte (`0xCB`) and XOR checksum validation prevent corrupted states and automatically initialize factory defaults when CMOS is blank.
+* Persists your high scores, arena choice, speed, sound, and theme across reboots and emulator resets!
+
+### 4. Interactive In-Game Pause
+* Press `[P]` or `[SPACE]` during gameplay to instantly pause the action.
+* Displays a centered neon double-box modal dialog (`P A U S E D`).
+* Fully freezes the snake and timers without dropping inputs. Pressing `[P]` or `[SPACE]` resumes immediately.
+
+### 5. Golden Bonus Apples & Countdown HUD
+* A shimmering golden bonus apple spawns on the board every **5 regular apples** eaten.
+* Awards **+50 bonus points** upon capture!
+* Accompanied by a distinct ascending spawn jingle and a rewarding 3-tone pickup chime.
+* **HUD Countdown Timer:** Displays `GOLD: Xs` at the top of the screen; the golden apple vanishes if not captured within 8 seconds.
+
+### 6. Selectable Game Arenas
+* **Classic Open:** Open, obstacle-free rectangular arena.
+* **Four Pillars:** Four solid structural columns placed strategically in the corners of the board.
+* **The Maze:** Two horizontal barrier walls creating a tight center chicane.
+* Fruit and golden apple spawns strictly avoid obstacle tiles.
+
+### 7. Crash Dissolve Animation
+* Flashes the snake between bright red and white with a deep crash buzz on collision.
+* The snake body dissolves segment-by-segment from tail to head with rising pitch pops before opening the Game Over dialog.
+
+### 8. Top-3 Leaderboard & Interactive Initials Entry
+* If your final score beats the Top-3 record, an arcade-style dialog prompts you for a 3-letter name (`[ A A A ]`).
+* Use `[Left]` / `[Right]` to switch characters and `[Up]` / `[Down]` or `[W]` / `[S]` to cycle through letters `A` to `Z`.
+* Press `[ENTER]` to save your initials into CMOS NVRAM!
+* View the permanent **Hall of Champions** on every Game Over screen.
+
+### 9. Victory Trophy Screen
+* Achieving your victory target triggers a triumphant 6-note fanfare.
+* Renders a golden victory trophy inscribed with `#1 MASTER CYBFORGE`.
 
 ---
 
@@ -68,11 +93,15 @@ A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIO
 | **POST Screen** | Boot Snake Immediately | `[ENTER]` |
 | **BIOS Setup** | Navigate Items | `[W]` / `[S]` or `[Up]` / `[Down]` |
 | **BIOS Setup** | Change Setting / Value | `[A]` / `[D]` or `[Left]` / `[Right]` or `[ENTER]` / `[SPACE]` |
-| **BIOS Setup** | Save & Boot Game | `[ESC]` |
+| **BIOS Setup** | Save & Boot Game | `[ESC]` or select `Save & Boot Game` |
 | **Snake Game** | Steer Snake | `[W]` `[A]` `[S]` `[D]` or `[Arrow Keys]` |
-| **Snake Game** | Start / Restart Game | `[ENTER]` |
-| **Snake Game** | Pause & Open BIOS Setup | `[ESC]` |
-| **Victory Screen**| Play Again / Return to Setup | `[ENTER]` to Restart, `[ESC]` for BIOS Setup |
+| **Snake Game** | Pause / Resume | `[P]` or `[SPACE]` |
+| **Snake Game** | Exit to BIOS Setup | `[ESC]` |
+| **Initials Dialog** | Select Letter / Change Character | `[Left]` / `[Right]` to select, `[Up]` / `[Down]` to change |
+| **Initials Dialog** | Confirm Name | `[ENTER]` |
+| **Game Over** | Restart Game | `[ENTER]` |
+| **Game Over** | Open BIOS Setup | `[ESC]` |
+| **Victory Screen** | Play Again / BIOS Setup | `[ENTER]` to restart, `[ESC]` for setup |
 
 ---
 
@@ -86,11 +115,16 @@ A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIO
 | `0x1A02` | 1 Byte | `SNAKE_DIR` Current movement direction (0=Up, 1=Right, 2=Down, 3=Left) |
 | `0x1A03` | 1 Byte | `NEXT_DIR` Buffered turn direction |
 | `0x1A04 - 0x1A05` | 2 Bytes | `FOOD_X`, `FOOD_Y` Active apple coordinates |
-| `0x1A06` | 2 Bytes | `SCORE` Current score (BCD displayed) |
+| `0x1A06` | 2 Bytes | `SCORE` Current score |
 | `0x1A08` | 2 Bytes | `RND_SEED` Linear Congruential Generator seed |
 | `0x1A0A` | 1 Byte | `DIR_LOCKED` Single-turn lock flag |
+| `0x1A0D` | 1 Byte | `QUEUED_DIR` Buffer for rapid double-key turns |
 | `0x1A0E` | 2 Bytes | `HIGH_SCORE` Persistent session high score |
-| `0x1A10 - 0x1A17` | 8 Bytes | BIOS Setup configuration bytes (`CFG_SPEED`, `CFG_WALLS`, `CFG_WIN`, etc.) |
+| `0x1A10 - 0x1A19` | 10 Bytes | BIOS Setup options (`SPEED`, `WALLS`, `SOUND`, `FACE`, `LEN`, `WIN`, `THEME`, `ARENA`) |
+| `0x1A1A - 0x1A1C` | 3 Bytes | `GOLD_FOOD_X`, `GOLD_FOOD_Y`, `GOLD_TIMER` |
+| `0x1A1E` | 1 Byte | `APPLE_COUNT` Eaten apple counter |
+| `0x1A20 - 0x1A2E` | 15 Bytes | `TOP3_TABLE` 3x (3-byte name, 2-byte score) |
+| `0x1A30 - 0x1A33` | 4 Bytes | `CURRENT_NAME` (3 bytes) and `CUR_CHAR_IDX` (1 byte) |
 | `0xB800:0x0000` | 4,000 Bytes | VGA Color Text Buffer (80x25 character & attribute pairs) |
 | `0xA000:0x0000` | Plane 2 | VGA Font Memory (Custom 16-scanline glyphs) |
 
