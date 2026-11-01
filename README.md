@@ -1,11 +1,13 @@
-# Cybforge Retro BIOS & Snake
+# Cybforge Retro BIOS & Snake v2.1
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-x86%2016--bit%20Real%20Mode-lightgrey.svg)](#)
 [![Format](https://img.shields.io/badge/ROM-64KB%20Binary-green.svg)](#)
 [![Emulator](https://img.shields.io/badge/Emulator-QEMU%20x86__64-orange.svg)](#)
 
-A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIOS-style POST diagnostic sequence, offers a full **Cybforge Retro BIOS Setup Utility**, and directly launches a playable, retro **Snake Game** in pure assembly.
+A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIOS-style POST diagnostic sequence, offers a full **Cybforge Retro BIOS Setup Utility**, and directly launches a playable, retro **Snake Game v2.1** in pure assembly.
+
+![Cybforge Snake Gameplay](assets/screenshot_gameplay.png)
 
 ---
 
@@ -36,15 +38,25 @@ A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIO
   * **Victory Target:** `< Full Board (1044) >` *(complete field takeover)*, `< 25 Apples >`, `< 50 Apples >`, `< 100 Apples >`
   * **Reset Defaults & Save & Boot:** Factory reset or instant boot to game.
 
-### 4. The Snake Game
-* **Smooth, Calibrated Gameplay:** Balanced retro pacing (~5 steps/second on normal) with aspect-ratio compensation for 8x16 character cells.
-* **Custom Pixel-Art Glyphs:**
-  * Smiling Snake Face (`0x07`) and Sunglasses Head (`0x0A`)
-  * Shiny Red Apple with stem and leaf (`0x08`)
-  * Segmented Rounded Snake Body (`0x09`)
-* **Responsive, Ghost-Free Controls:** Supports both **[WASD]** and **[Arrow Keys]**. Built-in single-turn locking prevents accidental double-turns and 180° self-collisions.
-* **Subtle 8-Bit PC Speaker Sound:** Crisp, short ~50ms fruit-eaten chime and gentle ~120ms fail sound.
-* **Victory Screen & Golden Trophy:** Conquering the 58x18 (1044-tile) board awards an ASCII Golden Trophy, celebratory 5-tone victory fanfare, and permanent 100% completion badge!
+### 4. The Snake Game (Version 2.1 Overhaul)
+* **True 16-Scanline Pixel-Art Glyphs (Plane 2 Direct Loading):**
+  * **Double Neon Cyan Border:** High-precision connecting corners and double lines (`0x01`..`0x06`).
+  * **Cute Smiling Snake Head:** Expressive eyes and cheeks (`0x07`).
+  * **Cyberpunk Sunglasses Head:** Angular shades with white specular glare (`0x0A`).
+  * **Glossy 3D Apple:** Realistic curved leaf, wooden stem, and spherical 3D specular shine (`0x08`).
+  * **Dragon Scale Body Segments:** Seamlessly interlocking scales with zero vertical/horizontal gaps (`0x09`).
+* **Centered Modal Dialogs:**
+  * **Start Window:** Centered double-box with `Press [ENTER] to Start`.
+  * **Game Over Window:** Centered red modal box showing `Final Score: XXX` and action prompts, clearing background text to eliminate visual overlap.
+* **Harmonic, Glitch-Free Audio Engine:**
+  * Uses non-destructive PIT Channel 2 updates (`set_tone_freq`) to eliminate clicks and popping.
+  * Musical intervals: Warm G5->C6 pickup chime, melancholic C5->Ab4->G4->Eb4 Game Over descent, upbeat E5->A5 launch sound, and triumphant 6-note Victory fanfare.
+  * Low-latency DirectSound configuration (`-audiodev dsound,id=snd0,latency=20000`).
+* **High Score Tracking:** Session `HIGH_SCORE` (`0x1A0E`) dynamically preserved and displayed on the HUD.
+* **Safe Apple Spawning:** Guarantees apples never spawn on top of existing snake segments.
+* **Fluid Controls & Shortcuts:** `[WASD]` and `[Arrow Keys]` with single-turn locking and instant `[ESC]` shortcut to BIOS Setup.
+
+![Game Over Modal Screen](assets/screenshot_gameover.png)
 
 ---
 
@@ -59,6 +71,7 @@ A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIO
 | **BIOS Setup** | Save & Boot Game | `[ESC]` |
 | **Snake Game** | Steer Snake | `[W]` `[A]` `[S]` `[D]` or `[Arrow Keys]` |
 | **Snake Game** | Start / Restart Game | `[ENTER]` |
+| **Snake Game** | Pause & Open BIOS Setup | `[ESC]` |
 | **Victory Screen**| Play Again / Return to Setup | `[ENTER]` to Restart, `[ESC]` for BIOS Setup |
 
 ---
@@ -76,6 +89,7 @@ A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIO
 | `0x1A06` | 2 Bytes | `SCORE` Current score (BCD displayed) |
 | `0x1A08` | 2 Bytes | `RND_SEED` Linear Congruential Generator seed |
 | `0x1A0A` | 1 Byte | `DIR_LOCKED` Single-turn lock flag |
+| `0x1A0E` | 2 Bytes | `HIGH_SCORE` Persistent session high score |
 | `0x1A10 - 0x1A17` | 8 Bytes | BIOS Setup configuration bytes (`CFG_SPEED`, `CFG_WALLS`, `CFG_WIN`, etc.) |
 | `0xB800:0x0000` | 4,000 Bytes | VGA Color Text Buffer (80x25 character & attribute pairs) |
 | `0xA000:0x0000` | Plane 2 | VGA Font Memory (Custom 16-scanline glyphs) |
@@ -94,9 +108,9 @@ Double-click:
 ```cmd
 run.bat
 ```
-`run.bat` automatically checks screen resolution, builds `bios.bin` if missing, and launches QEMU with hardware OpenGL scaling and PC speaker audio:
+`run.bat` automatically checks screen resolution, builds `bios.bin` if missing, and launches QEMU with hardware OpenGL scaling and low-latency DirectSound audio:
 ```cmd
-qemu-system-x86_64 -bios bios.bin -audiodev dsound,id=snd0 -machine pc,pcspk-audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on
+qemu-system-x86_64 -bios bios.bin -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on
 ```
 
 ### 2. Manual Build
