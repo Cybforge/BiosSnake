@@ -26,7 +26,7 @@ HIGH_SCORE  equ 0x1A0E      ; Session High Score (Word, im CMOS NVRAM persistier
 ; Cybforge Retro BIOS Setup Konfigurationsoptionen (0x1A10..0x1A19)
 CFG_SPEED   equ 0x1A10      ; 0=Normal, 1=Fast, 2=Slow (Byte)
 CFG_WALLS   equ 0x1A11      ; 0=Solid, 1=Wrap-Around (Byte)
-CFG_SOUND   equ 0x1A12      ; 0=Enabled, 1=Disabled (Byte)
+CFG_SOUND   equ 0x1A12      ; 0=SB16 16-Bit, 1=PC Speaker, 2=Dual Audio, 3=Muted (Byte)
 CFG_FACE    equ 0x1A13      ; 0=Classic Smile, 1=Cool Shades (Byte)
 CFG_LEN     equ 0x1A14      ; 0=4 Segments, 1=3 Segments, 2=6 Segments (Byte)
 CFG_WIN     equ 0x1A15      ; 0=Full Board (1044), 1=25, 2=50, 3=100 (Byte)
@@ -43,6 +43,7 @@ APPLE_COUNT equ 0x1A1E      ; Zaehler normal gefressener Aepfel (Byte)
 TOP3_TABLE  equ 0x1A20      ; Top 3 Leaderboard: 3x (3 Bytes Name, 2 Bytes Score) = 15 Bytes (0x1A20..0x1A2E)
 CURRENT_NAME equ 0x1A30     ; 3 Bytes Puffer fuer Namenseingabe (0x1A30..0x1A32)
 CUR_CHAR_IDX equ 0x1A33     ; Aktiver Buchstabe (0..2) (Byte)
+sb16_detected equ 0x1A34    ; 1=Sound Blaster 16 Detected, 0=None (Byte)
 
 ; --- RAM-Adressen fuer DVD-Logo Animation (im freien RAM bei 0x0000) ---
 CLEAN_BUF equ 0x1000        ; 4000 Bytes Puffer (0x1000..0x1FA0) fuer Original-Screen
@@ -440,6 +441,12 @@ bios_start:
     mov ax, 0xB800
     mov es, ax              ; ES zeigt fest auf den VGA-Textspeicher!
 
+    ; Flat Real Mode (Unreal Mode) initialisieren fuer 256KB ROM Audio
+    call enter_unreal_mode
+
+    ; Sound Blaster 16 Hardware initialisieren (DSP Reset, Mixer, Volumes)
+    call sb16_init
+
     ; Gespeicherte Einstellungen & Top 3 Highscore aus CMOS NVRAM laden
     call load_cmos_settings
     call apply_color_theme
@@ -677,7 +684,9 @@ core_bios_setup:
 .p2:
     cmp al, 2
     jne .p3
-    xor byte [CFG_SOUND], 1
+    dec byte [CFG_SOUND]
+    and byte [CFG_SOUND], 3
+    call sound_toggle
     jmp .redraw_setup
 .p3:
     cmp al, 3
@@ -735,7 +744,9 @@ core_bios_setup:
 .n2:
     cmp al, 2
     jne .n3
-    xor byte [CFG_SOUND], 1
+    inc byte [CFG_SOUND]
+    and byte [CFG_SOUND], 3
+    call sound_toggle
     jmp .redraw_setup
 .n3:
     cmp al, 3
@@ -927,14 +938,27 @@ draw_setup_screen:
 .draw_wall_val:
     call draw_val_str
 
-    ; Zeile 2: PC Speaker Sound (Row 6)
+    ; Zeile 2: Sound Output (Row 6)
     mov bl, 2
     mov dh, 6
     mov si, str_opt_sound
     call draw_menu_row
-    mov si, str_val_snd_on
-    cmp byte [CFG_SOUND], 1
-    jne .draw_snd_val
+    mov al, [CFG_SOUND]
+    cmp al, 0
+    jne .chk_snd_spk
+    mov si, str_val_snd_sb16
+    jmp .draw_snd_val
+.chk_snd_spk:
+    cmp al, 1
+    jne .chk_snd_dual
+    mov si, str_val_snd_spk
+    jmp .draw_snd_val
+.chk_snd_dual:
+    cmp al, 2
+    jne .chk_snd_muted
+    mov si, str_val_snd_dual
+    jmp .draw_snd_val
+.chk_snd_muted:
     mov si, str_val_snd_off
 .draw_snd_val:
     call draw_val_str
@@ -2463,12 +2487,22 @@ render_3digits_white:
     ; PHASE 8: CRASH DISSOLVE, TOP 3 LEADERBOARD & SOUND ENGINE
     ; =========================================================================
 crash_dissolve_animation:
-    ; 1. Tiefer Crash-Buzz
+    ; 1. Sound Blaster 16 Sub-Bass Crash & Metal Shatter
+    call sound_crash
+
+    ; Tiefer PC Speaker Buzz wenn Speaker aktiv
+    cmp byte [CFG_SOUND], 1
+    je .buzz_spk
+    cmp byte [CFG_SOUND], 2
+    je .buzz_spk
+    jmp .buzz_done
+.buzz_spk:
     mov bx, 0x1200                  ; ~150 Hz
-    call start_tone
+    call force_speaker_tone
     mov ecx, 15000000               ; ~60 ms
     call delay_cycles
     call stop_tone
+.buzz_done:
 
     ; 2. 2x Rot/Weiss blinken
     mov cx, 2
@@ -3139,8 +3173,12 @@ read_key:
     ret
 
 start_tone:
-    cmp byte [CFG_SOUND], 0
-    jne .muted
+    cmp byte [CFG_SOUND], 1
+    je .play_spk
+    cmp byte [CFG_SOUND], 2
+    je .play_spk
+    ret
+.play_spk:
     push ax
     mov al, 0xB6
     out 0x43, al
@@ -3152,19 +3190,29 @@ start_tone:
     or al, 0x03
     out 0x61, al
     pop ax
-.muted:
+    ret
+
+force_speaker_tone:
+    push ax
+    mov al, 0xB6
+    out 0x43, al
+    mov al, bl
+    out 0x42, al
+    mov al, bh
+    out 0x42, al
+    in al, 0x61
+    or al, 0x03
+    out 0x61, al
+    pop ax
     ret
 
 set_tone_freq:
-    cmp byte [CFG_SOUND], 0
-    jne .muted
     push ax
     mov al, bl
     out 0x42, al
     mov al, bh
     out 0x42, al
     pop ax
-.muted:
     ret
 
 stop_tone:
@@ -3175,12 +3223,25 @@ stop_tone:
     pop ax
     ret
 
+; -----------------------------------------------------------------------------
+; IN-GAME AUDIO HANDLERS (SB16 16-BIT PCM + PC SPEAKER DUAL MODE)
+; -----------------------------------------------------------------------------
 sound_eat_fruit:
+    push ax
+    mov al, 0                       ; 0 = SND_CRUNCH
+    call sb16_play_pcm
+    pop ax
+    cmp byte [CFG_SOUND], 1
+    je .sef_spk
+    cmp byte [CFG_SOUND], 2
+    je .sef_spk
+    ret
+.sef_spk:
     push ax
     push bx
     push ecx
     mov bx, 0x05F2
-    call start_tone
+    call force_speaker_tone
     mov ecx, 8750000
     call delay_cycles
     mov bx, 0x0474
@@ -3193,12 +3254,127 @@ sound_eat_fruit:
     pop ax
     ret
 
+sound_golden_apple:
+    push ax
+    mov al, 1                       ; 1 = SND_GOLDEN
+    call sb16_play_pcm
+    pop ax
+    cmp byte [CFG_SOUND], 1
+    je .sga_spk
+    cmp byte [CFG_SOUND], 2
+    je .sga_spk
+    ret
+.sga_spk:
+    push ax
+    push bx
+    push ecx
+    mov bx, 0x05F2
+    call force_speaker_tone
+    mov ecx, 10000000
+    call delay_cycles
+    mov bx, 0x04B7
+    call set_tone_freq
+    mov ecx, 10000000
+    call delay_cycles
+    mov bx, 0x0389
+    call set_tone_freq
+    mov ecx, 25000000
+    call delay_cycles
+    call stop_tone
+    pop ecx
+    pop bx
+    pop ax
+    ret
+
+sound_crash:
+    push ax
+    mov al, 2                       ; 2 = SND_CRASH
+    call sb16_play_pcm
+    pop ax
+    ret
+
+sound_start:
+    push ax
+    mov al, 3                       ; 3 = SND_START
+    call sb16_play_pcm
+    pop ax
+    cmp byte [CFG_SOUND], 1
+    je .sst_spk
+    cmp byte [CFG_SOUND], 2
+    je .sst_spk
+    ret
+.sst_spk:
+    push ax
+    push bx
+    push ecx
+    mov bx, 0x0713
+    call force_speaker_tone
+    mov ecx, 10000000
+    call delay_cycles
+    mov bx, 0x054C
+    call set_tone_freq
+    mov ecx, 15000000
+    call delay_cycles
+    call stop_tone
+    pop ecx
+    pop bx
+    pop ax
+    ret
+
+sound_pause:
+    push ax
+    mov al, 4                       ; 4 = SND_PAUSE
+    call sb16_play_pcm
+    pop ax
+    cmp byte [CFG_SOUND], 1
+    je .spz_spk
+    cmp byte [CFG_SOUND], 2
+    je .spz_spk
+    ret
+.spz_spk:
+    push ax
+    push bx
+    push ecx
+    mov bx, 0x054C
+    call force_speaker_tone
+    mov ecx, 3000000
+    call delay_cycles
+    call stop_tone
+    mov ecx, 4000000
+    call delay_cycles
+    mov bx, 0x0713
+    call force_speaker_tone
+    mov ecx, 3000000
+    call delay_cycles
+    call stop_tone
+    pop ecx
+    pop bx
+    pop ax
+    ret
+
+sound_boot:
+    push ax
+    mov al, 5                       ; 5 = SND_BOOT
+    call sb16_play_pcm
+    pop ax
+    ret
+
 sound_game_over:
+    push ax
+    mov al, 6                       ; 6 = SND_GAMEOVER
+    call sb16_play_pcm
+    pop ax
+    cmp byte [CFG_SOUND], 1
+    je .sgo_spk
+    cmp byte [CFG_SOUND], 2
+    je .sgo_spk
+    ret
+.sgo_spk:
     push ax
     push bx
     push ecx
     mov bx, 0x08E9
-    call start_tone
+    call force_speaker_tone
     mov ecx, 17500000
     call delay_cycles
     mov bx, 0x0B3B
@@ -3219,30 +3395,22 @@ sound_game_over:
     pop ax
     ret
 
-sound_start:
-    push ax
-    push bx
-    push ecx
-    mov bx, 0x0713
-    call start_tone
-    mov ecx, 10000000
-    call delay_cycles
-    mov bx, 0x054C
-    call set_tone_freq
-    mov ecx, 15000000
-    call delay_cycles
-    call stop_tone
-    pop ecx
-    pop bx
-    pop ax
-    ret
-
 sound_victory:
+    push ax
+    mov al, 7                       ; 7 = SND_VICTORY
+    call sb16_play_pcm
+    pop ax
+    cmp byte [CFG_SOUND], 1
+    je .svic_spk
+    cmp byte [CFG_SOUND], 2
+    je .svic_spk
+    ret
+.svic_spk:
     push ax
     push bx
     push ecx
     mov bx, 0x08E9
-    call start_tone
+    call force_speaker_tone
     mov ecx, 17500000
     call delay_cycles
     mov bx, 0x0713
@@ -3272,25 +3440,30 @@ sound_victory:
     ret
 
 sound_click:
+    cmp byte [CFG_SOUND], 3
+    je .sc_done
     push ax
     push bx
     push ecx
     mov bx, 0x054C
-    call start_tone
+    call force_speaker_tone
     mov ecx, 3750000
     call delay_cycles
     call stop_tone
     pop ecx
     pop bx
     pop ax
+.sc_done:
     ret
 
 sound_toggle:
+    cmp byte [CFG_SOUND], 3
+    je .st_done
     push ax
     push bx
     push ecx
     mov bx, 0x0474
-    call start_tone
+    call force_speaker_tone
     mov ecx, 3750000
     call delay_cycles
     mov bx, 0x0389
@@ -3301,36 +3474,25 @@ sound_toggle:
     pop ecx
     pop bx
     pop ax
-    ret
-
-sound_golden_apple:
-    push ax
-    push bx
-    push ecx
-    mov bx, 0x05F2
-    call start_tone
-    mov ecx, 10000000
-    call delay_cycles
-    mov bx, 0x04B7
-    call set_tone_freq
-    mov ecx, 10000000
-    call delay_cycles
-    mov bx, 0x0389
-    call set_tone_freq
-    mov ecx, 25000000
-    call delay_cycles
-    call stop_tone
-    pop ecx
-    pop bx
-    pop ax
+.st_done:
     ret
 
 sound_golden_spawn:
     push ax
+    mov al, 3                       ; 3 = SND_START chime
+    call sb16_play_pcm
+    pop ax
+    cmp byte [CFG_SOUND], 1
+    je .sgs_spk
+    cmp byte [CFG_SOUND], 2
+    je .sgs_spk
+    ret
+.sgs_spk:
+    push ax
     push bx
     push ecx
     mov bx, 0x054C
-    call start_tone
+    call force_speaker_tone
     mov ecx, 6000000
     call delay_cycles
     mov bx, 0x0389
@@ -3343,30 +3505,225 @@ sound_golden_spawn:
     pop ax
     ret
 
-sound_pause:
+; =============================================================================
+; SOUND BLASTER 16 & FLAT REAL MODE (UNREAL MODE) SUBSYSTEM
+; =============================================================================
+enter_unreal_mode:
+    push eax
+    push bx
+    push ds
+    lgdt [cs:gdt_desc]
+    mov eax, cr0
+    or al, 1
+    mov cr0, eax
+    jmp $+2
+    mov bx, 0x08
+    mov fs, bx
+    and al, 0xFE
+    mov cr0, eax
+    jmp $+2
+    pop ds
+    pop bx
+    pop eax
+    ret
+
+sb16_init:
     push ax
     push bx
-    push ecx
-    mov bx, 0x054C
-    call start_tone
-    mov ecx, 3000000
-    call delay_cycles
-    call stop_tone
-    mov ecx, 4000000
-    call delay_cycles
-    mov bx, 0x0713
-    call start_tone
-    mov ecx, 3000000
-    call delay_cycles
-    call stop_tone
-    pop ecx
+    push cx
+    push dx
+
+    mov byte [sb16_detected], 0
+
+    ; 1. Reset DSP
+    mov dx, 0x226
+    mov al, 1
+    out dx, al
+    mov cx, 50
+.d1:
+    in al, 0x80
+    loop .d1
+    xor al, al
+    out dx, al
+
+    ; 2. Wait for DSP ready (Port 0x22E Bit 7 = 1)
+    mov dx, 0x22E
+    mov cx, 2000
+.w1:
+    in al, dx
+    test al, 0x80
+    jnz .r1
+    loop .w1
+    jmp .sb_init_done
+
+.r1:
+    mov dx, 0x22A
+    in al, dx
+    cmp al, 0xAA
+    jne .sb_init_done
+    mov byte [sb16_detected], 1
+
+    ; 3. Turn Speaker ON (DSP Command 0xD1)
+    mov bl, 0xD1
+    call sb16_dsp_write
+
+    ; 4. Initialize SB16 Mixer (Ports 0x224 / 0x225)
+    ; Master Volume L/R (0x30, 0x31) -> 0xF8
+    mov dx, 0x224
+    mov al, 0x30
+    out dx, al
+    inc dx
+    mov al, 0xF8
+    out dx, al
+
+    dec dx
+    mov al, 0x31
+    out dx, al
+    inc dx
+    mov al, 0xF8
+    out dx, al
+
+    ; Voice / PCM Volume L/R (0x32, 0x33) -> 0xF8
+    dec dx
+    mov al, 0x32
+    out dx, al
+    inc dx
+    mov al, 0xF8
+    out dx, al
+
+    dec dx
+    mov al, 0x33
+    out dx, al
+    inc dx
+    mov al, 0xF8
+    out dx, al
+
+.sb_init_done:
+    pop dx
+    pop cx
     pop bx
     pop ax
     ret
 
-    ; =========================================================================
-    ; PHASE 9: TEXT-STRINGS & TABELLEN
-    ; =========================================================================
+sb16_dsp_write:
+    push dx
+    push ax
+    push cx
+    mov dx, 0x22C
+    mov cx, 2000
+.wait_dsp:
+    in al, dx
+    test al, 0x80
+    jz .do_dsp_out
+    loop .wait_dsp
+    jmp .dsp_write_done
+.do_dsp_out:
+    mov al, bl
+    out dx, al
+.dsp_write_done:
+    pop cx
+    pop ax
+    pop dx
+    ret
+
+sb16_play_pcm:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+    push ds
+    push es
+
+    ; Check sound config: 0=SB16, 1=PC Speaker, 2=Dual, 3=Muted
+    cmp byte [CFG_SOUND], 1
+    je .skip_sb16
+    cmp byte [CFG_SOUND], 3
+    je .skip_sb16
+
+    cmp byte [sb16_detected], 1
+    jne .skip_sb16
+
+    cmp al, 7
+    ja .skip_sb16
+
+    movzx ebx, al
+    imul ebx, 6
+    mov esi, [cs:sample_table + ebx]
+    movzx ecx, word [cs:sample_table + ebx + 4]
+
+    ; Copy sample from ROM [fs:esi] to RAM [es:di] (0x2000:0000)
+    mov ax, 0x2000
+    mov es, ax
+    xor di, di
+
+    mov edx, ecx
+    shr edx, 1
+.copy_pcm_loop:
+    a32 mov eax, [fs:esi]
+    mov [es:di], eax
+    add esi, 4
+    add di, 4
+    dec edx
+    jnz .copy_pcm_loop
+
+    ; Setup DMA Channel 5 (16-bit DMA)
+    dec cx
+    mov al, 5
+    out 0xD4, al
+    xor al, al
+    out 0xD8, al
+    mov al, 0x49
+    out 0xD6, al
+    xor al, al
+    out 0xC4, al
+    out 0xC4, al
+    mov al, 0x02
+    out 0x8B, al
+    mov al, cl
+    out 0xC6, al
+    mov al, ch
+    out 0xC6, al
+    mov al, 1
+    out 0xD4, al
+
+    ; Setup DSP 4.xx
+    mov bl, 0x41
+    call sb16_dsp_write
+    mov bl, 0x2B
+    call sb16_dsp_write
+    mov bl, 0x11
+    call sb16_dsp_write
+
+    mov bl, 0xB6
+    call sb16_dsp_write
+    mov bl, 0x10
+    call sb16_dsp_write
+    mov bl, cl
+    call sb16_dsp_write
+    mov bl, ch
+    call sb16_dsp_write
+
+.skip_sb16:
+    pop es
+    pop ds
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+align 8
+gdt:
+    dq 0
+    db 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x92, 0xCF, 0x00
+gdt_desc:
+    dw 15
+    dd 0xF0000 + gdt
+
 ; --- Cybforge POST Screen Strings ---
 str_post_hdr1:
     db "Cybforge Retro BIOS (C)2026 Cybforge Systems Inc.", 0
@@ -3416,7 +3773,7 @@ str_opt_speed:
 str_opt_walls:
     db "Wall Collision    : ", 0
 str_opt_sound:
-    db "PC Speaker Sound  : ", 0
+    db "Sound Output      : ", 0
 str_opt_face:
     db "Snake Face Style  : ", 0
 str_opt_len:
@@ -3440,10 +3797,19 @@ str_val_wall_solid:
 str_val_wall_wrap:
     db "< Wrap-Around    >", 0
 
-str_val_snd_on:
-    db "< Enabled        >", 0
+str_val_snd_sb16:
+    db "< SB16 16-Bit >   ", 0
+str_val_snd_spk:
+    db "< PC Speaker >    ", 0
+str_val_snd_dual:
+    db "< Dual Audio >    ", 0
 str_val_snd_off:
-    db "< Disabled       >", 0
+    db "< Muted >         ", 0
+
+str_post_sb16:
+    db "Sound System     : Sound Blaster 16 (16-Bit PCM, DMA 5, Port 220h)", 0
+str_post_pcspk:
+    db "Sound System     : Standard PC Speaker (PIT 8254 Ch 2)", 0
 
 str_val_face_smile:
     db "< Classic Smile  >", 0
@@ -3674,6 +4040,25 @@ vga_dac_table:
     db 63, 63, 63           ; 0x0F: Reines Weiß ("die box geht!" + Rahmen)
 
 ; Kompakte 8x8 Bitmap-Font-Tabelle (wird beim Upload auf 8x16 verdoppelt)
+
+align 8
+sample_table:
+    dd 0xFFFD0000 ; SND_CRUNCH
+    dw 2206
+    dd 0xFFFD113C ; SND_GOLDEN
+    dw 6064
+    dd 0xFFFD409C ; SND_CRASH
+    dw 4962
+    dd 0xFFFD6760 ; SND_START
+    dw 3858
+    dd 0xFFFD8584 ; SND_PAUSE
+    dw 1764
+    dd 0xFFFD934C ; SND_BOOT
+    dw 5512
+    dd 0xFFFDBE5C ; SND_GAMEOVER
+    dw 9372
+    dd 0xFFFE0794 ; SND_VICTORY
+    dw 13230
 
 font_table:
     db 0x01, 0x00, 0x00, 0x00, 0x1F, 0x18, 0x18, 0x18, 0x18

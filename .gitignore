@@ -1,3 +1,7 @@
+# Intermediate build blocks
+bios_block3.bin
+bios_blocks0_2.bin
+
 # Temporary test and dump files
 *.ppm
 *.tmp

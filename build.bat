@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 echo ========================================================
-echo [1/2] Generating bios.asm...
+echo [1/3] Generating BIOS source and 16-bit PCM Audio Banks...
 echo ========================================================
 python "%~dp0gen_bios.py"
 if errorlevel 1 (
@@ -11,20 +11,23 @@ if errorlevel 1 (
 )
 
 echo ========================================================
-echo [2/2] Assembling with NASM...
+echo [2/3] Verifying 256 KB BIOS ROM and Segments...
 echo ========================================================
-set "NASM_CMD=nasm"
-where nasm >nul 2>nul
-if errorlevel 1 (
-    if exist "C:\Users\jonas\Documents\Default Project\NASM\nasm-2.16.01\nasm.exe" (
-        set "NASM_CMD=C:\Users\jonas\Documents\Default Project\NASM\nasm-2.16.01\nasm.exe"
-    )
-)
-
-"%NASM_CMD%" -f bin "%~dp0bios.asm" -o "%~dp0bios.bin"
-if errorlevel 1 (
-    echo [ERROR] Assembly failed!
+if not exist "%~dp0bios.bin" (
+    echo [ERROR] bios.bin was not found!
     pause
     exit /b 1
 )
-echo [OK] bios.bin successfully generated (65536 Bytes).
+
+python -c "import os, sys; sz = os.path.getsize(r'%~dp0bios.bin'); sys.exit(0 if sz == 262144 else 1)"
+if errorlevel 1 (
+    echo [ERROR] Invalid ROM size! Expected 262,144 Bytes.
+    pause
+    exit /b 1
+)
+echo [OK] ROM Size Verified: 262,144 Bytes (256.0 KB).
+
+echo ========================================================
+echo [3/3] Cybforge Retro BIOS 256 KB Ready!
+echo ========================================================
+echo [OK] bios.bin successfully generated (262,144 Bytes).

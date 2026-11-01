@@ -31,14 +31,14 @@ if errorlevel 1 (
     )
 )
 
-rem Launch with DirectSound and GPU-accelerated OpenGL display (no CPU lag!)
-"%QEMU_CMD%" -bios "%~dp0bios.bin" -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on -serial stdio
+rem Launch with Sound Blaster 16 (16-Bit PCM), DirectSound and GPU-accelerated OpenGL display (no CPU lag!)
+"%QEMU_CMD%" -bios "%~dp0bios.bin" -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -device sb16,audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on -serial stdio
 if errorlevel 1 (
     echo.
     echo [NOTE] OpenGL initialization failed. Launching fallback display...
-    "%QEMU_CMD%" -bios "%~dp0bios.bin" -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -display gtk,zoom-to-fit=on -serial stdio
+    "%QEMU_CMD%" -bios "%~dp0bios.bin" -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -device sb16,audiodev=snd0 -display gtk,zoom-to-fit=on -serial stdio
 )
 if errorlevel 1 (
-    "%QEMU_CMD%" -bios "%~dp0bios.bin" -serial stdio
+    "%QEMU_CMD%" -bios "%~dp0bios.bin" -audiodev dsound,id=snd0 -device sb16,audiodev=snd0 -serial stdio
 )
 pause

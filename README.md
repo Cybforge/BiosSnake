@@ -1,12 +1,14 @@
-# Cybforge Retro BIOS & Snake v2.2 (Ultimate Expansion)
+# Cybforge Retro BIOS & Snake v2.3 (256 KB ROM & 16-Bit PCM Audio Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-x86%2016--bit%20Real%20Mode-lightgrey.svg)](#)
-[![Format](https://img.shields.io/badge/ROM-64KB%20Binary-green.svg)](#)
+[![Format](https://img.shields.io/badge/ROM-256KB%20Binary-brightgreen.svg)](#)
+[![Audio](https://img.shields.io/badge/Audio-Sound%20Blaster%2016%2016--Bit%20PCM-blueviolet.svg)](#)
+[![DMA](https://img.shields.io/badge/DMA-Channel%205%20(16--Bit)-orange.svg)](#)
 [![Emulator](https://img.shields.io/badge/Emulator-QEMU%20x86__64-orange.svg)](#)
-[![Version](https://img.shields.io/badge/Version-2.2%20Ultimate%20Expansion-brightgreen.svg)](#)
+[![Version](https://img.shields.io/badge/Version-2.3%20Studio%20Audio-brightgreen.svg)](#)
 
-A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIOS-style POST diagnostic sequence, offers an expanded **Cybforge Retro BIOS Setup Utility** with CMOS NVRAM persistence, hardware VGA DAC themes, selectable arenas, and directly launches an arcade **Snake Game v2.2** in pure assembly.
+A custom, bare-metal **x86 16-bit PC BIOS** in a full **256 KB (`262,144 Bytes`) ROM image**. It boots an authentic AMIBIOS-style POST diagnostic sequence with Sound Blaster 16 hardware auto-detection, offers an expanded **Cybforge Retro BIOS Setup Utility** with CMOS NVRAM persistence, hardware VGA DAC themes, selectable arenas, a high-definition **16-bit Sound Blaster 16 PCM audio engine**, and directly launches an arcade **Snake Game v2.3** in pure assembly.
 
 ![Cybforge Snake Matrix Green Gameplay](assets/screenshot_gameplay.png)
 
@@ -14,7 +16,7 @@ A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIO
 
 ## Visual Showcase Gallery
 
-| POST RAM Counter (0..640 KB OK) | Cybforge BIOS Setup Utility (10 Rows) |
+| POST RAM Counter & SB16 Detection | Cybforge BIOS Setup Utility (Sound: SB16 16-Bit) |
 | :---: | :---: |
 | ![POST Screen](assets/screenshot_post.png) | ![BIOS Setup](assets/screenshot_setup.png) |
 
@@ -32,55 +34,110 @@ A custom, bare-metal **x86 16-bit PC BIOS** that boots an authentic retro AMIBIO
 
 ---
 
-## Ultimate Expansion (v2.2) Feature Pack
+## 256 KB ROM Architecture (4 x 64 KB Blocks)
+
+The BIOS image is constructed as an authentic **256 KB ROM (`262,144 Bytes`)**, organized into four distinct 64 KB physical memory blocks:
+
+```
++-------------------------------------------------------------------------------+
+|                           256 KB BIOS ROM ARCHITECTURE                         |
++-------------+-----------------------+-------------------------+---------------+
+| ROM Block   | ROM File Offsets      | 32-bit Linear Address   | 16-bit Real   |
+|             |                       | (Unreal Mode FS:ESI)    | Mode Segment  |
++-------------+-----------------------+-------------------------+---------------+
+| Block 0     | 0x00000 - 0x0FFFF     | 0xFFFC0000 - 0xFFFCFFFF | High ROM      |
+|             | (65,536 Bytes)        | ROM Banner & Reserved   | Space         |
++-------------+-----------------------+-------------------------+---------------+
+| Block 1     | 0x10000 - 0x1FFFF     | 0xFFFD0000 - 0xFFFDFFFF | High ROM      |
+|             | (65,536 Bytes)        | 16-Bit PCM Audio Bank A | Space         |
++-------------+-----------------------+-------------------------+---------------+
+| Block 2     | 0x20000 - 0x2FFFF     | 0xFFFE0000 - 0xFFFEFFFF | Segment 0xE000|
+|             | (65,536 Bytes)        | 16-Bit PCM Audio Bank B | (0xE000:0000) |
++-------------+-----------------------+-------------------------+---------------+
+| Block 3     | 0x30000 - 0x3FFFF     | 0xFFFF0000 - 0xFFFFFFFF | Segment 0xF000|
+|             | (65,536 Bytes)        | BIOS Code, Setup, Snake | (0xF000:0000) |
+|             |                       | & CPU Reset Vector      | (Reset: FFF0h)|
++-------------+-----------------------+-------------------------+---------------+
+```
+
+---
+
+## Sound Blaster 16 Digital Audio Engine (16-Bit PCM)
+
+### 1. Hardware Architecture & Unreal Mode
+* **Flat Real Mode (Unreal Mode):** Uses a brief 6-instruction switch into Protected Mode during boot to load a 4 GB data segment descriptor into `FS`, then immediately returns to 16-bit Real Mode. This allows Real Mode instructions (`a32 mov eax, [fs:esi]`) to access any byte across the entire 256 KB ROM.
+* **Intel 8237A DMA Channel 5:** Configured for high-speed 16-bit word streaming from conventional RAM at physical address `0x20000` (DMA Page register `0x8B = 0x02`, Base `0xC4 = 0x0000`, Mode `0xD6 = 0x49`).
+* **SB16 DSP 4.xx Control:** Initialized via DSP reset (`Port 0x226`), speaker enabled (`DSP 0xD1`), sample rate configured (`DSP 0x41` for 11,025 Hz), and triggered using high-performance 16-bit single-cycle DMA transfers (`DSP 0xB6`, Mode `0x10` Signed Mono).
+* **Hardware Mixer (`Ports 0x224 / 0x225`):** Dynamically programs Master Volume (L/R `0x30`, `0x31`) and Voice Volume (L/R `0x32`, `0x33`) to `0xF8` for crisp, high-amplitude acoustic output.
+
+### 2. High-Definition 16-Bit Sound Bank (11,025 Hz)
+| Index | ID | Description | Samples | Duration | Linear ROM Address |
+| :---: | :--- | :--- | :---: | :---: | :---: |
+| **0** | `SND_CRUNCH` | Crisp apple bite (exponential FM + noise crunch) | 2,206 | 0.20s | `0xFFFD0000` |
+| **1** | `SND_GOLDEN` | Magical ascending polyphonic chime (E6-G#6-B6-E7) | 6,064 | 0.55s | `0xFFFD113C` |
+| **2** | `SND_CRASH` | Sub-bass impact + metal shatter noise transient | 4,962 | 0.45s | `0xFFFD409C` |
+| **3** | `SND_START` | Arcade power coin / start chime (E5-A5-C#6) | 3,858 | 0.35s | `0xFFFD6760` |
+| **4** | `SND_PAUSE` | Futuristic double-tone pause chirp | 1,764 | 0.16s | `0xFFFD8584` |
+| **5** | `SND_BOOT` | Cyber startup chord (C5 + G5 + C6 + E6) | 5,512 | 0.50s | `0xFFFD934C` |
+| **6** | `SND_GAMEOVER` | Melancholic minor descent (A4-F4-D4-C#4) | 9,372 | 0.85s | `0xFFFDBE5C` |
+| **7** | `SND_VICTORY` | Majestic polyphonic brass fanfare | 13,230 | 1.20s | `0xFFFE0794` |
+
+### 3. Four Selectable Sound Modes in BIOS Setup
+Users can toggle the sound output in BIOS Setup under `Sound Output`:
+* `< SB16 16-Bit >`: Pristine, zero-latency 16-bit PCM WAV playback via Sound Blaster 16 DMA.
+* `< PC Speaker >`: Classic 1981 IBM PC square-wave chimes via Intel 8254 PIT Channel 2.
+* `< Dual Audio >`: Simultaneous playback through both SB16 16-bit DAC and PC Speaker.
+* `< Muted >`: Completely silent operation.
+
+---
+
+## Core BIOS & Gameplay Features
 
 ### 1. Animated POST Base RAM Counter
 * Fast, audible memory test animating from `0 KB` to `640 KB OK` in `64 KB` increments.
-* Real PC speaker hardware click on every increment using timer counter pulses.
-* Displays alongside CPU, Co-Processor, Display, Keyboard, PIT Timer, and Disk diagnostics.
+* Real diagnostic hardware speaker clicks on every increment.
+* Displays CPU, Co-Processor, Display, Keyboard, PIT Timer, Disks, and **Sound Blaster 16 Hardware Detection**.
 
 ### 2. VGA Hardware DAC Color Themes
 Switches the 16 text-mode color registers via VGA DAC ports `0x3C8` / `0x3C9`:
 * **Cyberpunk Neon (Default):** Deep neon blue background with electric green, bright yellow, and radiant cyan.
 * **Matrix Green:** Monochrome green phosphor terminal with dark phosphor greens and blazing lime-green highlights.
 * **Amber CRT:** Warm 1980s amber/orange monochrome terminal with soft amber backgrounds and golden text.
-* **CGA Retro:** Faithful 1981 IBM PC CGA 16-color palette (pure primary RGB and crisp high-intensity tones).
-* Real-time palette updates live inside the BIOS Setup screen!
+* **CGA Retro:** Faithful 1981 IBM PC CGA 16-color palette.
+* Live real-time palette preview inside the BIOS Setup screen!
 
 ### 3. CMOS NVRAM Non-Volatile Persistence
 * Reads and writes configuration data and leaderboard scores to extended CMOS RTC NVRAM registers (`0x40`..`0x59`) via I/O ports `0x70` and `0x71`.
 * **Integrity Validation:** Signature byte (`0xCB`) and XOR checksum validation prevent corrupted states and automatically initialize factory defaults when CMOS is blank.
-* Persists your high scores, arena choice, speed, sound, and theme across reboots and emulator resets!
+* Persists high scores, arena choice, speed, sound, and theme across reboots!
 
 ### 4. Interactive In-Game Pause
 * Press `[P]` or `[SPACE]` during gameplay to instantly pause the action.
 * Displays a centered neon double-box modal dialog (`P A U S E D`).
-* Fully freezes the snake and timers without dropping inputs. Pressing `[P]` or `[SPACE]` resumes immediately.
+* Freezes the snake and timers without dropping inputs.
 
 ### 5. Golden Bonus Apples & Countdown HUD
-* A shimmering golden bonus apple spawns on the board every **5 regular apples** eaten.
+* A shimmering golden bonus apple spawns every **5 regular apples** eaten.
 * Awards **+50 bonus points** upon capture!
-* Accompanied by a distinct ascending spawn jingle and a rewarding 3-tone pickup chime.
-* **HUD Countdown Timer:** Displays `GOLD: Xs` at the top of the screen; the golden apple vanishes if not captured within 8 seconds.
+* Accompanied by a distinct ascending spawn jingle and rewarding pickup chime.
+* **HUD Countdown Timer:** Displays `BONUS: 08s` at the top of the screen; the golden apple despawns if not caught in time.
 
 ### 6. Selectable Game Arenas
 * **Classic Open:** Open, obstacle-free rectangular arena.
 * **Four Pillars:** Four solid structural columns placed strategically in the corners of the board.
 * **The Maze:** Two horizontal barrier walls creating a tight center chicane.
-* Fruit and golden apple spawns strictly avoid obstacle tiles.
 
 ### 7. Crash Dissolve Animation
-* Flashes the snake between bright red and white with a deep crash buzz on collision.
-* The snake body dissolves segment-by-segment from tail to head with rising pitch pops before opening the Game Over dialog.
+* Plays `SND_CRASH` through SB16 DMA, flashes the snake between bright red and white, and dissolves the body segment-by-segment from tail to head before showing the Game Over dialog.
 
 ### 8. Top-3 Leaderboard & Interactive Initials Entry
 * If your final score beats the Top-3 record, an arcade-style dialog prompts you for a 3-letter name (`[ A A A ]`).
-* Use `[Left]` / `[Right]` to switch characters and `[Up]` / `[Down]` or `[W]` / `[S]` to cycle through letters `A` to `Z`.
+* Use `[Left]` / `[Right]` to switch characters and `[Up]` / `[Down]` or `[W]` / `[S]` to cycle letters `A` to `Z`.
 * Press `[ENTER]` to save your initials into CMOS NVRAM!
 * View the permanent **Hall of Champions** on every Game Over screen.
 
 ### 9. Victory Trophy Screen
-* Achieving your victory target triggers a triumphant 6-note fanfare.
+* Achieving your victory target triggers a triumphant brass fanfare (`SND_VICTORY`).
 * Renders a golden victory trophy inscribed with `#1 MASTER CYBFORGE`.
 
 ---
@@ -125,8 +182,10 @@ Switches the 16 text-mode color registers via VGA DAC ports `0x3C8` / `0x3C9`:
 | `0x1A1E` | 1 Byte | `APPLE_COUNT` Eaten apple counter |
 | `0x1A20 - 0x1A2E` | 15 Bytes | `TOP3_TABLE` 3x (3-byte name, 2-byte score) |
 | `0x1A30 - 0x1A33` | 4 Bytes | `CURRENT_NAME` (3 bytes) and `CUR_CHAR_IDX` (1 byte) |
+| `0x1A34` | 1 Byte | `sb16_detected` SB16 Hardware Flag (1=Detected, 0=None) |
+| `0x2000:0x0000` | 64 KB | RAM Playback Buffer for Sound Blaster 16 DMA Channel 5 |
 | `0xB800:0x0000` | 4,000 Bytes | VGA Color Text Buffer (80x25 character & attribute pairs) |
-| `0xA000:0x0000` | Plane 2 | VGA Font Memory (Custom 16-scanline glyphs) |
+| `0xA000:0x0000` | Plane 2 | VGA Font Memory (Custom 16-scanline glyphs & Cybforge logo) |
 
 ---
 
@@ -142,20 +201,19 @@ Double-click:
 ```cmd
 run.bat
 ```
-`run.bat` automatically checks screen resolution, builds `bios.bin` if missing, and launches QEMU with hardware OpenGL scaling and low-latency DirectSound audio:
+`run.bat` automatically checks screen resolution, builds `bios.bin` (256 KB) if missing, and launches QEMU with Sound Blaster 16 DMA audio, DirectSound low latency, and hardware OpenGL scaling:
 ```cmd
-qemu-system-x86_64 -bios bios.bin -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on
+qemu-system-x86_64 -bios bios.bin -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -device sb16,audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on
 ```
 
 ### 2. Manual Build
-To re-generate `bios.asm` and compile `bios.bin`:
+To re-generate `bios.asm`, synthesize the 16-bit PCM sound bank, and assemble `bios.bin` (256 KB):
 ```cmd
 build.bat
 ```
-Or manually:
+Or directly via Python:
 ```cmd
 python gen_bios.py
-nasm -f bin bios.asm -o bios.bin
 ```
 
 ---
