@@ -1,4 +1,4 @@
-# Cybforge Retro BIOS & Snake v2.3 (256 KB ROM & 16-Bit PCM Audio Edition)
+# Cybforge Retro BIOS & Snake v2.4 (256 KB ROM & Ultra-Responsive Audio Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-x86%2016--bit%20Real%20Mode-lightgrey.svg)](#)
@@ -6,9 +6,9 @@
 [![Audio](https://img.shields.io/badge/Audio-Sound%20Blaster%2016%2016--Bit%20PCM-blueviolet.svg)](#)
 [![DMA](https://img.shields.io/badge/DMA-Channel%205%20(16--Bit)-orange.svg)](#)
 [![Emulator](https://img.shields.io/badge/Emulator-QEMU%20x86__64-orange.svg)](#)
-[![Version](https://img.shields.io/badge/Version-2.3%20Studio%20Audio-brightgreen.svg)](#)
+[![Version](https://img.shields.io/badge/Version-2.4%20Studio%20Audio-brightgreen.svg)](#)
 
-A custom, bare-metal **x86 16-bit PC BIOS** in a full **256 KB (`262,144 Bytes`) ROM image**. It boots an authentic AMIBIOS-style POST diagnostic sequence with Sound Blaster 16 hardware auto-detection, offers an expanded **Cybforge Retro BIOS Setup Utility** with CMOS NVRAM persistence, hardware VGA DAC themes, selectable arenas, a high-definition **16-bit Sound Blaster 16 PCM audio engine**, and directly launches an arcade **Snake Game v2.3** in pure assembly.
+A custom, bare-metal **x86 16-bit PC BIOS** in a full **256 KB (`262,144 Bytes`) ROM image**. It boots an authentic AMIBIOS-style POST diagnostic sequence with Sound Blaster 16 hardware auto-detection, offers an expanded **Cybforge Retro BIOS Setup Utility** with CMOS NVRAM persistence, hardware VGA DAC themes, selectable arenas, a high-definition **16-bit Sound Blaster 16 PCM audio engine**, and directly launches an arcade **Snake Game v2.4** in pure assembly.
 
 ![Cybforge Snake Matrix Green Gameplay](assets/screenshot_gameplay.png)
 
@@ -217,6 +217,24 @@ python gen_bios.py
 ```
 
 ---
+
+## Changelog v2.4: Ultra-Responsive Start & SB16 Single-Cycle DMA Fixes
+
+- **SB16 Single-Cycle DMA Playback (`0xB0`)**:
+  - Replaced DSP command `0xB6` (Auto-Initialize DMA) with `0xB0` (Single-Cycle Playback, FIFO disabled).
+  - Added DSP interrupt acknowledgment reads (`in al, 0x22F` for 16-bit DMA, `in al, 0x22E` for 8-bit) to clear interrupt latches.
+  - Implemented command `0xD5` (Pause 16-bit DMA) prior to initiating new sample playback to prevent channel collision.
+  - Completely resolved SB16 DSP write buffer lockups, eliminating stuttering and lag spikes during audio playback.
+- **Ultra-Responsive Game Start Controls**:
+  - Reduced start polling delay from ~200ms (`30M` cycles) down to ~1ms (`200k` cycles) for instant keystroke detection.
+  - Expanded start key triggers: Game can now be started immediately with **`[ENTER]`**, **`[SPACE]`**, or any directional key (**`[W]` / `[UP]`**, **`[S]` / `[DOWN]`**, **`[D]` / `[RIGHT]`**).
+  - Starting with a directional key immediately sets the snake's heading in that direction without delay.
+- **Sleek Non-Intrusive Start UI**:
+  - Replaced the obstructive 7-row center modal dialog with an elegant single-line prompt at Row 16 (`[ENTER / SPACE / MOVE] Start Game`).
+  - The arena, obstacles, snake, and fruit remain 100% visible from frame one, eliminating visual erase glitches and redraw artifacts.
+- **Audio Sequence Normalization**:
+  - Removed duplicate `sound_start` triggers on restart and setup exit.
+  - POST boot chime verified and integrated into boot diagnostic phase.
 
 ## License
 

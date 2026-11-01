@@ -291,6 +291,7 @@ part2 = """
 
     ; Sound Blaster 16 Hardware initialisieren (DSP Reset, Mixer, Volumes)
     call sb16_init
+    call sound_boot
 
     ; Gespeicherte Einstellungen & Top 3 Highscore aus CMOS NVRAM laden
     call load_cmos_settings
@@ -658,7 +659,6 @@ core_bios_setup:
 
 .exit_setup:
     call save_cmos_settings
-    call sound_start
     jmp init_snake_game
 
     ; =========================================================================
@@ -1040,30 +1040,67 @@ init_snake_game:
     mov byte [APPLE_COUNT], 0
 
     call update_score_display
+    call draw_arena_obstacles
     call spawn_fruit
     call draw_snake
     call draw_fruit
 
-    ; Start Modal Box anzeigen
-    call draw_start_box
+    ; Start-Hinweis anzeigen
+    call draw_start_prompt
     call drain_kbd
 
 .wait_start:
     call read_key
-    cmp al, 0x1C                    ; ENTER -> Spiel starten
-    je .game_started
+    test al, al
+    jz .wait_idle
+
     cmp al, 0x01                    ; ESC -> Ins BIOS Setup
     je core_bios_setup
-    mov ecx, 30000000
+
+    ; Starten mit ENTER oder LEERTASTE (behaelt Standardrichtung Rechts)
+    cmp al, 0x1C                    ; ENTER
+    je .game_started
+    cmp al, 0x39                    ; SPACE
+    je .game_started
+
+    ; Sofortstart mit Steuerkreuz / WASD!
+    cmp al, 0x11                    ; W (Oben)
+    je .start_up
+    cmp al, 0x48                    ; UP Arrow
+    je .start_up
+    cmp al, 0x1F                    ; S (Unten)
+    je .start_down
+    cmp al, 0x50                    ; DOWN Arrow
+    je .start_down
+    cmp al, 0x20                    ; D (Rechts)
+    je .start_right
+    cmp al, 0x4D                    ; RIGHT Arrow
+    je .start_right
+    jmp .wait_idle
+
+.start_up:
+    mov byte [SNAKE_DIR], 0
+    mov byte [NEXT_DIR], 0
+    jmp .game_started
+
+.start_down:
+    mov byte [SNAKE_DIR], 2
+    mov byte [NEXT_DIR], 2
+    jmp .game_started
+
+.start_right:
+    mov byte [SNAKE_DIR], 1
+    mov byte [NEXT_DIR], 1
+    jmp .game_started
+
+.wait_idle:
+    mov ecx, 200000                 ; ~1ms Polling fuer sofortiges Ansprechverhalten
     call delay_cycles
     jmp .wait_start
 
 .game_started:
     call sound_start
-    call erase_start_box
-    call draw_arena_obstacles
-    call draw_snake
-    call draw_fruit
+    call erase_start_prompt
 
     ; =========================================================================
     ; PHASE 4: HAUPTSPIEL-SCHLEIFE
@@ -1587,7 +1624,6 @@ game_over:
     jmp .wait_enter
 
 .do_restart:
-    call sound_start
     jmp init_snake_game
 
 .do_setup:
@@ -1997,72 +2033,25 @@ is_arena_wall:
     xor al, al                      ; ZF = 1
     ret
 
+draw_start_prompt:
 draw_start_box:
-    mov al, 24
-    mov bl, 9
+    mov al, 22
+    mov bl, 16
     call xy_to_di
-    mov ax, 0x0B01
-    stosw
-    mov cx, 31
-    mov ax, 0x0B05
-    rep stosw
-    mov ax, 0x0B02
-    stosw
-
-    mov dh, 10
-.start_box_mid:
-    mov al, 24
-    mov bl, dh
-    call xy_to_di
-    mov ax, 0x0B06
-    stosw
-    mov cx, 31
-    mov ax, 0x0720
-    rep stosw
-    mov ax, 0x0B06
-    stosw
-    inc dh
-    cmp dh, 15
-    jb .start_box_mid
-
-    mov al, 24
-    mov bl, 15
-    call xy_to_di
-    mov ax, 0x0B03
-    stosw
-    mov cx, 31
-    mov ax, 0x0B05
-    rep stosw
-    mov ax, 0x0B04
-    stosw
-
-    mov al, 30
-    mov bl, 11
-    call xy_to_di
-    mov si, str_start_title
-    mov ah, 0x0E
-    call print_string
-
-    mov al, 29
-    mov bl, 13
-    call xy_to_di
-    mov si, str_press_enter
-    mov ah, 0x0A
+    mov si, str_press_start
+    mov ah, 0x0E                    ; Bright Yellow
     call print_string
     ret
 
+erase_start_prompt:
 erase_start_box:
-    mov dh, 9
-.erase_loop:
-    mov al, 24
-    mov bl, dh
+    mov al, 22
+    mov bl, 16
     call xy_to_di
-    mov cx, 33
-    mov ax, 0x0720
+    mov cx, 36
+    mov ax, 0x0720                  ; Blank spaces
     rep stosw
-    inc dh
-    cmp dh, 16
-    jb .erase_loop
+    call draw_arena_obstacles       ; Redraw obstacles in case any was at row 16
     ret
 
 draw_snake:
@@ -3154,11 +3143,11 @@ sound_start:
     push ecx
     mov bx, 0x0713
     call force_speaker_tone
-    mov ecx, 10000000
+    mov ecx, 3000000                ; ~15 ms
     call delay_cycles
     mov bx, 0x054C
     call set_tone_freq
-    mov ecx, 15000000
+    mov ecx, 4000000                ; ~20 ms
     call delay_cycles
     call stop_tone
     pop ecx
@@ -3493,12 +3482,23 @@ sb16_play_pcm:
     cmp al, 7
     ja .skip_sb16
 
+    ; EBX = Sample Index (0..7) VOR jedem I/O-Port-Zugriff berechnen!
     movzx ebx, al
     imul ebx, 6
     mov esi, [cs:sample_table + ebx]
     movzx ecx, word [cs:sample_table + ebx + 4]
 
-    ; Copy sample from ROM [fs:esi] to RAM [es:di] (0x2000:0000)
+    ; 1. Acknowledge previous 16-bit & 8-bit IRQs to clear DSP latches
+    mov dx, 0x22F
+    in al, dx
+    mov dx, 0x22E
+    in al, dx
+
+    ; 2. Pause any previous 16-bit DMA (command 0xD5)
+    mov bl, 0xD5
+    call sb16_dsp_write
+
+    ; 3. Copy sample from ROM [fs:esi] to RAM [es:di] (0x2000:0000)
     mov ax, 0x2000
     mov es, ax
     xor di, di
@@ -3513,27 +3513,27 @@ sb16_play_pcm:
     dec edx
     jnz .copy_pcm_loop
 
-    ; Setup DMA Channel 5 (16-bit DMA)
-    dec cx
-    mov al, 5
+    ; 4. Setup DMA Channel 5 (16-bit DMA, Single-Cycle)
+    dec cx                          ; count in words - 1
+    mov al, 5                       ; Mask channel 5
     out 0xD4, al
-    xor al, al
+    xor al, al                      ; Clear flip-flop
     out 0xD8, al
-    mov al, 0x49
+    mov al, 0x49                    ; Single mode, address increment, read transfer
     out 0xD6, al
-    xor al, al
+    xor al, al                      ; Offset 0x0000
     out 0xC4, al
     out 0xC4, al
-    mov al, 0x02
+    mov al, 0x02                    ; Page 0x8B = 0x02 (phys 0x20000)
     out 0x8B, al
-    mov al, cl
+    mov al, cl                      ; Count low
     out 0xC6, al
-    mov al, ch
+    mov al, ch                      ; Count high
     out 0xC6, al
-    mov al, 1
+    mov al, 1                       ; Unmask channel 5
     out 0xD4, al
 
-    ; Setup DSP 4.xx
+    ; 5. Setup DSP 4.xx: Set sample rate 11025 Hz
     mov bl, 0x41
     call sb16_dsp_write
     mov bl, 0x2B
@@ -3541,13 +3541,14 @@ sb16_play_pcm:
     mov bl, 0x11
     call sb16_dsp_write
 
-    mov bl, 0xB6
+    ; 6. Command 0xB0: 16-bit Single-Cycle D/A Output (FIFO off)
+    mov bl, 0xB0
     call sb16_dsp_write
-    mov bl, 0x10
+    mov bl, 0x10                    ; Signed 16-bit mono
     call sb16_dsp_write
-    mov bl, cl
+    mov bl, cl                      ; Count low
     call sb16_dsp_write
-    mov bl, ch
+    mov bl, ch                      ; Count high
     call sb16_dsp_write
 
 .skip_sb16:
@@ -3735,11 +3736,11 @@ str_gold_lbl:
 str_controls:
     db "Controls: [WASD / Arrows] Move   [P / SPACE] Pause   [ESC] Setup", 0
 
-; Start Modal Box Strings
-str_start_title:
-    db "CYBFORGE RETRO SNAKE", 0
+; Start Prompt Strings
+str_press_start:
 str_press_enter:
-    db "Press [ENTER] to Start", 0
+str_start_title:
+    db "[ENTER / SPACE / MOVE]  Start Game", 0
 
 ; Pause Modal Box Strings
 str_paused_lbl:
