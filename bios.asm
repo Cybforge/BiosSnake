@@ -1103,38 +1103,40 @@ init_snake_game:
     ; =========================================================================
 game_loop:
     ; 1. Mini-Ticks Schleife gemaess CFG_SPEED
-    mov bp, 11                      ; Normal: 11 Ticks (~200ms, ~5.0 Schritte/Sekunde)
+    ; Spuerbar reaktionsschnelleres, praezises Tempo (nur etwas schneller fuer snappy Input):
+    ; Normal: 10 Ticks (~150ms, ~6.6 Schritte/Sekunde)
+    ; Fast:    7 Ticks (~105ms, ~9.5 Schritte/Sekunde)
+    ; Slow:   14 Ticks (~210ms, ~4.7 Schritte/Sekunde)
+    mov bp, 10
     cmp byte [CFG_SPEED], 1
     jne .chk_spd_slow
-    mov bp, 7                       ; Fast: 7 Ticks (~125ms, ~8.0 Schritte/Sekunde)
-    jmp .apply_dir_aspect
+    mov bp, 7
+    jmp .tick_loop
 .chk_spd_slow:
     cmp byte [CFG_SPEED], 2
-    jne .apply_dir_aspect
-    mov bp, 16                      ; Slow: 16 Ticks (~290ms, ~3.5 Schritte/Sekunde)
-
-.apply_dir_aspect:
-    mov al, [NEXT_DIR]
-    test al, 1
-    jnz .tick_loop                  ; Horizontal -> unveraendert
-    ; Vertikale Achse: bp * 1.25 fuer optische Gleichmaessigkeit
-    mov ax, bp
-    mov cx, 5
-    mul cx
-    shr ax, 2
-    mov bp, ax
+    jne .tick_loop
+    mov bp, 14
 
 .tick_loop:
     call handle_input
-    mov ecx, 4500000                ; ~18 ms
+    mov ecx, 3800000                ; ~15 ms Mini-Tick fuer schnelle Tastenabfrage
     call delay_cycles
     dec bp
     jnz .tick_loop
 
-    ; 2. Richtung uebernehmen & Schloss freigeben
+    ; 2. Richtung uebernehmen & gepufferten Tastendruck aktivieren
     mov al, [NEXT_DIR]
     mov [SNAKE_DIR], al
     mov byte [DIR_LOCKED], 0
+
+    ; Falls in diesem Schritt ein 2. Tastendruck (um die Ecke) gepuffert wurde:
+    mov al, [QUEUED_DIR]
+    cmp al, 0xFF
+    je .no_queued_dir
+    mov [NEXT_DIR], al
+    mov byte [QUEUED_DIR], 0xFF
+    mov byte [DIR_LOCKED], 1
+.no_queued_dir:
 
     ; 3. Neuen Kopf berechnen
     mov al, [SNAKE_X]
@@ -1616,17 +1618,30 @@ handle_input:
 
 .apply_new_dir:
     cmp byte [DIR_LOCKED], 0
-    jne .input_done
+    jne .chk_queue
 
+    ; Erste Drehung im aktuellen Schritt:
     mov bl, [SNAKE_DIR]
-    cmp cl, bl
+    cmp cl, bl                      ; Gleiche Richtung -> ignorieren
     je .input_done
-    xor bl, 2
-    cmp cl, bl
+    xor bl, 2                       ; Entgegengesetzte Richtung?
+    cmp cl, bl                      ; 180° Wende verboten!
     je .input_done
 
     mov [NEXT_DIR], cl
     mov byte [DIR_LOCKED], 1
+    ret
+
+.chk_queue:
+    ; Zweite Drehung vormerken (z.B. schneller Doppel-Klick um die Ecke):
+    mov bl, [NEXT_DIR]
+    cmp cl, bl                      ; Gleiche Richtung wie NEXT_DIR -> ignorieren
+    je .input_done
+    xor bl, 2                       ; Entgegengesetzt zu NEXT_DIR verboten!
+    cmp cl, bl
+    je .input_done
+
+    mov [QUEUED_DIR], cl            ; Im Puffer fuer den naechsten Schritt vormerken!
 
 .input_done:
     ret
@@ -2023,12 +2038,13 @@ drain_kbd:
     ret
 
 read_key:
+.rk_loop:
     in al, 0x64
     test al, 0x01
     jz .no_key
     in al, 0x60
     test al, 0x80
-    jnz .no_key
+    jnz .rk_loop                   ; Break-Codes (Taste losgelassen) direkt verwerfen
     ret
 .no_key:
     xor al, al
