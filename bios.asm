@@ -394,12 +394,8 @@ bios_start:
     xor ah, ah
     shl ax, 5               ; Offset = ASCII * 32
     mov di, ax
-    mov cx, 8
-.font_row_loop:
-    lodsb
-    stosb                   ; Scanline 2n
-    stosb                   ; Scanline 2n+1 (8x16 Font)
-    loop .font_row_loop
+    mov cx, 16
+    rep movsb               ; True 16-scanline 8x16 IBM VGA Font
     jmp .font_char_loop
 
 .font_done:
@@ -435,6 +431,11 @@ bios_start:
     jmp .logo_char_loop
 .logo_done:
     pop ds
+
+    ; Hardware Text-Cursor (CRTC 0x0A) deaktivieren (verhindert '_' Artefakt bei 0,0)
+    mov dx, 0x3D4
+    mov ax, 0x200A
+    out dx, ax
 
     ; Zurück in den Odd/Even Text-Mode bei 0xB8000 schalten
     mov dx, 0x3C4
@@ -4413,7 +4414,7 @@ str_vic_footer:
 
 
 ; =============================================================================
-; PHASE 8: CYBFORGE EXTENDED UEFI / BIOS INTERACTIVE SHELL v2.40
+; PHASE 8: CYBFORGE EXTENDED UEFI / BIOS INTERACTIVE SHELL v2.5
 ; =============================================================================
 bios_shell_main:
     call drain_kbd
@@ -4432,15 +4433,20 @@ bios_shell_main:
     cmp byte [CFG_SH_BANNER], 1
     je .sh_compact_banner
 
-    ; Full UEFI Interactive Shell v2.40 Device Map Banner
+    ; Full UEFI Interactive Shell v2.5 Device Table Banner
     mov si, str_sh_ban1
     mov ah, [SH_HIGH_ATTR]
     call sh_print_line
     mov si, str_sh_ban2
     mov ah, [SH_TEXT_ATTR]
     call sh_print_line
-    mov si, str_sh_ban3
+    call sh_newline
+
+    mov si, str_sh_map_hdr
     mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_sh_map_sep
+    mov ah, 0x08
     call sh_print_line
     mov si, str_sh_map1
     mov ah, 0x0B
@@ -4449,11 +4455,13 @@ bios_shell_main:
     mov ah, 0x0B
     call sh_print_line
     mov si, str_sh_map3
-    mov ah, 0x0B
+    mov ah, [SH_TEXT_ATTR]
     call sh_print_line
     mov si, str_sh_map4
-    mov ah, 0x0B
+    mov ah, [SH_TEXT_ATTR]
     call sh_print_line
+    call sh_newline
+
     mov si, str_sh_ban_hint
     mov ah, 0x0A
     call sh_print_line
@@ -4467,6 +4475,7 @@ bios_shell_main:
     mov si, str_sh_ban_hint
     mov ah, 0x0A
     call sh_print_line
+    call sh_newline
 
 .sh_prompt_init:
     mov byte [SH_CMD_LEN], 0
@@ -4504,9 +4513,9 @@ bios_shell_main:
     test dl, dl
     jz .sh_idle
 
-    ; Puffer-Limit (max 56 Zeichen) pruefen
+    ; Puffer-Limit (max 54 Zeichen innerhalb des Rahmens) pruefen
     mov bl, [SH_CMD_LEN]
-    cmp bl, 56
+    cmp bl, 54
     jae .sh_idle
     xor bh, bh
     mov [SH_CMD_BUF + bx], dl
@@ -4557,7 +4566,7 @@ bios_shell_main:
 .sh_on_enter:
     call sh_key_click
     ; Cursor '_' am Ende der Eingabezeile entfernen
-    mov byte [SH_CUR_COL], 0
+    mov byte [SH_CUR_COL], 2
     call sh_draw_input_no_cursor
     call sh_newline
 
@@ -4582,6 +4591,10 @@ bios_shell_main:
 
     ; Befehl auswerten & ausfuehren
     call sh_execute_command
+    ; Leerzeile zur optischen Trennung nach Befehlsausgabe (ausser nach cls)
+    cmp byte [SH_CUR_ROW], 2
+    jbe .sh_prompt_init
+    call sh_newline
     jmp .sh_prompt_init
 
 ; -----------------------------------------------------------------------------
@@ -4623,7 +4636,7 @@ sh_key_click:
     ret
 
 ; -----------------------------------------------------------------------------
-; SHELL THEME & SCREEN HELPERS
+; SHELL THEME & FRAMED CONSOLE HELPERS
 ; -----------------------------------------------------------------------------
 sh_init_theme:
     mov al, [CFG_SH_THEME]
@@ -4672,12 +4685,60 @@ sh_clear_screen:
     mov ah, [SH_BAR_ATTR]
     call print_string
 
-    ; Zeilen 1..23: Terminal Viewport
+    ; Zeilen 1..23: Terminal Viewport Hintergrund
     mov di, (1 * 80) * 2
     mov cx, 23 * 80
     mov ah, [SH_TEXT_ATTR]
     mov al, ' '
     rep stosw
+
+    ; Zeile 1: Oberer Doppelrahmen (Cols 0..79)
+    mov ah, 0x0B
+    call sh_fix_attr
+    mov di, (1 * 80) * 2
+    mov al, 0x01                    ; '┌'
+    stosw
+    mov cx, 78
+    mov al, 0x05                    ; '─'
+    rep stosw
+    mov al, 0x02                    ; '┐'
+    stosw
+
+    mov di, (1 * 80 + 4) * 2
+    mov si, str_sh_frame_top
+    mov ah, [SH_HIGH_ATTR]
+    call sh_fix_attr
+    call print_string
+
+    ; Zeilen 2..22: Seitliche Rahmenlinien '│' bei Spalte 0 und 79
+    mov ah, 0x0B
+    call sh_fix_attr
+    mov al, 0x06                    ; '│'
+    mov di, (2 * 80) * 2
+    mov cx, 21
+.sh_frame_sides:
+    mov [es:di], ax
+    mov [es:di + 79 * 2], ax
+    add di, 80 * 2
+    loop .sh_frame_sides
+
+    ; Zeile 23: Unterer Doppelrahmen (Cols 0..79)
+    mov ah, 0x0B
+    call sh_fix_attr
+    mov di, (23 * 80) * 2
+    mov al, 0x03                    ; '└'
+    stosw
+    mov cx, 78
+    mov al, 0x05                    ; '─'
+    rep stosw
+    mov al, 0x04                    ; '┘'
+    stosw
+
+    mov di, (23 * 80 + 4) * 2
+    mov si, str_sh_frame_bot
+    mov ah, [SH_HIGH_ATTR]
+    call sh_fix_attr
+    call print_string
 
     ; Zeile 24: Bottom Help Bar
     mov di, (24 * 80) * 2
@@ -4690,46 +4751,53 @@ sh_clear_screen:
     mov ah, [SH_BAR_ATTR]
     call print_string
 
-    mov byte [SH_CUR_ROW], 1
-    mov byte [SH_CUR_COL], 0
+    mov byte [SH_CUR_ROW], 2
+    mov byte [SH_CUR_COL], 2
     ret
 
 sh_newline:
-    mov byte [SH_CUR_COL], 0
+    mov byte [SH_CUR_COL], 2
     inc byte [SH_CUR_ROW]
-    cmp byte [SH_CUR_ROW], 23
+    cmp byte [SH_CUR_ROW], 22
     jbe .sh_nl_ok
-    mov byte [SH_CUR_ROW], 23
+    mov byte [SH_CUR_ROW], 22
     call sh_scroll_up
 .sh_nl_ok:
     ret
 
 sh_scroll_up:
-    push ds
     push si
     push di
     push cx
     push ax
 
+    push ds
     mov ax, es
     mov ds, ax                      ; DS = ES = 0xB800 fuer VRAM-Copy
-    mov si, (2 * 80) * 2            ; Quelle: Zeile 2
-    mov di, (1 * 80) * 2            ; Ziel:   Zeile 1
-    mov cx, 22 * 80                 ; 22 Zeilen (Zeilen 2..23 -> 1..22)
+    mov si, (3 * 80) * 2            ; Quelle: Zeile 3
+    mov di, (2 * 80) * 2            ; Ziel:   Zeile 2
+    mov cx, 20 * 80                 ; 20 Zeilen (Zeilen 3..22 -> 2..21)
     rep movsw
+    pop ds                          ; DS = 0x0000 sofort wiederherstellen!
+
+    ; Zeile 22 innerhalb des Rahmens (Spalten 1..78) leeren
+    mov di, (22 * 80 + 1) * 2
+    mov cx, 78
+    mov ah, [SH_TEXT_ATTR]
+    mov al, ' '
+    rep stosw
+
+    ; Rahmenlinien '│' auf Zeile 22 erneuern
+    mov ah, 0x0B
+    call sh_fix_attr
+    mov al, 0x06
+    mov [es:(22 * 80) * 2], ax
+    mov [es:(22 * 80 + 79) * 2], ax
 
     pop ax
     pop cx
     pop di
     pop si
-    pop ds                          ; DS = 0x0000 wiederherstellen
-
-    ; Zeile 23 leeren
-    mov di, (23 * 80) * 2
-    mov cx, 80
-    mov ah, [SH_TEXT_ATTR]
-    mov al, ' '
-    rep stosw
     ret
 
 sh_fix_attr:
@@ -4758,6 +4826,8 @@ sh_print_inline:
     inc si
     test al, al
     jz .spi_done
+    cmp byte [SH_CUR_COL], 78
+    jae .spi_done
     stosw
     inc byte [SH_CUR_COL]
     jmp .spi_loop
@@ -4777,6 +4847,8 @@ sh_print_char:
     push ax
     push bx
     push di
+    cmp byte [SH_CUR_COL], 78
+    jae .spc_skip
     call sh_fix_attr
     push ax
     mov al, [SH_CUR_COL]
@@ -4785,6 +4857,7 @@ sh_print_char:
     pop ax
     stosw
     inc byte [SH_CUR_COL]
+.spc_skip:
     pop di
     pop bx
     pop ax
@@ -4827,23 +4900,23 @@ sh_print_hex16:
 ; -----------------------------------------------------------------------------
 sh_draw_input_line:
     call sh_draw_input_no_cursor
-    ; Blinkenden/Hervorgehobenen Cursor '_' ans Ende setzen
+    ; Hervorgehobenen Cursor '_' ans Ende setzen
     mov al, '_'
     mov ah, [SH_HIGH_ATTR]
     call sh_print_char
     ret
 
 sh_draw_input_no_cursor:
-    ; Aktuelle ZeileSH_CUR_ROW komplett leeren
-    mov al, 0
+    ; Aktuelle Zeile SH_CUR_ROW innerhalb des Rahmens (Cols 1..78) leeren
+    mov al, 1
     mov bl, [SH_CUR_ROW]
     call xy_to_di
-    mov cx, 80
+    mov cx, 78
     mov ah, [SH_TEXT_ATTR]
     mov al, ' '
     rep stosw
 
-    mov byte [SH_CUR_COL], 0
+    mov byte [SH_CUR_COL], 2
     mov ah, [SH_PROMPT_ATTR]
 
     ; Prompt-Stil gemaess CFG_SH_PROMPT & SH_DIR_ID waehlen
@@ -4922,7 +4995,7 @@ sh_normalize_cmd:
     jb .snc_store
     cmp al, 'Z'
     ja .snc_store
-    add al, 32                      ; In Kleinbuchstaben umwandeln
+    add al, 32                      ; Nach Lowercase wandeln
 .snc_store:
     mov [SH_CLEAN_BUF + di], al
     inc si
@@ -4931,107 +5004,94 @@ sh_normalize_cmd:
     jmp .snc_copy_loop
 
 .snc_term:
-    ; Trailing Spaces entfernen
-.snc_trim_tail:
-    test di, di
-    jz .snc_write_zero
-    cmp byte [SH_CLEAN_BUF + di - 1], ' '
-    jne .snc_write_zero
-    dec di
-    jmp .snc_trim_tail
-.snc_write_zero:
     mov byte [SH_CLEAN_BUF + di], 0
     ret
 
 sh_match_cmd:
-    ; Vergleicht SH_CLEAN_BUF mit [cs:si].
-    ; Setzt CF=1 bei Treffer (Wortende 0 oder Space) und gibt in BX den Offset zum Argument zurueck!
+    ; Vergleicht [SH_CLEAN_BUF] mit Keyword [cs:si].
+    ; Setzt Carry (STC) bei Treffer und liefert BX = Offset des Arguments.
+    push si
     xor bx, bx
 .smc_loop:
     mov al, [cs:si]
     test al, al
-    jz .smc_end_pat
-    mov ah, [SH_CLEAN_BUF + bx]
-    cmp al, ah
+    jz .smc_end_kw
+    mov dl, [SH_CLEAN_BUF + bx]
+    cmp al, dl
     jne .smc_no
     inc si
     inc bx
     jmp .smc_loop
-.smc_end_pat:
-    mov ah, [SH_CLEAN_BUF + bx]
-    test ah, ah
-    jz .smc_yes
-    cmp ah, ' '
-    jne .smc_no
+.smc_end_kw:
+    mov dl, [SH_CLEAN_BUF + bx]
+    cmp dl, 0
+    je .smc_yes
+    cmp dl, ' '
+    je .smc_skip_arg_sp
+    jmp .smc_no
 .smc_skip_arg_sp:
     cmp byte [SH_CLEAN_BUF + bx], ' '
     jne .smc_yes
     inc bx
     jmp .smc_skip_arg_sp
 .smc_yes:
+    pop si
     stc
     ret
 .smc_no:
+    pop si
     clc
     ret
 
 sh_autocomplete:
-    ; Vervollstaendigt den aktuellen Praefix in SH_CMD_BUF anhand von sh_ac_table
     cmp byte [SH_CMD_LEN], 0
     je .sac_done
-    call sh_normalize_cmd
-    cmp byte [SH_CLEAN_BUF], 0
-    je .sac_done
-
     mov si, sh_ac_table
-.sac_next_entry:
+.sac_next_kw:
     mov al, [cs:si]
     test al, al
-    jz .sac_done                    ; Ende der Tabelle
-
-    push si
+    jz .sac_done
     xor bx, bx
 .sac_cmp:
-    mov ah, [SH_CLEAN_BUF + bx]
-    test ah, ah
-    jz .sac_match_found             ; Kompletter Praefix stimmt ueberein!
-    mov al, [cs:si]
-    test al, al
-    jz .sac_Try_next
-    cmp al, ah
-    jne .sac_Try_next
-    inc si
+    mov al, [SH_CMD_BUF + bx]
+    cmp al, 'A'
+    jb .sac_lc
+    cmp al, 'Z'
+    ja .sac_lc
+    add al, 32
+.sac_lc:
+    mov dl, [cs:si + bx]
+    test dl, dl
+    jz .sac_match
+    cmp al, dl
+    jne .sac_skip_kw
     inc bx
-    jmp .sac_cmp
-
-.sac_Try_next:
-    pop si
-.sac_skip_str:
-    mov al, [cs:si]
-    inc si
-    test al, al
-    jnz .sac_skip_str
-    jmp .sac_next_entry
-
-.sac_match_found:
-    pop si
+    cmp bl, [SH_CMD_LEN]
+    jb .sac_cmp
+.sac_match:
     xor bx, bx
-.sac_copy_full:
-    mov al, [cs:si]
+.sac_copy_kw:
+    mov al, [cs:si + bx]
     test al, al
-    jz .sac_copy_done
+    jz .sac_set_len
     mov [SH_CMD_BUF + bx], al
-    inc si
     inc bx
-    jmp .sac_copy_full
-.sac_copy_done:
+    jmp .sac_copy_kw
+.sac_set_len:
     mov [SH_CMD_LEN], bl
     call sh_key_click
+    ret
+.sac_skip_kw:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jnz .sac_skip_kw
+    jmp .sac_next_kw
 .sac_done:
     ret
 
 ; -----------------------------------------------------------------------------
-; SHELL COMMAND DISPATCHER & BUILT-IN COMMANDS
+; SHELL COMMAND DISPATCHER (23 Built-in Commands)
 ; -----------------------------------------------------------------------------
 sh_execute_command:
     ; 1. exit / quit / setup -> Zurueck ins BIOS Setup!
@@ -5311,21 +5371,29 @@ sh_execute_command:
 
 ; --- 5. MAP ---
 .do_sh_map:
-    mov si, str_sh_ban3
+    mov si, str_sh_map_hdr
     mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_sh_map_sep
+    mov ah, 0x08
     call sh_print_line
     mov si, str_sh_map1
     mov ah, 0x0B
     call sh_print_line
     mov si, str_sh_map2
+    mov ah, 0x0B
     call sh_print_line
     mov si, str_sh_map3
+    mov ah, [SH_TEXT_ATTR]
     call sh_print_line
     mov si, str_sh_map4
+    mov ah, [SH_TEXT_ATTR]
     call sh_print_line
     mov si, str_sh_map5
+    mov ah, 0x0A
     call sh_print_line
     mov si, str_sh_map6
+    mov ah, 0x0A
     call sh_print_line
     ret
 
@@ -5335,21 +5403,25 @@ sh_execute_command:
     mov ah, [SH_HIGH_ATTR]
     call sh_print_line
     mov si, str_sh_mm_sep
-    mov ah, [SH_TEXT_ATTR]
+    mov ah, 0x08
     call sh_print_line
     mov si, str_sh_mm1
+    mov ah, [SH_TEXT_ATTR]
     call sh_print_line
     mov si, str_sh_mm2
     call sh_print_line
     mov si, str_sh_mm3
     call sh_print_line
     mov si, str_sh_mm4
+    mov ah, 0x0B
     call sh_print_line
     mov si, str_sh_mm5
+    mov ah, [SH_TEXT_ATTR]
     call sh_print_line
     mov si, str_sh_mm6
     call sh_print_line
     mov si, str_sh_mm7
+    mov ah, 0x0B
     call sh_print_line
     mov si, str_sh_mm8
     call sh_print_line
@@ -5360,7 +5432,6 @@ sh_execute_command:
 
 ; --- 7. LS / DIR ---
 .do_sh_ls:
-    ; Optionales Argument pruefen (z.B. 'ls audio', 'ls efi', 'ls diag')
     mov al, [SH_CLEAN_BUF + bx]
     cmp al, 'e'
     je .ls_efi
@@ -5380,28 +5451,32 @@ sh_execute_command:
     ; Root FS0:    mov si, str_ls_root_hdr
     mov ah, [SH_HIGH_ATTR]
     call sh_print_line
+    mov si, str_ls_col_hdr
+    mov ah, 0x08
+    call sh_print_line
     mov si, str_ls_r1
-    mov ah, 0x0A
+    mov ah, 0x0B                    ; Cyan fuer <DIR>
     call sh_print_line
     mov si, str_ls_r2
     call sh_print_line
     mov si, str_ls_r3
     call sh_print_line
     mov si, str_ls_r4
-    mov ah, [SH_TEXT_ATTR]
+    mov ah, 0x0A                    ; Hellgruen fuer .ROM / .EFI
     call sh_print_line
     mov si, str_ls_r5
     call sh_print_line
     mov si, str_ls_r6
     call sh_print_line
     mov si, str_ls_r7
+    mov ah, [SH_TEXT_ATTR]          ; Standard fuer .NSH / .CFG / .TXT
     call sh_print_line
     mov si, str_ls_r8
     call sh_print_line
     mov si, str_ls_r9
     call sh_print_line
     mov si, str_ls_r_tot
-    mov ah, 0x0B
+    mov ah, [SH_HIGH_ATTR]
     call sh_print_line
     ret
 
@@ -5410,13 +5485,14 @@ sh_execute_command:
     mov ah, [SH_HIGH_ATTR]
     call sh_print_line
     mov si, str_ls_e1
-    mov ah, [SH_TEXT_ATTR]
+    mov ah, 0x0A
     call sh_print_line
     mov si, str_ls_e2
     call sh_print_line
     mov si, str_ls_e3
     call sh_print_line
     mov si, str_ls_e4
+    mov ah, 0x0B
     call sh_print_line
     mov si, str_ls_e5
     call sh_print_line
@@ -5436,12 +5512,7 @@ sh_execute_command:
     mov si, str_ls_a3
     call sh_print_line
     mov si, str_ls_a4
-    call sh_print_line
-    mov si, str_ls_a5
-    call sh_print_line
-    mov si, str_ls_a6
-    call sh_print_line
-    mov si, str_ls_a7
+    mov ah, 0x0A
     call sh_print_line
     ret
 
@@ -5450,7 +5521,7 @@ sh_execute_command:
     mov ah, [SH_HIGH_ATTR]
     call sh_print_line
     mov si, str_ls_d1
-    mov ah, [SH_TEXT_ATTR]
+    mov ah, 0x0A
     call sh_print_line
     mov si, str_ls_d2
     call sh_print_line
@@ -5495,30 +5566,57 @@ sh_execute_command:
 ; --- 9. CAT / TYPE ---
 .do_sh_cat:
     mov al, [SH_CLEAN_BUF + bx]
-    cmp al, 's'                     ; startup.nsh
-    je .cat_startup
+    test al, al
+    jz .cat_no_arg
+    cmp al, 's'                     ; startup.nsh / snake.efi / shell.efi
+    je .cat_s_files
     cmp al, 'r'                     ; readme.txt
     je .cat_readme
     cmp al, 'c'                     ; cmos.cfg
     je .do_sh_cmos
+    cmp al, 'b'                     ; bios.rom
+    je .cat_bios_rom
+
+    ; Datei nicht gefunden -> Klare Fehlermeldung in Rot!
+    mov si, str_cat_nf_pfx
+    mov ah, 0x0C
+    call sh_print_inline
+    mov si, str_cat_nf_sfx
+    mov ah, 0x0C
+    call sh_print_line
+    ret
+
+.cat_no_arg:
     mov si, str_cat_usage
     mov ah, 0x0E
     call sh_print_line
     ret
+
+.cat_s_files:
+    cmp byte [SH_CLEAN_BUF + bx + 1], 't'
+    je .cat_startup
+    ; snake.efi / shell.efi -> Live Binary Header Dump
+.cat_bios_rom:
+    mov word [SH_DUMP_ADDR], 0x8000
+    jmp .dmem_use_cur
+
 .cat_startup:
     mov si, str_cat_st1
-    mov ah, 0x0A
+    mov ah, 0x0B
     call sh_print_line
     mov si, str_cat_st2
-    mov ah, [SH_TEXT_ATTR]
+    mov ah, 0x0A
     call sh_print_line
     mov si, str_cat_st3
+    mov ah, [SH_TEXT_ATTR]
     call sh_print_line
     mov si, str_cat_st4
     call sh_print_line
     mov si, str_cat_st5
+    mov ah, 0x0E
     call sh_print_line
     ret
+
 .cat_readme:
     mov si, str_cat_rm1
     mov ah, [SH_HIGH_ATTR]
@@ -5529,7 +5627,7 @@ sh_execute_command:
     mov si, str_cat_rm3
     call sh_print_line
     mov si, str_cat_rm4
-    mov ah, 0x0B
+    mov ah, 0x0A
     call sh_print_line
     ret
 
@@ -5629,7 +5727,6 @@ sh_execute_command:
     mov ah, [SH_HIGH_ATTR]
     call sh_print_line
 
-    ; Zeile 1: CMOS 0x40..0x4F live aus Port 0x70/0x71 lesen
     mov si, str_cmos_r40
     mov ah, 0x0B
     call sh_print_inline
@@ -5647,7 +5744,6 @@ sh_execute_command:
     jb .cm_loop1
     call sh_newline
 
-    ; Zeile 2: CMOS 0x50..0x5F live aus Port 0x70/0x71 lesen
     mov si, str_cmos_r50
     mov ah, 0x0B
     call sh_print_inline
@@ -5672,7 +5768,6 @@ sh_execute_command:
 
 ; --- 14. DMEM [HEX_ADDR] (Live Hex + ASCII Memory Dump) ---
 .do_sh_dmem:
-    ; Optionales Hex-Argument in [SH_CLEAN_BUF + bx] parsen
     mov al, [SH_CLEAN_BUF + bx]
     test al, al
     jz .dmem_use_cur
@@ -5700,13 +5795,11 @@ sh_execute_command:
     mov [SH_DUMP_ADDR], dx
 
 .dmem_use_cur:
-    ; 4 Zeilen a 16 Bytes = 64 Bytes dumpen
     mov cx, 4
 .dmem_row_loop:
     push cx
     mov dx, [SH_DUMP_ADDR]
 
-    ; Segment-Prefix: 0000: (fuer RAM < 0x8000) oder F000: (fuer ROM >= 0x8000)
     mov si, str_seg_ram
     cmp dx, 0x8000
     jb .dmem_pr_seg
@@ -5718,9 +5811,7 @@ sh_execute_command:
     call sh_print_hex16
     mov al, ' '
     call sh_print_char
-    call sh_print_char
 
-    ; 16 Hex-Bytes ausgeben
     mov bp, [SH_DUMP_ADDR]
     mov cx, 16
 .dmem_hex_loop:
@@ -5742,7 +5833,6 @@ sh_execute_command:
     mov ah, 0x08
     call sh_print_char
 
-    ; 16 ASCII-Zeichen ausgeben
     mov bp, [SH_DUMP_ADDR]
     mov cx, 16
 .dmem_asc_loop:
@@ -5783,7 +5873,6 @@ sh_execute_command:
     mov ah, [SH_HIGH_ATTR]
     call sh_print_inline
 
-    ; Jahr (20YY)
     mov al, '2'
     mov ah, 0x0B
     call sh_print_char
@@ -5796,7 +5885,6 @@ sh_execute_command:
     mov al, '-'
     call sh_print_char
 
-    ; Monat (0x08)
     mov al, 0x08
     call cmos_read_byte
     mov dl, al
@@ -5804,7 +5892,6 @@ sh_execute_command:
     mov al, '-'
     call sh_print_char
 
-    ; Tag (0x07)
     mov al, 0x07
     call cmos_read_byte
     mov dl, al
@@ -5813,7 +5900,6 @@ sh_execute_command:
     call sh_print_char
     call sh_print_char
 
-    ; Stunde (0x04)
     mov al, 0x04
     call cmos_read_byte
     mov dl, al
@@ -5822,7 +5908,6 @@ sh_execute_command:
     mov al, ':'
     call sh_print_char
 
-    ; Minute (0x02)
     mov al, 0x02
     call cmos_read_byte
     mov dl, al
@@ -5830,7 +5915,6 @@ sh_execute_command:
     mov al, ':'
     call sh_print_char
 
-    ; Sekunde (0x00)
     mov al, 0x00
     call cmos_read_byte
     mov dl, al
@@ -5851,7 +5935,7 @@ sh_execute_command:
     sub al, '0'
     jmp .snd_play_it
 .snd_default:
-    mov al, 3                       ; Default: Sample 3 (SND_START)
+    mov al, 3
 .snd_play_it:
     push ax
     call sb16_play_pcm
@@ -5922,13 +6006,12 @@ sh_execute_command:
     call sh_newline
     ret
 
-; --- 18. MEMTEST (64KB Pattern Verification) ---
+; --- 18. MEMTEST (Live 64KB RAM Pattern Verification) ---
 .do_sh_memtest:
     mov si, str_mt_1
     mov ah, [SH_HIGH_ATTR]
     call sh_print_line
 
-    ; Echter R/W Test im Segment 0x2000
     push es
     mov ax, 0x2000
     mov es, ax
@@ -5936,12 +6019,14 @@ sh_execute_command:
     mov cx, 32768
     mov ax, 0x55AA
     rep stosw
+
     xor di, di
     mov cx, 32768
     mov ax, 0xAA55
     rep stosw
     pop es
 
+    call sound_toggle
     mov si, str_mt_2
     mov ah, 0x0A
     call sh_print_line
@@ -6001,13 +6086,13 @@ sh_execute_command:
 
 ; --- 22. SNAKE / BOOT ---
 .do_sh_snake:
-    pop ax                          ; Return-Adresse verwerfen
+    pop ax
     call apply_color_theme
     jmp init_snake_game
 
 ; --- 23. REBOOT / RESET ---
 .do_sh_reboot:
-    pop ax                          ; Return-Adresse verwerfen
+    pop ax
     call apply_color_theme
     jmp post_screen
 
@@ -6018,35 +6103,25 @@ sh_hex_chars:
     db "0123456789ABCDEF"
 
 sh_scancode_norm:
-    ;  00   01   02   03   04   05   06   07   08   09   0A   0B   0C   0D   0E   0F
     db 0,   0,  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=',  0,   0
-    ;  10   11   12   13   14   15   16   17   18   19   1A   1B   1C   1D   1E   1F
     db 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']',  0,   0,  'a', 's'
-    ;  20   21   22   23   24   25   26   27   28   29   2A   2B   2C   2D   2E   2F
     db 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', "'", '`',  0,  '\','z', 'x', 'c', 'v'
-    ;  30   31   32   33   34   35   36   37   38   39   3A..57
     db 'b', 'n', 'm', ',', '.', '/',  0,  '*',  0,  ' '
     times 30 db 0
 
 sh_scancode_shift:
-    ;  00   01   02   03   04   05   06   07   08   09   0A   0B   0C   0D   0E   0F
     db 0,   0,  '!', '@', '#', '$', '%', '^', '/', '*', '(', ')', '_', '+',  0,   0
-    ;  10   11   12   13   14   15   16   17   18   19   1A   1B   1C   1D   1E   1F
     db 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}',  0,   0,  'A', 'S'
-    ;  20   21   22   23   24   25   26   27   28   29   2A   2B   2C   2D   2E   2F
     db 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',  0,  '|', 'Z', 'X', 'C', 'V'
-    ;  30   31   32   33   34   35   36   37   38   39   3A..57
     db 'B', 'N', 'M', ';', ':', '?',  0,  '*',  0,  ' '
     times 30 db 0
 
-; Auto-Completion Befehlstabelle
 sh_ac_table:
     db "help", 0, "memmap", 0, "memtest", 0, "map", 0, "sysinfo", 0, "neofetch", 0
     db "devices", 0, "devtree", 0, "dmem ", 0, "cmos", 0, "cpu", 0, "regs", 0
     db "time", 0, "sound ", 0, "color ", 0, "clear", 0, "snake", 0, "reboot", 0
     db "exit", 0, "cat ", 0, "cd ", 0, 0
 
-; Command Keywords
 cmd_exit:       db "exit", 0
 cmd_quit:       db "quit", 0
 cmd_setup:      db "setup", 0
@@ -6164,26 +6239,30 @@ str_val_shbt_shl:
 str_opt_sh_reset:
     db "Reset Shell Cfg   : [ Press ENTER ]", 0
 str_sh_tab_status:
-    db "EFI Shell v2.40 Ready | Type 'exit' in Shell to return to Setup", 0
+    db "UEFI Shell v2.5 Ready | Type 'exit' in Shell to return to Setup", 0
 
 str_help_tab:
-    db "Press [TAB] or [Left/Right] to switch between Main & BiosShell tabs.", 0
+    db "Switch between [1: Main & Game] and [2: BiosShell] via TAB.", 0
 str_help_sh1:
-    db "Press [ENTER] to launch the interactive Cybforge UEFI/BIOS Shell!", 0
+    db "Press [ENTER] to open the interactive Cybforge BIOS Shell.", 0
 str_help_sh2:
     db "Select terminal color palette for the interactive BIOS Shell.", 0
 str_help_sh3:
-    db "Choose command prompt format (FS0:\>, SHELL>, or root@cybforge:#).", 0
+    db "Choose command prompt format (FS0:\>, SHELL>, root@cybforge).", 0
 str_help_sh4:
-    db "Configure device mapping table banner shown when entering Shell.", 0
+    db "Configure device table banner displayed when entering Shell.", 0
 str_help_sh5:
-    db "Enable or mute acoustic keystroke feedback inside the BIOS Shell.", 0
+    db "Enable or mute tactile keystroke sound inside the BIOS Shell.", 0
 str_help_sh6:
-    db "Choose whether POST countdown boots into Snake or directly to Shell.", 0
+    db "Choose whether POST boots Snake Game or directly to BiosShell.", 0
 
-; --- BIOS Shell UI & Output Strings ---
+; --- Framed BIOS Shell UI & Output Strings (All <= 74 Chars for Cols 2..77) ---
 str_sh_topbar:
-    db "CYBFORGE UEFI/BIOS SHELL v2.40 [x86 Unreal 32-Bit]   ROM: 256KB  RAM: 640KB", 0
+    db "CYBFORGE UEFI/BIOS SHELL v2.5 [x86 Unreal 32-Bit]    ROM: 256KB  RAM: 640KB", 0
+str_sh_frame_top:
+    db " Cybforge Interactive UEFI/BIOS Console [FS0:\] ", 0
+str_sh_frame_bot:
+    db " Type 'help' for Commands | 'exit' to Return to BIOS Setup ", 0
 str_sh_botbar:
     db "[HELP] Cmds  [MAP] Map  [LS] Files  [MEMMAP] RAM  [SYSINFO] Info  [EXIT] Setup", 0
 
@@ -6195,60 +6274,62 @@ str_pr_compact:     db "SHELL> ", 0
 str_pr_root:        db "root@cybforge:# ", 0
 
 str_sh_ban1:
-    db "UEFI/BIOS Interactive Shell v2.40 [Cybforge Firmware rev 256.4]", 0
+    db "Cybforge UEFI/BIOS Interactive Shell v2.5 [Firmware Build 256.5]", 0
 str_sh_ban2:
-    db "Current running mode 1.1.2 (Flat 32-Bit Unreal Addressing Active)", 0
-str_sh_ban3:
-    db "Device mapping table:", 0
+    db "Execution Mode: x86 16-Bit Real + 32-Bit Flat Unreal (4 GB Address Space)", 0
+str_sh_map_hdr:
+    db "Handle  Media Type    Capacity   Hardware Device Path", 0
+str_sh_map_sep:
+    db "------  ------------  ---------  -----------------------------------------", 0
 str_sh_map1:
-    db "  FS0  :ROMDisk  - Alias:ROM0:;PciRoot(0x0)/FlashRom(Bank3,64KB,0xFFFF0000)", 0
+    db "FS0:    ROM Disk      64 KB      PciRoot(0)/FlashRom(Bank3, 0xFFFF0000)", 0
 str_sh_map2:
-    db "  BLK0 :WaveBank - Alias:SND0:;PciRoot(0x0)/PcmAudio(128KB,16Bit,0xFFFD0000)", 0
+    db "BLK0:   Wave Audio    128 KB     PciRoot(0)/PcmAudio(16-Bit, 0xFFFD0000)", 0
 str_sh_map3:
-    db "  BLK1 :SysRAM   - Alias:MEM0:;SystemMemory(Base640KB,0x00000000-0x0009FFFF)", 0
+    db "BLK1:   System RAM    640 KB     SystemMemory(Conventional, 0x00000000)", 0
 str_sh_map4:
-    db "  CMOS0:NVRAM    - Alias:RTC0:;IsaBridge(0x70,0x71)/Mc146818(128B,Chksum:OK)", 0
+    db "CMOS0:  RTC NVRAM     128 Bytes  IsaBridge(0x70)/MC146818(Chksum: Valid)", 0
 str_sh_map5:
-    db "  VGA0 :Display  - Alias:CON0:;Pci(0x0,0x2)/VgaController(80x25,VRAM:0xB8000)", 0
+    db "VGA0:   Text Display  128 KB     Pci(0,2)/VgaController(80x25, VRAM:B800h)", 0
 str_sh_map6:
-    db "  SB16 :AudioDSP - Alias:DSP0:;Isa(0x220)/SoundBlaster16(DMA5,11025Hz,16Bit)", 0
+    db "SB16:   Audio DSP     DMA Ch 5   IsaBridge(0x220)/SoundBlaster16(11025 Hz)", 0
 str_sh_ban_hint:
-    db "Type 'help' for commands, 'sysinfo' for telemetry, or 'exit' for BIOS Setup.", 0
+    db "Ready. Type 'help' for command list, 'ls' for files, or 'exit' for Setup.", 0
 
 str_sh_err_pfx:
-    db "Error: '", 0
+    db "Error: Unknown command '", 0
 str_sh_err_sfx:
-    db "' is not recognized. Type 'help' for available commands.", 0
+    db "'. Type 'help' for available commands.", 0
 
 str_sh_hlp_hdr:
-    db "Cybforge UEFI/BIOS Interactive Shell v2.40 - Command Reference:", 0
+    db "Cybforge UEFI/BIOS Shell v2.5 - Built-In Command Reference:", 0
 str_sh_hlp1:
-    db "  help / ?     Show this command list     ver          Firmware & Shell info", 0
+    db "help / ?     Show command reference    ver          Firmware & Shell info", 0
 str_sh_hlp2:
-    db "  map          Show EFI device mapping    memmap       Physical E820 RAM map", 0
+    db "map          Show device mapping       memmap       Physical E820 RAM map", 0
 str_sh_hlp3:
-    db "  ls / dir     List files in ROM disk     cd <dir>     Change dir (efi/audio)", 0
+    db "ls / dir     List files in ROM disk    cd <dir>     Change dir (efi/audio)", 0
 str_sh_hlp4:
-    db "  cat <file>   View startup.nsh / readme  dmem [hex]   Live 64B Hex/ASCII dump", 0
+    db "cat <file>   View startup.nsh/readme   dmem [hex]   Live 64B Hex/ASCII dump", 0
 str_sh_hlp5:
-    db "  sysinfo      ASCII emblem & telemetry   pci/devtree  Enumerate PCI/ISA bus", 0
+    db "sysinfo      ASCII emblem & telemetry  pci/devtree  Enumerate PCI/ISA bus", 0
 str_sh_hlp6:
-    db "  cpu / regs   Dump live x86 registers    cmos / nvram Dump CMOS NVRAM bytes", 0
+    db "cpu / regs   Dump live x86 registers   cmos / nvram Dump CMOS NVRAM bytes", 0
 str_sh_hlp7:
-    db "  time / date  Read hardware RTC clock    sound [0-7]  Play 16-bit PCM wave", 0
+    db "time / date  Read hardware RTC clock   sound [0-7]  Play 16-bit PCM wave", 0
 str_sh_hlp8:
-    db "  io / ports   Read live I/O port states  memtest      Run 64KB RAM test", 0
+    db "io / ports   Read live I/O ports       memtest      Run 64KB RAM test", 0
 str_sh_hlp9:
-    db "  color [0-3]  Switch shell color theme   echo <text>  Print text to screen", 0
+    db "color [0-3]  Switch shell color theme  echo <text>  Print text to screen", 0
 str_sh_hlp10:
-    db "  cls / clear  Clear terminal screen      snake / boot Launch SNAKE.EFI game", 0
+    db "cls / clear  Clear terminal viewport   snake / boot Launch SNAKE.EFI game", 0
 str_sh_hlp11:
-    db "  reboot       Warm reset to BIOS POST    exit / quit  Return to BIOS Setup!", 0
+    db "reboot       Warm reset to BIOS POST   exit / quit  Return to BIOS Setup!", 0
 
 str_sh_ver1:
-    db "UEFI Interactive Shell v2.40 [Cybforge x86-16/32 Bare-Metal Edition]", 0
+    db "Cybforge UEFI Interactive Shell v2.5 [x86-16/32 Bare-Metal Edition]", 0
 str_sh_ver2:
-    db "  Firmware Vendor : Cybforge Systems Inc. (Build 11/02/2026, Rev 2.40-PRO)", 0
+    db "  Firmware Vendor : Cybforge Systems Inc. (Rev 2.50-PRO, 8x16 VGA Font)", 0
 str_sh_ver3:
     db "  ROM Image Layout: 262,144 Bytes (256 KB across 4x 64KB Banks 0xFFFC0000+)", 0
 str_sh_ver4:
@@ -6257,128 +6338,131 @@ str_sh_ver5:
     db "  Audio Engine    : Creative Sound Blaster 16 DSP v4.05 (16-Bit DMA Ch 5)", 0
 
 str_sh_mm_hdr:
-    db "Type          Start      End        Size     Description / Attributes", 0
+    db "Region Type   Start      End        Size    Description", 0
 str_sh_mm_sep:
-    db "============  =========  =========  =======  ================================", 0
+    db "------------  ---------  ---------  ------  ------------------------------", 0
 str_sh_mm1:
-    db "RT_Code       00000000h  000004FFh     1 KB  Real-Mode IVT & BIOS Data Area", 0
+    db "RT_Code       00000000h  000004FFh    1 KB  Real-Mode IVT & BIOS Data Area", 0
 str_sh_mm2:
-    db "BS_Data       00001000h  00001FFFh     4 KB  Cybforge Kernel & Shell State", 0
+    db "BS_Data       00001000h  00001FFFh    4 KB  Cybforge Kernel & Shell State", 0
 str_sh_mm3:
-    db "Conventional  00002000h  0001FFFFh   120 KB  Free Low Conventional Memory", 0
+    db "Conventional  00002000h  0001FFFFh  120 KB  Free Low Conventional Memory", 0
 str_sh_mm4:
-    db "DMA_Buffer    00020000h  0002FFFFh    64 KB  SB16 16-Bit PCM DMA Bounce RAM", 0
+    db "DMA_Buffer    00020000h  0002FFFFh   64 KB  SB16 16-Bit PCM DMA Bounce RAM", 0
 str_sh_mm5:
-    db "Conventional  00030000h  0009FFFFh   448 KB  Available Base System Memory", 0
+    db "Conventional  00030000h  0009FFFFh  448 KB  Available Base System Memory", 0
 str_sh_mm6:
-    db "MMIO_VRAM     000A0000h  000BFFFFh   128 KB  VGA Graphics & Text VRAM (B800h)", 0
+    db "MMIO_VRAM     000A0000h  000BFFFFh  128 KB  VGA Graphics & Text VRAM", 0
 str_sh_mm7:
-    db "Audio_ROM     FFFD0000h  FFFEFFFFh   128 KB  16-Bit Signed PCM Wave ROM Bank", 0
+    db "Audio_ROM     FFFD0000h  FFFEFFFFh  128 KB  16-Bit Signed PCM Wave Bank", 0
 str_sh_mm8:
-    db "Runtime_ROM   FFFF0000h  FFFFFFFFh    64 KB  BIOS System Block 3 & Reset Vec", 0
+    db "Runtime_ROM   FFFF0000h  FFFFFFFFh   64 KB  BIOS System Block 3 & Reset", 0
 str_sh_mm_tot:
-    db "Summary: 640 KB Base RAM | 15,360 KB Extended | 256 KB Flash ROM (0 Errors)", 0
+    db "Total: 640 KB Base RAM | 15,360 KB Extended | 256 KB Flash ROM (0 Errors)", 0
 
 str_ls_root_hdr:
-    db "Directory of: FS0:\ (Cybforge 256KB ROM Filesystem)", 0
+    db "Directory of FS0:\ (Cybforge 256KB ROM Filesystem)", 0
+str_ls_col_hdr:
+    db "Type     Size       Name          Description", 0
 str_ls_r1:
-    db "  11/02/2026  12:00  <DIR>          EFI", 0
+    db "<DIR>    -          EFI           Boot Loaders & Hardware Drivers", 0
 str_ls_r2:
-    db "  11/02/2026  12:00  <DIR>          AUDIO", 0
+    db "<DIR>    -          AUDIO         16-Bit PCM WAV Sound Bank (11,025 Hz)", 0
 str_ls_r3:
-    db "  11/02/2026  12:00  <DIR>          DIAG", 0
+    db "<DIR>    -          DIAG          Hardware & Memory Diagnostic Tools", 0
 str_ls_r4:
-    db "  11/02/2026  12:00         65,536  BIOS.ROM", 0
+    db "[ROM]     65,536 B  BIOS.ROM      System BIOS & Reset Vector Image", 0
 str_ls_r5:
-    db "  11/02/2026  12:00         24,576  SNAKE.EFI", 0
+    db "[EFI]     24,576 B  SNAKE.EFI     Cybforge Retro Snake Arcade Engine", 0
 str_ls_r6:
-    db "  11/02/2026  12:00          8,192  SHELL.EFI", 0
+    db "[EFI]      8,192 B  SHELL.EFI     Interactive UEFI/BIOS Shell v2.5", 0
 str_ls_r7:
-    db "  11/02/2026  12:00            384  STARTUP.NSH", 0
+    db "[NSH]        384 B  STARTUP.NSH   Automated UEFI Boot Script", 0
 str_ls_r8:
-    db "  11/02/2026  12:00            128  CMOS.CFG", 0
+    db "[CFG]        128 B  CMOS.CFG      Non-Volatile CMOS Settings Map", 0
 str_ls_r9:
-    db "  11/02/2026  12:00            640  README.TXT", 0
+    db "[TXT]        640 B  README.TXT    Architecture & Command Documentation", 0
 str_ls_r_tot:
-    db "           6 File(s)     99,456 Bytes | 3 Dir(s) (Use 'cd' or 'cat')", 0
+    db "6 File(s) (99,456 Bytes) | 3 Dir(s)  [Use 'cd <dir>' or 'cat <file>']", 0
 
 str_ls_efi_hdr:
-    db "Directory of: FS0:\EFI (Executable Boot Modules & Drivers)", 0
+    db "Directory of FS0:\EFI (Executable Boot Modules & Drivers):", 0
 str_ls_e1:
-    db "  11/02/2026  12:00         16,384  BOOTX86.EFI   (x86 Real/Unreal Loader)", 0
+    db "[EFI]     16,384 B  BOOTX86.EFI   x86 Real/Unreal Mode System Loader", 0
 str_ls_e2:
-    db "  11/02/2026  12:00         24,576  SNAKE.EFI     (Run via 'snake')", 0
+    db "[EFI]     24,576 B  SNAKE.EFI     Retro Snake Game (Run via 'snake')", 0
 str_ls_e3:
-    db "  11/02/2026  12:00          8,192  SHELL.EFI     (Active UEFI Shell v2.40)", 0
+    db "[EFI]      8,192 B  SHELL.EFI     Active Interactive Shell v2.5", 0
 str_ls_e4:
-    db "  11/02/2026  12:00          4,096  SB16DMA.DRV   (16-Bit DMA Ch 5 Driver)", 0
+    db "[DRV]      4,096 B  SB16DMA.DRV   Sound Blaster 16 DMA Ch 5 Driver", 0
 str_ls_e5:
-    db "  11/02/2026  12:00          2,048  VGADAC.DRV    (Hardware Color Themes)", 0
+    db "[DRV]      2,048 B  VGADAC.DRV    VGA Hardware Color Palette Driver", 0
 
 str_ls_aud_hdr:
-    db "Directory of: FS0:\AUDIO (16-Bit PCM WAV Samples @ 11,025 Hz in ROM):", 0
+    db "Directory of FS0:\AUDIO (16-Bit PCM WAV Samples @ 11,025 Hz):", 0
 str_ls_a0:
-    db "  [0] CRUNCH.WAV  0xFFFD0000   4,412 B   [4] PAUSE.WAV    0xFFFD8588   3,528 B", 0
+    db "[0] CRUNCH.WAV  4,412B (FFFD0000h)   [4] PAUSE.WAV     3,528B (FFFD8588h)", 0
 str_ls_a1:
-    db "  [1] GOLDEN.WAV  0xFFFD113C  12,128 B   [5] BOOT.WAV     0xFFFD9350  11,028 B", 0
+    db "[1] GOLDEN.WAV 12,128B (FFFD113Ch)   [5] BOOT.WAV     11,028B (FFFD9350h)", 0
 str_ls_a2:
-    db "  [2] CRASH.WAV   0xFFFD409C   9,924 B   [6] GAMEOVER.WAV 0xFFFDBE64  18,744 B", 0
+    db "[2] CRASH.WAV   9,924B (FFFD409Ch)   [6] GAMEOVER.WAV 18,744B (FFFDBE64h)", 0
 str_ls_a3:
-    db "  [3] START.WAV   0xFFFD6760   7,720 B   [7] VICTORY.WAV  0xFFFE079C  24,256 B", 0
+    db "[3] START.WAV   7,720B (FFFD6760h)   [7] VICTORY.WAV  24,256B (FFFE079Ch)", 0
 str_ls_a4:
-    db "  Total: 8 PCM Waveforms (91,740 Bytes). Type 'sound 0'..'sound 7' to play!", 0
-str_ls_a5: db 0
-str_ls_a6: db 0
-str_ls_a7: db 0
+    db "Total: 8 Studio PCM Waveforms (91,740 Bytes). Run 'sound 0'..'sound 7'!", 0
 
 str_ls_diag_hdr:
-    db "Directory of: FS0:\DIAG (Hardware Diagnostic Tools):", 0
+    db "Directory of FS0:\DIAG (Hardware Diagnostic Suite):", 0
 str_ls_d1:
-    db "  11/02/2026  12:00          4,096  MEMTEST.EFI   (Execute via 'memtest')", 0
+    db "[EFI]      4,096 B  MEMTEST.EFI   64 KB RAM Pattern Test (Run 'memtest')", 0
 str_ls_d2:
-    db "  11/02/2026  12:00          2,048  CMOSTEST.EFI  (Execute via 'cmos')", 0
+    db "[EFI]      2,048 B  CMOSTEST.EFI  NVRAM Register Inspector (Run 'cmos')", 0
 str_ls_d3:
-    db "  11/02/2026  12:00          3,072  AUDIOTST.EFI  (Execute via 'sound')", 0
+    db "[EFI]      3,072 B  AUDIOTST.EFI  SB16 PCM DMA Testbench (Run 'sound')", 0
 
 str_cd_err:
-    db "Directory not found. Valid directories: \, efi, audio, diag", 0
+    db "Error: Directory not found. Valid directories: \, efi, audio, diag", 0
 str_cat_usage:
-    db "Usage: cat startup.nsh | cat readme.txt | cat cmos.cfg", 0
+    db "Usage: cat <filename>  (Files: startup.nsh, readme.txt, cmos.cfg, bios.rom)", 0
+str_cat_nf_pfx:
+    db "Error: File not found in FS0:\", 0
+str_cat_nf_sfx:
+    db " (Use 'ls' to view available files).", 0
 
 str_cat_st1:
-    db "# FS0:\STARTUP.NSH - Cybforge Automated Boot Script", 0
+    db "--- [ FS0:\STARTUP.NSH - Cybforge Automated Boot Script ] ---", 0
 str_cat_st2:
-    db "@echo -off", 0
+    db "  @echo -off", 0
 str_cat_st3:
-    db "load fs0:\efi\vgadac.drv", 0
+    db "  load fs0:\efi\vgadac.drv", 0
 str_cat_st4:
-    db "load fs0:\efi\sb16dma.drv", 0
+    db "  load fs0:\efi\sb16dma.drv", 0
 str_cat_st5:
-    db "fs0:\efi\snake.efi --rom-bank=256k --audio=sb16", 0
+    db "  fs0:\efi\snake.efi --rom-bank=256k --audio=sb16-dma5", 0
 
 str_cat_rm1:
-    db "=== CYBFORGE RETRO BIOS & INTERACTIVE SHELL v2.40 ===", 0
+    db "--- [ FS0:\README.TXT - Cybforge Firmware Documentation ] ---", 0
 str_cat_rm2:
-    db "Architecture : 256 KB ROM (0xFFFC0000..0xFFFFFFFF) in 32-Bit Unreal Mode.", 0
+    db "  Architecture : 256 KB ROM (0xFFFC0000..0xFFFFFFFF) in 32-Bit Unreal Mode", 0
 str_cat_rm3:
-    db "Sound Engine : Creative Sound Blaster 16 (16-Bit Single-Cycle DMA Ch 5).", 0
+    db "  Sound Engine : Creative Sound Blaster 16 (16-Bit Single-Cycle DMA Ch 5)", 0
 str_cat_rm4:
-    db "Pro Tip      : Run 'dmem 1a00', 'dmem fff0', 'cmos', 'sound 7', or 'exit'!", 0
+    db "  Quick Try    : 'dmem 1a00', 'dmem fff0', 'cmos', 'sound 7', or 'exit'!", 0
 
 str_neo1:
     db "   .==========.     root@cybforge-bios", 0
 str_neo2:
-    db "  /  CYBFORGE  \    --------------------------------------------", 0
+    db "  /  CYBFORGE  \    ------------------------------------------", 0
 str_neo3:
-    db " |   [x86-32]   |   OS / Shell : Cybforge UEFI/BIOS Shell v2.40", 0
+    db " |   [x86-32]   |   Shell    : Cybforge UEFI/BIOS Shell v2.5", 0
 str_neo4:
-    db " |  RETRO BIOS  |   CPU Mode   : x86 Real + 32-Bit Flat Unreal", 0
+    db " |  RETRO BIOS  |   CPU Mode : x86 Real + 32-Bit Flat Unreal", 0
 str_neo5:
-    db "  \   v2.40    /    Memory     : 640 KB Base RAM / 256 KB Flash ROM", 0
+    db "  \    v2.5    /    Memory   : 640 KB Base RAM / 256 KB ROM", 0
 str_neo6:
-    db "   '=========='     Video / Snd: VGA 80x25 Custom / SB16 16-Bit DMA5", 0
+    db "   '=========='     Hardware : VGA 80x25 (8x16) / SB16 DMA Ch5", 0
 str_neo7:
-    db "                    Status     : NVRAM Checksum OK (Type 'exit' for Setup)", 0
+    db "                    Status   : NVRAM Checksum OK ('exit'=Setup)", 0
 
 str_pci_hdr:
     db "Bus Dev Fn  Ven:Dev    Hardware Device Description", 0
@@ -6432,7 +6516,7 @@ str_io_p22c:    db " 0x22C(DSP)=", 0
 str_io_p3da:    db " 0x3DA(VGA)=", 0
 
 str_mt_1:
-    db "Testing 64 KB Extended DMA RAM Buffer (0x20000..0x2FFFF) [0x55AA / 0xAA55]...", 0
+    db "Testing 64 KB Extended DMA RAM (0x20000..0x2FFFF) [0x55AA / 0xAA55]...", 0
 str_mt_2:
     db "Result: 32,768 Words Verified - 0 Errors (MEMORY DIAGNOSTIC PASSED)", 0
 
@@ -6518,111 +6602,111 @@ sample_table:
     dw 13230
 
 font_table:
-    db 0x01, 0x00, 0x00, 0x00, 0x1F, 0x18, 0x18, 0x18, 0x18
-    db 0x02, 0x00, 0x00, 0x00, 0xF8, 0x18, 0x18, 0x18, 0x18
-    db 0x03, 0x18, 0x18, 0x18, 0x1F, 0x00, 0x00, 0x00, 0x00
-    db 0x04, 0x18, 0x18, 0x18, 0xF8, 0x00, 0x00, 0x00, 0x00
-    db 0x05, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00
-    db 0x06, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18
-    db 0x07, 0x00, 0x3C, 0x7E, 0xDB, 0xFF, 0xC3, 0xE7, 0x7E
-    db 0x08, 0x08, 0x1C, 0x08, 0x76, 0xFF, 0xFF, 0xFF, 0x7E
-    db 0x09, 0x00, 0x3C, 0x7E, 0xFF, 0xDB, 0xFF, 0x7E, 0x3C
-    db 0x0A, 0x00, 0x3C, 0x7E, 0xFF, 0xDB, 0x7E, 0x3C, 0x18
-    db 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; ' '
-    db 0x21, 0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00 ; '!'
-    db 0x22, 0x66, 0x66, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00 ; '"'
-    db 0x23, 0x6C, 0x6C, 0xFE, 0x6C, 0xFE, 0x6C, 0x6C, 0x00 ; '#'
-    db 0x24, 0x18, 0x3E, 0x60, 0x3C, 0x06, 0x7C, 0x18, 0x00 ; '$'
-    db 0x25, 0x00, 0x66, 0xA6, 0xD8, 0x1B, 0x65, 0x66, 0x00 ; '%'
-    db 0x26, 0x30, 0x48, 0x30, 0x6E, 0xD9, 0xCE, 0x7B, 0x00 ; '&'
-    db 0x27, 0x18, 0x18, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00 ; '''
-    db 0x28, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00 ; '('
-    db 0x29, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x18, 0x30, 0x00 ; ')'
-    db 0x2A, 0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00 ; '*'
-    db 0x2B, 0x00, 0x18, 0x18, 0x7E, 0x18, 0x18, 0x00, 0x00 ; '+'
-    db 0x2C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x08 ; ','
-    db 0x2D, 0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00 ; '-'
-    db 0x2E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00 ; '.'
-    db 0x2F, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x80, 0x00 ; '/'
-    db 0x30, 0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00 ; '0'
-    db 0x31, 0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00 ; '1'
-    db 0x32, 0x3C, 0x66, 0x06, 0x0C, 0x18, 0x30, 0x7E, 0x00 ; '2'
-    db 0x33, 0x7E, 0x06, 0x0C, 0x1C, 0x06, 0x66, 0x3C, 0x00 ; '3'
-    db 0x34, 0x0C, 0x1C, 0x3C, 0x6C, 0xFE, 0x0C, 0x0C, 0x00 ; '4'
-    db 0x35, 0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00 ; '5'
-    db 0x36, 0x3C, 0x66, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00 ; '6'
-    db 0x37, 0x7E, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x00 ; '7'
-    db 0x38, 0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00 ; '8'
-    db 0x39, 0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00 ; '9'
-    db 0x3A, 0x00, 0x18, 0x18, 0x00, 0x00, 0x18, 0x18, 0x00 ; ':'
-    db 0x3B, 0x00, 0x18, 0x18, 0x00, 0x00, 0x18, 0x18, 0x08 ; ';'
-    db 0x3C, 0x0C, 0x18, 0x30, 0x60, 0x30, 0x18, 0x0C, 0x00 ; '<'
-    db 0x3D, 0x00, 0x00, 0x7E, 0x00, 0x7E, 0x00, 0x00, 0x00 ; '='
-    db 0x3E, 0x30, 0x18, 0x0C, 0x06, 0x0C, 0x18, 0x30, 0x00 ; '>'
-    db 0x3F, 0x3C, 0x66, 0x06, 0x0C, 0x18, 0x00, 0x18, 0x00 ; '?'
-    db 0x40, 0x3C, 0x42, 0x99, 0xA5, 0xA5, 0x9E, 0x40, 0x3C ; '@'
-    db 0x41, 0x3C, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00 ; 'A'
-    db 0x42, 0xFC, 0x66, 0x66, 0x7C, 0x66, 0x66, 0xFC, 0x00 ; 'B'
-    db 0x43, 0x3C, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3C, 0x00 ; 'C'
-    db 0x44, 0xF8, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0xF8, 0x00 ; 'D'
-    db 0x45, 0xFE, 0x62, 0x68, 0x78, 0x68, 0x62, 0xFE, 0x00 ; 'E'
-    db 0x46, 0xFE, 0x62, 0x68, 0x78, 0x68, 0x60, 0xF0, 0x00 ; 'F'
-    db 0x47, 0x3C, 0x66, 0x60, 0x6E, 0x66, 0x66, 0x3C, 0x00 ; 'G'
-    db 0x48, 0xC6, 0xC6, 0xC6, 0xFE, 0xC6, 0xC6, 0xC6, 0x00 ; 'H'
-    db 0x49, 0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00 ; 'I'
-    db 0x4A, 0x1E, 0x06, 0x06, 0x06, 0x06, 0x66, 0x3C, 0x00 ; 'J'
-    db 0x4B, 0xC6, 0xCC, 0xD8, 0xF0, 0xD8, 0xCC, 0xC6, 0x00 ; 'K'
-    db 0x4C, 0xF0, 0x60, 0x60, 0x60, 0x60, 0x62, 0xFE, 0x00 ; 'L'
-    db 0x4D, 0xC6, 0xEE, 0xFE, 0xD6, 0xC6, 0xC6, 0xC6, 0x00 ; 'M'
-    db 0x4E, 0xC6, 0xE6, 0xF6, 0xDE, 0xCE, 0xC6, 0xC6, 0x00 ; 'N'
-    db 0x4F, 0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00 ; 'O'
-    db 0x50, 0xFC, 0x66, 0x66, 0x7C, 0x60, 0x60, 0xF0, 0x00 ; 'P'
-    db 0x51, 0x3C, 0x66, 0x66, 0x66, 0x6E, 0x3C, 0x0E, 0x00 ; 'Q'
-    db 0x52, 0xFC, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0xE6, 0x00 ; 'R'
-    db 0x53, 0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00 ; 'S'
-    db 0x54, 0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00 ; 'T'
-    db 0x55, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00 ; 'U'
-    db 0x56, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x00 ; 'V'
-    db 0x57, 0xC6, 0xC6, 0xC6, 0xD6, 0xFE, 0xEE, 0xC6, 0x00 ; 'W'
-    db 0x58, 0xC6, 0xC6, 0x6C, 0x38, 0x6C, 0xC6, 0xC6, 0x00 ; 'X'
-    db 0x59, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00 ; 'Y'
-    db 0x5A, 0xFE, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xFE, 0x00 ; 'Z'
-    db 0x5B, 0x3C, 0x30, 0x30, 0x30, 0x30, 0x30, 0x3C, 0x00 ; '['
-    db 0x5C, 0xC0, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x02, 0x00 ; '\'
-    db 0x5D, 0x3C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x3C, 0x00 ; ']'
-    db 0x5E, 0x18, 0x3C, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00 ; '^'
-    db 0x5F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF ; '_'
-    db 0x60, 0x30, 0x18, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00 ; '`'
-    db 0x61, 0x00, 0x00, 0x3C, 0x06, 0x3E, 0x66, 0x3E, 0x00 ; 'a'
-    db 0x62, 0xE0, 0x60, 0x7C, 0x66, 0x66, 0x66, 0x7C, 0x00 ; 'b'
-    db 0x63, 0x00, 0x00, 0x3C, 0x66, 0x60, 0x66, 0x3C, 0x00 ; 'c'
-    db 0x64, 0x1C, 0x0C, 0x3C, 0x6C, 0x6C, 0x6C, 0x3E, 0x00 ; 'd'
-    db 0x65, 0x00, 0x00, 0x3C, 0x66, 0x7E, 0x60, 0x3C, 0x00 ; 'e'
-    db 0x66, 0x1C, 0x36, 0x30, 0x78, 0x30, 0x30, 0x78, 0x00 ; 'f'
-    db 0x67, 0x00, 0x00, 0x3E, 0x66, 0x66, 0x3E, 0x06, 0x3C ; 'g'
-    db 0x68, 0xE0, 0x60, 0x6C, 0x76, 0x66, 0x66, 0xE6, 0x00 ; 'h'
-    db 0x69, 0x18, 0x00, 0x38, 0x18, 0x18, 0x18, 0x3C, 0x00 ; 'i'
-    db 0x6A, 0x0C, 0x00, 0x1C, 0x0C, 0x0C, 0x0C, 0x6C, 0x38 ; 'j'
-    db 0x6B, 0xE0, 0x60, 0x66, 0x6C, 0x78, 0x6C, 0xE6, 0x00 ; 'k'
-    db 0x6C, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00 ; 'l'
-    db 0x6D, 0x00, 0x00, 0xEC, 0xFE, 0xD6, 0xD6, 0xD6, 0x00 ; 'm'
-    db 0x6E, 0x00, 0x00, 0xDC, 0x66, 0x66, 0x66, 0x66, 0x00 ; 'n'
-    db 0x6F, 0x00, 0x00, 0x3C, 0x66, 0x66, 0x66, 0x3C, 0x00 ; 'o'
-    db 0x70, 0x00, 0x00, 0xDC, 0x66, 0x66, 0x7C, 0x60, 0xF0 ; 'p'
-    db 0x71, 0x00, 0x00, 0x3B, 0x66, 0x66, 0x3E, 0x06, 0x0F ; 'q'
-    db 0x72, 0x00, 0x00, 0xDC, 0x76, 0x66, 0x60, 0xF0, 0x00 ; 'r'
-    db 0x73, 0x00, 0x00, 0x3E, 0x60, 0x3C, 0x06, 0x7C, 0x00 ; 's'
-    db 0x74, 0x30, 0x30, 0x7C, 0x30, 0x30, 0x34, 0x18, 0x00 ; 't'
-    db 0x75, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0x7E, 0x00 ; 'u'
-    db 0x76, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x00 ; 'v'
-    db 0x77, 0x00, 0x00, 0xC6, 0xD6, 0xD6, 0xFE, 0x6C, 0x00 ; 'w'
-    db 0x78, 0x00, 0x00, 0xC6, 0x6C, 0x38, 0x6C, 0xC6, 0x00 ; 'x'
-    db 0x79, 0x00, 0x00, 0xC6, 0xC6, 0x66, 0x3E, 0x06, 0x3C ; 'y'
-    db 0x7A, 0x00, 0x00, 0x7E, 0x0C, 0x18, 0x30, 0x7E, 0x00 ; 'z'
-    db 0x7B, 0x0E, 0x18, 0x18, 0x70, 0x18, 0x18, 0x0E, 0x00 ; '{'
-    db 0x7C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00 ; '|'
-    db 0x7D, 0x70, 0x18, 0x18, 0x0E, 0x18, 0x18, 0x70, 0x00 ; '}'
-    db 0x7E, 0x76, 0xDC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '~'
+    db 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0x20, 0x3F, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24
+    db 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFC, 0x04, 0xFC, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24
+    db 0x03, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x3F, 0x20, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    db 0x04, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0xFC, 0x04, 0xFC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    db 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    db 0x06, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24
+    db 0x07, 0x00, 0x3C, 0x7E, 0xFF, 0xC3, 0xDB, 0xDB, 0xFF, 0xFF, 0xBD, 0x99, 0xC3, 0x7E, 0x7E, 0x3C, 0x00
+    db 0x08, 0x06, 0x0E, 0x0C, 0x18, 0x10, 0x76, 0xFF, 0xDF, 0xBF, 0xFF, 0xFF, 0xFF, 0x7E, 0x7E, 0x3C, 0x00
+    db 0x09, 0x3C, 0x7E, 0xFF, 0xEF, 0xD7, 0xBB, 0x7D, 0xFF, 0xEF, 0xD7, 0xBB, 0x7D, 0xFF, 0x7E, 0x7E, 0x3C
+    db 0x0A, 0x00, 0x3C, 0x7E, 0xFF, 0x7E, 0xDB, 0xD7, 0xCF, 0xFF, 0xFF, 0xE7, 0xDB, 0x7E, 0x7E, 0x3C, 0x00
+    db 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; ' '
+    db 0x21, 0x00, 0x00, 0x18, 0x3C, 0x3C, 0x3C, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00 ; '!'
+    db 0x22, 0x00, 0x66, 0x66, 0x66, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '"'
+    db 0x23, 0x00, 0x00, 0x00, 0x6C, 0x6C, 0xFE, 0x6C, 0x6C, 0x6C, 0xFE, 0x6C, 0x6C, 0x00, 0x00, 0x00, 0x00 ; '#'
+    db 0x24, 0x18, 0x18, 0x7C, 0xC6, 0xC2, 0xC0, 0x7C, 0x06, 0x06, 0x86, 0xC6, 0x7C, 0x18, 0x18, 0x00, 0x00 ; '$'
+    db 0x25, 0x00, 0x00, 0x00, 0x00, 0xC2, 0xC6, 0x0C, 0x18, 0x30, 0x60, 0xC6, 0x86, 0x00, 0x00, 0x00, 0x00 ; '%'
+    db 0x26, 0x00, 0x00, 0x38, 0x6C, 0x6C, 0x38, 0x76, 0xDC, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00, 0x00, 0x00 ; '&'
+    db 0x27, 0x00, 0x30, 0x30, 0x30, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '''
+    db 0x28, 0x00, 0x00, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00, 0x00, 0x00, 0x00 ; '('
+    db 0x29, 0x00, 0x00, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x18, 0x30, 0x00, 0x00, 0x00, 0x00 ; ')'
+    db 0x2A, 0x00, 0x00, 0x00, 0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '*'
+    db 0x2B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x7E, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '+'
+    db 0x2C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x18, 0x30, 0x00, 0x00, 0x00 ; ','
+    db 0x2D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '-'
+    db 0x2E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00 ; '.'
+    db 0x2F, 0x00, 0x00, 0x00, 0x00, 0x02, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x80, 0x00, 0x00, 0x00, 0x00 ; '/'
+    db 0x30, 0x00, 0x00, 0x7C, 0xC6, 0xCE, 0xDE, 0xF6, 0xE6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; '0'
+    db 0x31, 0x00, 0x00, 0x18, 0x38, 0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00, 0x00, 0x00, 0x00 ; '1'
+    db 0x32, 0x00, 0x00, 0x7C, 0xC6, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0xC6, 0xFE, 0x00, 0x00, 0x00, 0x00 ; '2'
+    db 0x33, 0x00, 0x00, 0x7C, 0xC6, 0x06, 0x06, 0x3C, 0x06, 0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; '3'
+    db 0x34, 0x00, 0x00, 0x0C, 0x1C, 0x3C, 0x6C, 0xCC, 0xFE, 0x0C, 0x0C, 0x0C, 0x1E, 0x00, 0x00, 0x00, 0x00 ; '4'
+    db 0x35, 0x00, 0x00, 0xFE, 0xC0, 0xC0, 0xC0, 0xFC, 0x06, 0x06, 0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; '5'
+    db 0x36, 0x00, 0x00, 0x38, 0x60, 0xC0, 0xC0, 0xFC, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; '6'
+    db 0x37, 0x00, 0x00, 0xFE, 0xC6, 0x06, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00 ; '7'
+    db 0x38, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; '8'
+    db 0x39, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0x7E, 0x06, 0x06, 0x06, 0x0C, 0x78, 0x00, 0x00, 0x00, 0x00 ; '9'
+    db 0x3A, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00 ; ':'
+    db 0x3B, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x18, 0x18, 0x30, 0x00, 0x00, 0x00, 0x00 ; ';'
+    db 0x3C, 0x00, 0x00, 0x00, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x00, 0x00, 0x00, 0x00 ; '<'
+    db 0x3D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '='
+    db 0x3E, 0x00, 0x00, 0x00, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x00, 0x00, 0x00, 0x00 ; '>'
+    db 0x3F, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0x0C, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00 ; '?'
+    db 0x40, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xDE, 0xDE, 0xDE, 0xDC, 0xC0, 0x7C, 0x00, 0x00, 0x00, 0x00 ; '@'
+    db 0x41, 0x00, 0x00, 0x10, 0x38, 0x6C, 0xC6, 0xC6, 0xFE, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00 ; 'A'
+    db 0x42, 0x00, 0x00, 0xFC, 0x66, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x66, 0x66, 0xFC, 0x00, 0x00, 0x00, 0x00 ; 'B'
+    db 0x43, 0x00, 0x00, 0x3C, 0x66, 0xC2, 0xC0, 0xC0, 0xC0, 0xC0, 0xC2, 0x66, 0x3C, 0x00, 0x00, 0x00, 0x00 ; 'C'
+    db 0x44, 0x00, 0x00, 0xF8, 0x6C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x6C, 0xF8, 0x00, 0x00, 0x00, 0x00 ; 'D'
+    db 0x45, 0x00, 0x00, 0xFE, 0x66, 0x62, 0x68, 0x78, 0x68, 0x60, 0x62, 0x66, 0xFE, 0x00, 0x00, 0x00, 0x00 ; 'E'
+    db 0x46, 0x00, 0x00, 0xFE, 0x66, 0x62, 0x68, 0x78, 0x68, 0x60, 0x60, 0x60, 0xF0, 0x00, 0x00, 0x00, 0x00 ; 'F'
+    db 0x47, 0x00, 0x00, 0x3C, 0x66, 0xC2, 0xC0, 0xC0, 0xDE, 0xC6, 0xC6, 0x66, 0x3A, 0x00, 0x00, 0x00, 0x00 ; 'G'
+    db 0x48, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xFE, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00 ; 'H'
+    db 0x49, 0x00, 0x00, 0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00 ; 'I'
+    db 0x4A, 0x00, 0x00, 0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0xCC, 0xCC, 0xCC, 0x78, 0x00, 0x00, 0x00, 0x00 ; 'J'
+    db 0x4B, 0x00, 0x00, 0xE6, 0x66, 0x66, 0x6C, 0x78, 0x78, 0x6C, 0x66, 0x66, 0xE6, 0x00, 0x00, 0x00, 0x00 ; 'K'
+    db 0x4C, 0x00, 0x00, 0xF0, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x62, 0x66, 0xFE, 0x00, 0x00, 0x00, 0x00 ; 'L'
+    db 0x4D, 0x00, 0x00, 0xC6, 0xEE, 0xFE, 0xFE, 0xD6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00 ; 'M'
+    db 0x4E, 0x00, 0x00, 0xC6, 0xE6, 0xF6, 0xFE, 0xDE, 0xCE, 0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00 ; 'N'
+    db 0x4F, 0x00, 0x00, 0x38, 0x6C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x00, 0x00, 0x00, 0x00 ; 'O'
+    db 0x50, 0x00, 0x00, 0xFC, 0x66, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x60, 0xF0, 0x00, 0x00, 0x00, 0x00 ; 'P'
+    db 0x51, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xD6, 0xDE, 0x7C, 0x0C, 0x0E, 0x00, 0x00 ; 'Q'
+    db 0x52, 0x00, 0x00, 0xFC, 0x66, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x66, 0xE6, 0x00, 0x00, 0x00, 0x00 ; 'R'
+    db 0x53, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0x60, 0x38, 0x0C, 0x06, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; 'S'
+    db 0x54, 0x00, 0x00, 0x7E, 0x7E, 0x5A, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00 ; 'T'
+    db 0x55, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; 'U'
+    db 0x56, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x10, 0x00, 0x00, 0x00, 0x00 ; 'V'
+    db 0x57, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xD6, 0xD6, 0xFE, 0xEE, 0x6C, 0x44, 0x00, 0x00, 0x00, 0x00 ; 'W'
+    db 0x58, 0x00, 0x00, 0xC6, 0xC6, 0x6C, 0x7C, 0x38, 0x38, 0x7C, 0x6C, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00 ; 'X'
+    db 0x59, 0x00, 0x00, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00 ; 'Y'
+    db 0x5A, 0x00, 0x00, 0xFE, 0xC6, 0x86, 0x0C, 0x18, 0x30, 0x60, 0xC2, 0xC6, 0xFE, 0x00, 0x00, 0x00, 0x00 ; 'Z'
+    db 0x5B, 0x00, 0x00, 0x3C, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x3C, 0x00, 0x00, 0x00, 0x00 ; '['
+    db 0x5C, 0x00, 0x00, 0x00, 0x80, 0xC0, 0xE0, 0x70, 0x38, 0x1C, 0x0E, 0x06, 0x02, 0x00, 0x00, 0x00, 0x00 ; '\'
+    db 0x5D, 0x00, 0x00, 0x3C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x3C, 0x00, 0x00, 0x00, 0x00 ; ']'
+    db 0x5E, 0x10, 0x38, 0x6C, 0xC6, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '^'
+    db 0x5F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00 ; '_'
+    db 0x60, 0x30, 0x30, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '`'
+    db 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x0C, 0x7C, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00, 0x00, 0x00 ; 'a'
+    db 0x62, 0x00, 0x00, 0xE0, 0x60, 0x60, 0x78, 0x6C, 0x66, 0x66, 0x66, 0x66, 0x7C, 0x00, 0x00, 0x00, 0x00 ; 'b'
+    db 0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC0, 0xC0, 0xC0, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; 'c'
+    db 0x64, 0x00, 0x00, 0x1C, 0x0C, 0x0C, 0x3C, 0x6C, 0xCC, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00, 0x00, 0x00 ; 'd'
+    db 0x65, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xFE, 0xC0, 0xC0, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; 'e'
+    db 0x66, 0x00, 0x00, 0x38, 0x6C, 0x64, 0x60, 0xF0, 0x60, 0x60, 0x60, 0x60, 0xF0, 0x00, 0x00, 0x00, 0x00 ; 'f'
+    db 0x67, 0x00, 0x00, 0x00, 0x00, 0x00, 0x76, 0xCC, 0xCC, 0xCC, 0xCC, 0x7C, 0x0C, 0xCC, 0x78, 0x00, 0x00 ; 'g'
+    db 0x68, 0x00, 0x00, 0xE0, 0x60, 0x60, 0x6C, 0x76, 0x66, 0x66, 0x66, 0x66, 0xE6, 0x00, 0x00, 0x00, 0x00 ; 'h'
+    db 0x69, 0x00, 0x00, 0x18, 0x18, 0x00, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00 ; 'i'
+    db 0x6A, 0x00, 0x00, 0x06, 0x06, 0x00, 0x0E, 0x06, 0x06, 0x06, 0x06, 0x06, 0x66, 0x66, 0x3C, 0x00, 0x00 ; 'j'
+    db 0x6B, 0x00, 0x00, 0xE0, 0x60, 0x60, 0x66, 0x6C, 0x78, 0x78, 0x6C, 0x66, 0xE6, 0x00, 0x00, 0x00, 0x00 ; 'k'
+    db 0x6C, 0x00, 0x00, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00 ; 'l'
+    db 0x6D, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEC, 0xFE, 0xD6, 0xD6, 0xD6, 0xD6, 0xC6, 0x00, 0x00, 0x00, 0x00 ; 'm'
+    db 0x6E, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDC, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00 ; 'n'
+    db 0x6F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; 'o'
+    db 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDC, 0x66, 0x66, 0x66, 0x66, 0x7C, 0x60, 0x60, 0xF0, 0x00, 0x00 ; 'p'
+    db 0x71, 0x00, 0x00, 0x00, 0x00, 0x00, 0x76, 0xCC, 0xCC, 0xCC, 0xCC, 0x7C, 0x0C, 0x0C, 0x1E, 0x00, 0x00 ; 'q'
+    db 0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0xDC, 0x76, 0x66, 0x60, 0x60, 0x60, 0xF0, 0x00, 0x00, 0x00, 0x00 ; 'r'
+    db 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0x60, 0x38, 0x0C, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00 ; 's'
+    db 0x74, 0x00, 0x00, 0x10, 0x30, 0x30, 0xFC, 0x30, 0x30, 0x30, 0x30, 0x36, 0x1C, 0x00, 0x00, 0x00, 0x00 ; 't'
+    db 0x75, 0x00, 0x00, 0x00, 0x00, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x76, 0x00, 0x00, 0x00, 0x00 ; 'u'
+    db 0x76, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0x6C, 0x38, 0x10, 0x00, 0x00, 0x00, 0x00 ; 'v'
+    db 0x77, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xD6, 0xD6, 0xFE, 0xEE, 0x6C, 0x00, 0x00, 0x00, 0x00 ; 'w'
+    db 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0x6C, 0x38, 0x38, 0x38, 0x6C, 0xC6, 0x00, 0x00, 0x00, 0x00 ; 'x'
+    db 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0x7E, 0x06, 0x0C, 0xF8, 0x00, 0x00 ; 'y'
+    db 0x7A, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0xCC, 0x18, 0x30, 0x60, 0xC6, 0xFE, 0x00, 0x00, 0x00, 0x00 ; 'z'
+    db 0x7B, 0x00, 0x00, 0x0E, 0x18, 0x18, 0x18, 0x70, 0x18, 0x18, 0x18, 0x18, 0x0E, 0x00, 0x00, 0x00, 0x00 ; '{'
+    db 0x7C, 0x00, 0x00, 0x18, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00 ; '|'
+    db 0x7D, 0x00, 0x00, 0x70, 0x18, 0x18, 0x18, 0x0E, 0x18, 0x18, 0x18, 0x18, 0x70, 0x00, 0x00, 0x00, 0x00 ; '}'
+    db 0x7E, 0x00, 0x00, 0x76, 0xDC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; '~'
     db 0
 
 custom_glyphs_table:
