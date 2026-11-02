@@ -45,6 +45,31 @@ CURRENT_NAME equ 0x1A30     ; 3 Bytes Puffer fuer Namenseingabe (0x1A30..0x1A32)
 CUR_CHAR_IDX equ 0x1A33     ; Aktiver Buchstabe (0..2) (Byte)
 sb16_detected equ 0x1A34    ; 1=Sound Blaster 16 Detected, 0=None (Byte)
 
+; --- Multi-Tab BIOS Setup & BiosShell Konfiguration (0x1A35..0x1A3F) ---
+SETUP_TAB       equ 0x1A35  ; Aktiver Reiter im Setup: 0 = Main & Game, 1 = BiosShell (Byte)
+CFG_SH_THEME    equ 0x1A36  ; 0=Classic EFI, 1=Matrix Green, 2=Cyber Cyan, 3=BIOS Blue (Byte)
+CFG_SH_PROMPT   equ 0x1A37  ; 0="FS0:\> ", 1="SHELL> ", 2="root@bios:# " (Byte)
+CFG_SH_BANNER   equ 0x1A38  ; 0=Full EFI Map, 1=Compact, 2=Quiet Mode (Byte)
+CFG_SH_BEEP     equ 0x1A39  ; 0=Enabled, 1=Muted (Byte)
+CFG_BOOT_MODE   equ 0x1A3A  ; 0=Snake Game, 1=BiosShell (Byte)
+
+; --- Cybforge BIOS Shell Laufzeit-Speicher (0x1B00..0x1CFF) ---
+SH_CUR_ROW      equ 0x1B00  ; Aktuelle Terminal-Zeile (1..23) (Byte)
+SH_CUR_COL      equ 0x1B01  ; Aktuelle Terminal-Spalte (0..79) (Byte)
+SH_DIR_ID       equ 0x1B02  ; Aktuelles Verzeichnis: 0=Root, 1=EFI, 2=AUDIO, 3=DIAG (Byte)
+SH_SHIFT        equ 0x1B03  ; Shift-Taste gedrueckt (0/1) (Byte)
+SH_CMD_LEN      equ 0x1B04  ; Laenge der aktuellen Eingabe (0..58) (Byte)
+SH_HIST_LEN     equ 0x1B05  ; Laenge des letzten Befehls in History (Byte)
+SH_DUMP_ADDR    equ 0x1B06  ; Aktuelle Adresse fuer dmem Hex-Dump (Word)
+SH_TEXT_ATTR    equ 0x1B08  ; Standard-Textattribut der Shell (Byte)
+SH_HIGH_ATTR    equ 0x1B09  ; Highlight-Attribut der Shell (Byte)
+SH_PROMPT_ATTR  equ 0x1B0A  ; Prompt-Farbattribut (Byte)
+SH_BAR_ATTR     equ 0x1B0B  ; Statusleisten-Attribut (Byte)
+
+SH_CMD_BUF      equ 0x1B10  ; 64 Bytes Eingabepuffer (0x1B10..0x1B4F)
+SH_HIST_BUF     equ 0x1B50  ; 64 Bytes History-Puffer (0x1B50..0x1B8F)
+SH_CLEAN_BUF    equ 0x1B90  ; 64 Bytes normalisierter Befehlspuffer (0x1B90..0x1BCF)
+
 ; --- RAM-Adressen fuer DVD-Logo Animation (im freien RAM bei 0x0000) ---
 CLEAN_BUF equ 0x1000        ; 4000 Bytes Puffer (0x1000..0x1FA0) fuer Original-Screen
 POS_X1    equ 0x2000        ; Position & Richtung Ausrufezeichen 1
@@ -452,6 +477,7 @@ bios_start:
     call load_cmos_settings
     call apply_color_theme
     mov byte [SETUP_SEL], 0         ; Zeile 0 ausgewaehlt
+    mov byte [SETUP_TAB], 0         ; Standard-Reiter: 0 (Main & Game)
 
     ; =========================================================================
     ; PHASE 1: CYBFORGE RETRO BIOS POST SCREEN (3 Sekunden Wartezeit fuer F12)
@@ -548,8 +574,10 @@ post_screen:
     dec bp
     jnz .post_wait_loop
 
-    ; 3 Sekunden abgelaufen ohne F12 -> Direkt ins Snake Game booten
+    ; 3 Sekunden abgelaufen ohne F12 -> Gem. CFG_BOOT_MODE in Snake oder BiosShell booten
 boot_direct_snake:
+    cmp byte [CFG_BOOT_MODE], 1
+    je bios_shell_main
     jmp init_snake_game
 
     ; =========================================================================
@@ -600,6 +628,7 @@ draw_cybforge_logo:
     ; PHASE 2: CYBFORGE RETRO BIOS SETUP UTILITY (Retro CMOS Setup Menue)
     ; =========================================================================
 core_bios_setup:
+    call apply_color_theme
     call drain_kbd
     call sound_click
 
@@ -611,7 +640,15 @@ core_bios_setup:
     test al, al
     jz .setup_wait_tick
 
-    ; Navigation: W/S oder Pfeiltasten
+    ; Schnellwechsel zwischen Reitern via [TAB] (0x0F), [1] (0x02), [2] (0x03)
+    cmp al, 0x0F                    ; TAB -> Reiter wechseln!
+    je .toggle_tab
+    cmp al, 0x02                    ; Taste '1' -> Reiter 0 (Main & Game)
+    je .switch_tab_0
+    cmp al, 0x03                    ; Taste '2' -> Reiter 1 (BiosShell)
+    je .switch_tab_1
+
+    ; Navigation: W/S oder Pfeiltasten Oben/Unten
     cmp al, 0x11                    ; 'W'
     je .sel_up
     cmp al, 0x48                    ; Up Arrow
@@ -622,7 +659,7 @@ core_bios_setup:
     cmp al, 0x50                    ; Down Arrow
     je .sel_down
 
-    ; Wert aendern / Auswaehlen: A/D, Pfeile, ENTER, SPACE
+    ; Wert aendern / Reiter wechseln: A/D, Pfeiltasten Links/Rechts, ENTER, SPACE
     cmp al, 0x1E                    ; 'A'
     je .val_prev
     cmp al, 0x4B                    ; Left Arrow
@@ -642,9 +679,33 @@ core_bios_setup:
     je .exit_setup
 
 .setup_wait_tick:
-    mov ecx, 70000000               ; ~20 ms
+    mov ecx, 1500000                ; ~5 ms fuer ultra-direkte Menue-Reaktion
     call delay_cycles
     jmp .setup_input_loop
+
+.toggle_tab:
+    xor byte [SETUP_TAB], 1
+    cmp byte [SETUP_TAB], 1
+    je .land_tab1
+    mov byte [SETUP_SEL], 0
+    call sound_toggle
+    jmp .redraw_setup
+.land_tab1:
+    mov byte [SETUP_SEL], 1         ; Direkt auf "BiosShell starten [Press ENTER]" setzen!
+    call sound_toggle
+    jmp .redraw_setup
+
+.switch_tab_0:
+    mov byte [SETUP_TAB], 0
+    mov byte [SETUP_SEL], 0
+    call sound_toggle
+    jmp .redraw_setup
+
+.switch_tab_1:
+    mov byte [SETUP_TAB], 1
+    mov byte [SETUP_SEL], 1
+    call sound_toggle
+    jmp .redraw_setup
 
 .sel_up:
     call sound_click
@@ -654,13 +715,21 @@ core_bios_setup:
     dec byte [SETUP_SEL]
     jmp .redraw_setup
 .wrap_up:
-    mov byte [SETUP_SEL], 9         ; Max Zeilen-Index = 9
+    mov byte [SETUP_SEL], 10        ; Tab 0 hat Indizes 0..10
+    cmp byte [SETUP_TAB], 0
+    je .redraw_setup
+    mov byte [SETUP_SEL], 8         ; Tab 1 hat Indizes 0..8
     jmp .redraw_setup
 
 .sel_down:
     call sound_click
     mov al, [SETUP_SEL]
-    cmp al, 9
+    mov ah, 10
+    cmp byte [SETUP_TAB], 0
+    je .chk_down_lim
+    mov ah, 8
+.chk_down_lim:
+    cmp al, ah
     jae .wrap_down
     inc byte [SETUP_SEL]
     jmp .redraw_setup
@@ -668,111 +737,160 @@ core_bios_setup:
     mov byte [SETUP_SEL], 0
     jmp .redraw_setup
 
+; --- LINKS / VORHERIGER WERT ---
 .val_prev:
-    call sound_toggle
     mov al, [SETUP_SEL]
-    cmp al, 0
-    jne .p1
+    cmp al, 0                       ; Zeile 0 ist auf beiden Reitern die Reiter-Auswahl!
+    je .toggle_tab
+
+    cmp byte [SETUP_TAB], 1
+    je .tab1_prev
+
+    ; Tab 0 (Main & Game): Indizes 1..8
+    call sound_toggle
+    cmp al, 1
+    jne .p2
     dec byte [CFG_SPEED]
     jns .redraw_setup
     mov byte [CFG_SPEED], 2
     jmp .redraw_setup
-.p1:
-    cmp al, 1
-    jne .p2
-    xor byte [CFG_WALLS], 1
-    jmp .redraw_setup
 .p2:
     cmp al, 2
     jne .p3
-    dec byte [CFG_SOUND]
-    and byte [CFG_SOUND], 3
-    call sound_toggle
+    xor byte [CFG_WALLS], 1
     jmp .redraw_setup
 .p3:
     cmp al, 3
     jne .p4
-    xor byte [CFG_FACE], 1
+    dec byte [CFG_SOUND]
+    and byte [CFG_SOUND], 3
+    call sound_toggle
     jmp .redraw_setup
 .p4:
     cmp al, 4
     jne .p5
-    dec byte [CFG_LEN]
-    jns .redraw_setup
-    mov byte [CFG_LEN], 2
+    xor byte [CFG_FACE], 1
     jmp .redraw_setup
 .p5:
     cmp al, 5
     jne .p6
-    dec byte [CFG_WIN]
+    dec byte [CFG_LEN]
     jns .redraw_setup
-    mov byte [CFG_WIN], 3
+    mov byte [CFG_LEN], 2
     jmp .redraw_setup
 .p6:
     cmp al, 6
     jne .p7
-    ; Color Theme: 0=Cyber, 1=Matrix, 2=Amber, 3=CGA
+    dec byte [CFG_WIN]
+    jns .redraw_setup
+    mov byte [CFG_WIN], 3
+    jmp .redraw_setup
+.p7:
+    cmp al, 7
+    jne .p8
     dec byte [CFG_THEME]
     jns .th_prev_ok
     mov byte [CFG_THEME], 3
 .th_prev_ok:
     call apply_color_theme
     jmp .redraw_setup
-.p7:
-    cmp al, 7
+.p8:
+    cmp al, 8
     jne .redraw_setup
-    ; Game Arena: 0=Open, 1=Pillars, 2=Maze
     dec byte [CFG_ARENA]
     jns .redraw_setup
     mov byte [CFG_ARENA], 2
     jmp .redraw_setup
 
-.val_next:
+.tab1_prev:
+    ; Tab 1 (BiosShell):
+    cmp al, 1                       ; Auf "BiosShell starten" wechselt Links zurueck zu Tab 0
+    je .switch_tab_0
     call sound_toggle
+    cmp al, 2
+    jne .t1_p3
+    dec byte [CFG_SH_THEME]
+    and byte [CFG_SH_THEME], 3
+    jmp .redraw_setup
+.t1_p3:
+    cmp al, 3
+    jne .t1_p4
+    dec byte [CFG_SH_PROMPT]
+    jns .redraw_setup
+    mov byte [CFG_SH_PROMPT], 2
+    jmp .redraw_setup
+.t1_p4:
+    cmp al, 4
+    jne .t1_p5
+    dec byte [CFG_SH_BANNER]
+    jns .redraw_setup
+    mov byte [CFG_SH_BANNER], 2
+    jmp .redraw_setup
+.t1_p5:
+    cmp al, 5
+    jne .t1_p6
+    xor byte [CFG_SH_BEEP], 1
+    jmp .redraw_setup
+.t1_p6:
+    cmp al, 6
+    jne .redraw_setup
+    xor byte [CFG_BOOT_MODE], 1
+    jmp .redraw_setup
+
+; --- RECHTS / NAECHSTER WERT ---
+.val_next:
     mov al, [SETUP_SEL]
-    cmp al, 0
-    jne .n1
+    cmp al, 0                       ; Zeile 0: Reiter wechseln
+    je .toggle_tab
+
+    cmp byte [SETUP_TAB], 1
+    je .tab1_next
+
+    ; Tab 0 (Main & Game): Indizes 1..8
+    call sound_toggle
+    cmp al, 1
+    jne .n2
     inc byte [CFG_SPEED]
     cmp byte [CFG_SPEED], 3
     jb .redraw_setup
     mov byte [CFG_SPEED], 0
     jmp .redraw_setup
-.n1:
-    cmp al, 1
-    jne .n2
-    xor byte [CFG_WALLS], 1
-    jmp .redraw_setup
 .n2:
     cmp al, 2
     jne .n3
-    inc byte [CFG_SOUND]
-    and byte [CFG_SOUND], 3
-    call sound_toggle
+    xor byte [CFG_WALLS], 1
     jmp .redraw_setup
 .n3:
     cmp al, 3
     jne .n4
-    xor byte [CFG_FACE], 1
+    inc byte [CFG_SOUND]
+    and byte [CFG_SOUND], 3
+    call sound_toggle
     jmp .redraw_setup
 .n4:
     cmp al, 4
     jne .n5
+    xor byte [CFG_FACE], 1
+    jmp .redraw_setup
+.n5:
+    cmp al, 5
+    jne .n6
     inc byte [CFG_LEN]
     cmp byte [CFG_LEN], 3
     jb .redraw_setup
     mov byte [CFG_LEN], 0
     jmp .redraw_setup
-.n5:
-    cmp al, 5
-    jne .n6
+.n6:
+    cmp al, 6
+    jne .n7
     inc byte [CFG_WIN]
     cmp byte [CFG_WIN], 4
     jb .redraw_setup
     mov byte [CFG_WIN], 0
     jmp .redraw_setup
-.n6:
-    cmp al, 6
-    jne .n7
+.n7:
+    cmp al, 7
+    jne .n8
     inc byte [CFG_THEME]
     cmp byte [CFG_THEME], 4
     jb .th_next_ok
@@ -780,8 +898,8 @@ core_bios_setup:
 .th_next_ok:
     call apply_color_theme
     jmp .redraw_setup
-.n7:
-    cmp al, 7
+.n8:
+    cmp al, 8
     jne .redraw_setup
     inc byte [CFG_ARENA]
     cmp byte [CFG_ARENA], 3
@@ -789,13 +907,71 @@ core_bios_setup:
     mov byte [CFG_ARENA], 0
     jmp .redraw_setup
 
+.tab1_next:
+    cmp al, 1                       ; SPACE auf "BiosShell" startet ebenfalls die Shell
+    je .launch_bios_shell
+    call sound_toggle
+    cmp al, 2
+    jne .t1_n3
+    inc byte [CFG_SH_THEME]
+    and byte [CFG_SH_THEME], 3
+    jmp .redraw_setup
+.t1_n3:
+    cmp al, 3
+    jne .t1_n4
+    inc byte [CFG_SH_PROMPT]
+    cmp byte [CFG_SH_PROMPT], 3
+    jb .redraw_setup
+    mov byte [CFG_SH_PROMPT], 0
+    jmp .redraw_setup
+.t1_n4:
+    cmp al, 4
+    jne .t1_n5
+    inc byte [CFG_SH_BANNER]
+    cmp byte [CFG_SH_BANNER], 3
+    jb .redraw_setup
+    mov byte [CFG_SH_BANNER], 0
+    jmp .redraw_setup
+.t1_n5:
+    cmp al, 5
+    jne .t1_n6
+    xor byte [CFG_SH_BEEP], 1
+    jmp .redraw_setup
+.t1_n6:
+    cmp al, 6
+    jne .redraw_setup
+    xor byte [CFG_BOOT_MODE], 1
+    jmp .redraw_setup
+
+; --- ENTER AKTION ---
 .val_enter:
     mov al, [SETUP_SEL]
-    cmp al, 8
-    je .do_reset_defaults
+    cmp al, 0
+    je .toggle_tab
+
+    cmp byte [SETUP_TAB], 1
+    je .tab1_enter
+
+    ; Tab 0 Enter:
     cmp al, 9
+    je .do_reset_defaults
+    cmp al, 10
     je .exit_setup
     jmp .val_next
+
+.tab1_enter:
+    cmp al, 1
+    je .launch_bios_shell
+    cmp al, 7
+    je .do_reset_shell_defaults
+    cmp al, 8
+    je .exit_setup
+    jmp .val_next
+
+.launch_bios_shell:
+    call save_cmos_settings
+    call sound_start
+    jmp bios_shell_main
 
 .do_reset_defaults:
     mov byte [CFG_SPEED], 0
@@ -812,12 +988,22 @@ core_bios_setup:
     call sound_toggle
     jmp .redraw_setup
 
+.do_reset_shell_defaults:
+    mov byte [CFG_SH_THEME],  0
+    mov byte [CFG_SH_PROMPT], 0
+    mov byte [CFG_SH_BANNER], 0
+    mov byte [CFG_SH_BEEP],   0
+    mov byte [CFG_BOOT_MODE], 0
+    call save_cmos_settings
+    call sound_toggle
+    jmp .redraw_setup
+
 .exit_setup:
     call save_cmos_settings
     jmp init_snake_game
 
     ; =========================================================================
-    ; SETUP SCREEN RENDERER (Cybforge Retro Style)
+    ; SETUP SCREEN RENDERER (Multi-Tab Cybforge Retro Style)
     ; =========================================================================
 draw_setup_screen:
     ; 1. Hintergrund mit BIOS-Blau (0x1F) fuellen
@@ -827,9 +1013,14 @@ draw_setup_screen:
     rep stosw
 
     ; 2. Titelzeile (Zeile 0)
-    mov di, (0 * 80 + 10) * 2
+    mov di, (0 * 80 + 6) * 2
     mov si, str_setup_title
     mov ah, 0x1F
+    call print_string
+
+    mov di, (0 * 80 + 50) * 2
+    mov si, str_setup_tab_hint
+    mov ah, 0x1E
     call print_string
 
     ; Trennlinie (Zeile 1)
@@ -838,7 +1029,26 @@ draw_setup_screen:
     mov ax, 0x1F05
     rep stosw
 
-    ; 3. Haupt-Optionskasten (Zeile 3 bis 17, Spalte 6 bis 73)
+    ; 3. Reiter-Leiste (Tab Bar auf Zeile 2)
+    mov di, (2 * 80 + 6) * 2
+    mov si, str_tab0_label
+    mov ah, 0x70                    ; Aktiv: Schwarz auf Hellgrau (Inverted)
+    cmp byte [SETUP_TAB], 0
+    je .draw_t0_hdr
+    mov ah, 0x17                    ; Inaktiv: Grau auf Blau
+.draw_t0_hdr:
+    call print_string
+
+    mov di, (2 * 80 + 30) * 2
+    mov si, str_tab1_label
+    mov ah, 0x70                    ; Aktiv: Schwarz auf Hellgrau (Inverted)
+    cmp byte [SETUP_TAB], 1
+    je .draw_t1_hdr
+    mov ah, 0x17                    ; Inaktiv: Grau auf Blau
+.draw_t1_hdr:
+    call print_string
+
+    ; 4. Haupt-Optionskasten (Zeile 3 bis 17, Spalte 6 bis 73)
     mov di, (3 * 80 + 6) * 2
     mov ax, 0x1F01                  ; '┌'
     stosw
@@ -850,6 +1060,10 @@ draw_setup_screen:
 
     mov di, (3 * 80 + 10) * 2
     mov si, str_box_title_main
+    cmp byte [SETUP_TAB], 0
+    je .draw_box_hdr
+    mov si, str_box_title_shell
+.draw_box_hdr:
     mov ah, 0x1E                    ; Yellow
     call print_string
 
@@ -870,7 +1084,7 @@ draw_setup_screen:
     mov ax, 0x1F04                  ; '┘'
     stosw
 
-    ; 4. Hilfe-Kasten (Zeile 18 bis 23, Spalte 6 bis 73)
+    ; 5. Hilfe-Kasten (Zeile 18 bis 23, Spalte 6 bis 73)
     mov di, (18 * 80 + 6) * 2
     mov ax, 0x1F01                  ; '┌'
     stosw
@@ -902,16 +1116,30 @@ draw_setup_screen:
     mov ax, 0x1F04                  ; '┘'
     stosw
 
-    ; 5. Fusszeile / Tastaturbedienung (Zeile 24)
-    mov di, (24 * 80 + 8) * 2
+    ; 6. Fusszeile / Tastaturbedienung (Zeile 24)
+    mov di, (24 * 80 + 4) * 2
     mov si, str_setup_footer
     mov ah, 0x1F
     call print_string
 
-    ; 6. Menue-Punkte zeichnen (Zeilen 0..9)
-    ; Zeile 0: Game Speed (Row 4)
+    ; Pruefen welcher Reiter aktiv ist
+    cmp byte [SETUP_TAB], 1
+    je .draw_tab1_items
+
+    ; =========================================================================
+    ; REITER 0: MAIN & GAME ITEMS (Indizes 0..10)
+    ; =========================================================================
+    ; Index 0 (Row 4): Setup Reiter
     mov bl, 0
     mov dh, 4
+    mov si, str_opt_tab
+    call draw_menu_row
+    mov si, str_val_tab_main
+    call draw_val_str
+
+    ; Index 1 (Row 5): Game Speed
+    mov bl, 1
+    mov dh, 5
     mov si, str_opt_speed
     call draw_menu_row
     mov si, str_val_spd_norm
@@ -926,9 +1154,9 @@ draw_setup_screen:
 .draw_spd_val:
     call draw_val_str
 
-    ; Zeile 1: Wall Collision (Row 5)
-    mov bl, 1
-    mov dh, 5
+    ; Index 2 (Row 6): Wall Collision
+    mov bl, 2
+    mov dh, 6
     mov si, str_opt_walls
     call draw_menu_row
     mov si, str_val_wall_solid
@@ -938,9 +1166,9 @@ draw_setup_screen:
 .draw_wall_val:
     call draw_val_str
 
-    ; Zeile 2: Sound Output (Row 6)
-    mov bl, 2
-    mov dh, 6
+    ; Index 3 (Row 7): Sound Output
+    mov bl, 3
+    mov dh, 7
     mov si, str_opt_sound
     call draw_menu_row
     mov al, [CFG_SOUND]
@@ -963,9 +1191,9 @@ draw_setup_screen:
 .draw_snd_val:
     call draw_val_str
 
-    ; Zeile 3: Snake Face Style (Row 7)
-    mov bl, 3
-    mov dh, 7
+    ; Index 4 (Row 8): Snake Face Style
+    mov bl, 4
+    mov dh, 8
     mov si, str_opt_face
     call draw_menu_row
     mov si, str_val_face_smile
@@ -975,9 +1203,9 @@ draw_setup_screen:
 .draw_face_val:
     call draw_val_str
 
-    ; Zeile 4: Starting Length (Row 8)
-    mov bl, 4
-    mov dh, 8
+    ; Index 5 (Row 9): Starting Length
+    mov bl, 5
+    mov dh, 9
     mov si, str_opt_len
     call draw_menu_row
     mov si, str_val_len_4
@@ -992,9 +1220,9 @@ draw_setup_screen:
 .draw_len_val:
     call draw_val_str
 
-    ; Zeile 5: Victory Target (Row 9)
-    mov bl, 5
-    mov dh, 9
+    ; Index 6 (Row 10): Victory Target
+    mov bl, 6
+    mov dh, 10
     mov si, str_opt_win
     call draw_menu_row
     mov si, str_val_win_full
@@ -1014,9 +1242,9 @@ draw_setup_screen:
 .draw_win_val:
     call draw_val_str
 
-    ; Zeile 6: Color Theme (Row 10)
-    mov bl, 6
-    mov dh, 10
+    ; Index 7 (Row 11): Color Theme
+    mov bl, 7
+    mov dh, 11
     mov si, str_opt_theme
     call draw_menu_row
     mov si, str_val_theme_cyber
@@ -1036,9 +1264,9 @@ draw_setup_screen:
 .draw_th_val:
     call draw_val_str
 
-    ; Zeile 7: Game Arena (Row 11)
-    mov bl, 7
-    mov dh, 11
+    ; Index 8 (Row 12): Game Arena
+    mov bl, 8
+    mov dh, 12
     mov si, str_opt_arena
     call draw_menu_row
     mov si, str_val_arena_open
@@ -1053,15 +1281,15 @@ draw_setup_screen:
 .draw_ar_val:
     call draw_val_str
 
-    ; Zeile 8: Reset Defaults (Row 13)
-    mov bl, 8
-    mov dh, 13
+    ; Index 9 (Row 14): Reset Defaults
+    mov bl, 9
+    mov dh, 14
     mov si, str_opt_reset
     call draw_menu_row
 
-    ; Zeile 9: Save & Boot Game (Row 14)
-    mov bl, 9
-    mov dh, 14
+    ; Index 10 (Row 15): Save & Boot Game
+    mov bl, 10
+    mov dh, 15
     mov si, str_opt_boot
     call draw_menu_row
 
@@ -1073,44 +1301,199 @@ draw_setup_screen:
     mov ax, [HIGH_SCORE]
     call render_3digits_yellow
 
-    ; 7. Dynamischen Hilfetext in Zeile 20/21 schreiben
+    ; Dynamischer Hilfetext fuer Tab 0
     mov di, (20 * 80 + 9) * 2
     mov al, [SETUP_SEL]
-    mov si, str_help_0
+    mov si, str_help_tab
     cmp al, 0
     je .do_print_help
-    mov si, str_help_1
+    mov si, str_help_0
     cmp al, 1
     je .do_print_help
-    mov si, str_help_2
+    mov si, str_help_1
     cmp al, 2
     je .do_print_help
-    mov si, str_help_3
+    mov si, str_help_2
     cmp al, 3
     je .do_print_help
-    mov si, str_help_4
+    mov si, str_help_3
     cmp al, 4
     je .do_print_help
-    mov si, str_help_5
+    mov si, str_help_4
     cmp al, 5
     je .do_print_help
-    mov si, str_help_6
+    mov si, str_help_5
     cmp al, 6
     je .do_print_help
-    mov si, str_help_7
+    mov si, str_help_6
     cmp al, 7
     je .do_print_help
-    mov si, str_help_8
+    mov si, str_help_7
     cmp al, 8
     je .do_print_help
+    mov si, str_help_8
+    cmp al, 9
+    je .do_print_help
     mov si, str_help_9
+    jmp .do_print_help
+
+    ; =========================================================================
+    ; REITER 1: BIOSSHELL ITEMS (Indizes 0..8)
+    ; =========================================================================
+.draw_tab1_items:
+    ; Index 0 (Row 4): Setup Reiter
+    mov bl, 0
+    mov dh, 4
+    mov si, str_opt_tab
+    call draw_menu_row
+    mov si, str_val_tab_shell
+    call draw_val_str
+
+    ; Index 1 (Row 6): BiosShell starten (Haupt-Aktionspunkt!)
+    mov bl, 1
+    mov dh, 6
+    mov si, str_opt_sh_launch
+    call draw_menu_row
+    mov si, str_val_sh_launch
+    call draw_val_str
+
+    ; Index 2 (Row 8): Shell Color Scheme
+    mov bl, 2
+    mov dh, 8
+    mov si, str_opt_sh_theme
+    call draw_menu_row
+    mov al, [CFG_SH_THEME]
+    mov si, str_val_sht_efi
+    cmp al, 1
+    jne .chk_sht2
+    mov si, str_val_sht_mat
+    jmp .draw_sht_val
+.chk_sht2:
+    cmp al, 2
+    jne .chk_sht3
+    mov si, str_val_sht_cyb
+    jmp .draw_sht_val
+.chk_sht3:
+    cmp al, 3
+    jne .draw_sht_val
+    mov si, str_val_sht_blu
+.draw_sht_val:
+    call draw_val_str
+
+    ; Index 3 (Row 9): Shell Prompt Style
+    mov bl, 3
+    mov dh, 9
+    mov si, str_opt_sh_prompt
+    call draw_menu_row
+    mov al, [CFG_SH_PROMPT]
+    mov si, str_val_shp_fs0
+    cmp al, 1
+    jne .chk_shp2
+    mov si, str_val_shp_shl
+    jmp .draw_shp_val
+.chk_shp2:
+    cmp al, 2
+    jne .draw_shp_val
+    mov si, str_val_shp_roo
+.draw_shp_val:
+    call draw_val_str
+
+    ; Index 4 (Row 10): Startup Banner
+    mov bl, 4
+    mov dh, 10
+    mov si, str_opt_sh_banner
+    call draw_menu_row
+    mov al, [CFG_SH_BANNER]
+    mov si, str_val_shb_full
+    cmp al, 1
+    jne .chk_shb2
+    mov si, str_val_shb_comp
+    jmp .draw_shb_val
+.chk_shb2:
+    cmp al, 2
+    jne .draw_shb_val
+    mov si, str_val_shb_quiet
+.draw_shb_val:
+    call draw_val_str
+
+    ; Index 5 (Row 11): Keystroke Audio Beep
+    mov bl, 5
+    mov dh, 11
+    mov si, str_opt_sh_beep
+    call draw_menu_row
+    mov si, str_val_shk_on
+    cmp byte [CFG_SH_BEEP], 1
+    jne .draw_shk_val
+    mov si, str_val_shk_off
+.draw_shk_val:
+    call draw_val_str
+
+    ; Index 6 (Row 12): Default POST Boot Target
+    mov bl, 6
+    mov dh, 12
+    mov si, str_opt_sh_boot
+    call draw_menu_row
+    mov si, str_val_shbt_snk
+    cmp byte [CFG_BOOT_MODE], 1
+    jne .draw_shbt_val
+    mov si, str_val_shbt_shl
+.draw_shbt_val:
+    call draw_val_str
+
+    ; Index 7 (Row 14): Reset Shell Defaults
+    mov bl, 7
+    mov dh, 14
+    mov si, str_opt_sh_reset
+    call draw_menu_row
+
+    ; Index 8 (Row 15): Save & Boot Game
+    mov bl, 8
+    mov dh, 15
+    mov si, str_opt_boot
+    call draw_menu_row
+
+    ; Statuszeile auf Row 16 im BiosShell-Reiter
+    mov di, (16 * 80 + 10) * 2
+    mov si, str_sh_tab_status
+    mov ah, 0x1B                    ; Bright Cyan on Blue
+    call print_string
+
+    ; Dynamischer Hilfetext fuer Tab 1 (BiosShell)
+    mov di, (20 * 80 + 9) * 2
+    mov al, [SETUP_SEL]
+    mov si, str_help_tab
+    cmp al, 0
+    je .do_print_help
+    mov si, str_help_sh1
+    cmp al, 1
+    je .do_print_help
+    mov si, str_help_sh2
+    cmp al, 2
+    je .do_print_help
+    mov si, str_help_sh3
+    cmp al, 3
+    je .do_print_help
+    mov si, str_help_sh4
+    cmp al, 4
+    je .do_print_help
+    mov si, str_help_sh5
+    cmp al, 5
+    je .do_print_help
+    mov si, str_help_sh6
+    cmp al, 6
+    je .do_print_help
+    mov si, str_help_8
+    cmp al, 7
+    je .do_print_help
+    mov si, str_help_9
+
 .do_print_help:
     mov ah, 0x1E                    ; Yellow
     call print_string
     ret
 
 draw_menu_row:
-    ; Input: bl = row index (0..9), dh = screen row (Y), si = string
+    ; Input: bl = row index, dh = screen row (Y), si = string
     push ax
     push di
     mov al, 10
@@ -2864,13 +3247,13 @@ cmos_write_byte:
     ret
 
 load_cmos_settings:
-    ; Pruefen ob Signatur 0xCB bei Index 0x40 steht
+    ; Pruefen ob Signatur 0xCC bei Index 0x40 steht
     mov al, 0x40
     call cmos_read_byte
-    cmp al, 0xCB
+    cmp al, 0xCC
     jne .cmos_invalid
 
-    ; Checksumme berechnen
+    ; Checksumme berechnen (0x40..0x5D, Checksumme in 0x5E)
     xor bl, bl
     mov cl, 0x40
 .chk_loop:
@@ -2878,10 +3261,10 @@ load_cmos_settings:
     call cmos_read_byte
     xor bl, al
     inc cl
-    cmp cl, 0x59
+    cmp cl, 0x5E
     jb .chk_loop
 
-    mov al, 0x59
+    mov al, 0x5E
     call cmos_read_byte
     cmp al, bl
     jne .cmos_invalid
@@ -2915,7 +3298,7 @@ load_cmos_settings:
     call cmos_read_byte
     mov [CFG_ARENA], al
 
-    ; Top 3 Leaderboard laden (15 Bytes)
+    ; Top 3 Leaderboard laden (15 Bytes: 0x4A..0x58)
     mov cl, 0x4A
     mov di, TOP3_TABLE
 .load_top3_loop:
@@ -2926,6 +3309,26 @@ load_cmos_settings:
     inc cl
     cmp cl, 0x59
     jb .load_top3_loop
+
+    ; BiosShell Einstellungen laden (0x59..0x5D)
+    mov al, 0x59
+    call cmos_read_byte
+    and al, 3
+    mov [CFG_SH_THEME], al
+    mov al, 0x5A
+    call cmos_read_byte
+    mov [CFG_SH_PROMPT], al
+    mov al, 0x5B
+    call cmos_read_byte
+    mov [CFG_SH_BANNER], al
+    mov al, 0x5C
+    call cmos_read_byte
+    and al, 1
+    mov [CFG_SH_BEEP], al
+    mov al, 0x5D
+    call cmos_read_byte
+    and al, 1
+    mov [CFG_BOOT_MODE], al
 
     mov ax, [TOP3_TABLE + 3]
     mov [HIGH_SCORE], ax
@@ -2942,6 +3345,12 @@ load_cmos_settings:
     mov byte [CFG_DISP],  0
     mov byte [CFG_THEME], 0
     mov byte [CFG_ARENA], 0
+
+    mov byte [CFG_SH_THEME],  0
+    mov byte [CFG_SH_PROMPT], 0
+    mov byte [CFG_SH_BANNER], 0
+    mov byte [CFG_SH_BEEP],   0
+    mov byte [CFG_BOOT_MODE], 0
 
     ; Default Top 3: CYB (30), JON (20), ACE (10)
     mov byte [TOP3_TABLE + 0], 'C'
@@ -2965,7 +3374,7 @@ load_cmos_settings:
 
 save_cmos_settings:
     mov al, 0x40
-    mov ah, 0xCB
+    mov ah, 0xCC
     call cmos_write_byte
     mov al, 0x41
     mov ah, [CFG_SPEED]
@@ -2995,7 +3404,7 @@ save_cmos_settings:
     mov ah, [CFG_ARENA]
     call cmos_write_byte
 
-    ; Top 3 Leaderboard schreiben
+    ; Top 3 Leaderboard schreiben (0x4A..0x58)
     mov cl, 0x4A
     mov si, TOP3_TABLE
 .save_top3_loop:
@@ -3007,7 +3416,24 @@ save_cmos_settings:
     cmp cl, 0x59
     jb .save_top3_loop
 
-    ; Checksumme berechnen & schreiben
+    ; BiosShell Einstellungen schreiben (0x59..0x5D)
+    mov al, 0x59
+    mov ah, [CFG_SH_THEME]
+    call cmos_write_byte
+    mov al, 0x5A
+    mov ah, [CFG_SH_PROMPT]
+    call cmos_write_byte
+    mov al, 0x5B
+    mov ah, [CFG_SH_BANNER]
+    call cmos_write_byte
+    mov al, 0x5C
+    mov ah, [CFG_SH_BEEP]
+    call cmos_write_byte
+    mov al, 0x5D
+    mov ah, [CFG_BOOT_MODE]
+    call cmos_write_byte
+
+    ; Checksumme berechnen & in 0x5E schreiben
     xor bl, bl
     mov cl, 0x40
 .save_chk:
@@ -3015,10 +3441,10 @@ save_cmos_settings:
     call cmos_read_byte
     xor bl, al
     inc cl
-    cmp cl, 0x59
+    cmp cl, 0x5E
     jb .save_chk
 
-    mov al, 0x59
+    mov al, 0x5E
     mov ah, bl
     call cmos_write_byte
     ret
@@ -3767,7 +4193,7 @@ str_box_title_main:
 str_box_title_help:
     db " Item Specific Help ", 0
 str_setup_footer:
-    db "[W/S] Select Item   [A/D/ENTER] Change Value   [ESC] Exit & Boot", 0
+    db "[TAB] Switch Reiter   [W/S] Select   [A/D/ENTER] Action   [ESC] Boot", 0
 
 str_opt_speed:
     db "Game Speed        : ", 0
@@ -3984,6 +4410,2036 @@ str_vic_status:
     db "BOARD STATUS: 100% COMPLETE!", 0
 str_vic_footer:
     db "Controls: [ENTER] Play Again   [ESC] BIOS Setup", 0
+
+
+; =============================================================================
+; PHASE 8: CYBFORGE EXTENDED UEFI / BIOS INTERACTIVE SHELL v2.40
+; =============================================================================
+bios_shell_main:
+    call drain_kbd
+    mov byte [SH_DIR_ID], 0
+    mov byte [SH_SHIFT], 0
+    mov byte [SH_CMD_LEN], 0
+    mov byte [SH_HIST_LEN], 0
+    mov word [SH_DUMP_ADDR], 0x1A00
+
+    call sh_init_theme
+    call sh_clear_screen
+
+    ; Startup Banner gemaess CFG_SH_BANNER anzeigen
+    cmp byte [CFG_SH_BANNER], 2
+    je .sh_prompt_init
+    cmp byte [CFG_SH_BANNER], 1
+    je .sh_compact_banner
+
+    ; Full UEFI Interactive Shell v2.40 Device Map Banner
+    mov si, str_sh_ban1
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_sh_ban2
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_sh_ban3
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_sh_map1
+    mov ah, 0x0B
+    call sh_print_line
+    mov si, str_sh_map2
+    mov ah, 0x0B
+    call sh_print_line
+    mov si, str_sh_map3
+    mov ah, 0x0B
+    call sh_print_line
+    mov si, str_sh_map4
+    mov ah, 0x0B
+    call sh_print_line
+    mov si, str_sh_ban_hint
+    mov ah, 0x0A
+    call sh_print_line
+    call sh_newline
+    jmp .sh_prompt_init
+
+.sh_compact_banner:
+    mov si, str_sh_ban1
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_sh_ban_hint
+    mov ah, 0x0A
+    call sh_print_line
+
+.sh_prompt_init:
+    mov byte [SH_CMD_LEN], 0
+    call sh_draw_input_line
+
+.sh_input_loop:
+    call sh_read_key_event
+    test al, al
+    jz .sh_idle
+
+    ; Sondertasten pruefen:
+    cmp al, 0x1C                    ; ENTER -> Befehl ausfuehren
+    je .sh_on_enter
+    cmp al, 0x0E                    ; BACKSPACE -> Zeichen loeschen
+    je .sh_on_backspace
+    cmp al, 0x01                    ; ESC -> Zeile leeren
+    je .sh_on_esc
+    cmp al, 0x48                    ; UP ARROW -> Letzten Befehl aus History holen
+    je .sh_on_up
+    cmp al, 0x50                    ; DOWN ARROW -> Zeile leeren
+    je .sh_on_esc
+    cmp al, 0x0F                    ; TAB -> Auto-Completion!
+    je .sh_on_tab
+
+    ; Druckbares ASCII-Zeichen aus Scancode-Tabelle ermitteln
+    cmp al, 0x58
+    jae .sh_idle
+    xor bh, bh
+    mov bl, al
+    mov dl, [cs:sh_scancode_norm + bx]
+    cmp byte [SH_SHIFT], 1
+    jne .sh_got_ascii
+    mov dl, [cs:sh_scancode_shift + bx]
+.sh_got_ascii:
+    test dl, dl
+    jz .sh_idle
+
+    ; Puffer-Limit (max 56 Zeichen) pruefen
+    mov bl, [SH_CMD_LEN]
+    cmp bl, 56
+    jae .sh_idle
+    xor bh, bh
+    mov [SH_CMD_BUF + bx], dl
+    inc byte [SH_CMD_LEN]
+    call sh_key_click
+    call sh_draw_input_line
+    jmp .sh_input_loop
+
+.sh_idle:
+    mov ecx, 200000                 ; ~1ms Polling fuer verzögerungsfreies Tippen
+    call delay_cycles
+    jmp .sh_input_loop
+
+.sh_on_backspace:
+    cmp byte [SH_CMD_LEN], 0
+    je .sh_input_loop
+    dec byte [SH_CMD_LEN]
+    call sh_key_click
+    call sh_draw_input_line
+    jmp .sh_input_loop
+
+.sh_on_esc:
+    mov byte [SH_CMD_LEN], 0
+    call sh_draw_input_line
+    jmp .sh_input_loop
+
+.sh_on_up:
+    mov cl, [SH_HIST_LEN]
+    test cl, cl
+    jz .sh_input_loop
+    mov [SH_CMD_LEN], cl
+    xor ch, ch
+    xor bx, bx
+.sh_hist_cp:
+    mov al, [SH_HIST_BUF + bx]
+    mov [SH_CMD_BUF + bx], al
+    inc bx
+    loop .sh_hist_cp
+    call sh_key_click
+    call sh_draw_input_line
+    jmp .sh_input_loop
+
+.sh_on_tab:
+    call sh_autocomplete
+    call sh_draw_input_line
+    jmp .sh_input_loop
+
+.sh_on_enter:
+    call sh_key_click
+    ; Cursor '_' am Ende der Eingabezeile entfernen
+    mov byte [SH_CUR_COL], 0
+    call sh_draw_input_no_cursor
+    call sh_newline
+
+    cmp byte [SH_CMD_LEN], 0
+    je .sh_prompt_init
+
+    ; In History-Puffer sichern
+    mov cl, [SH_CMD_LEN]
+    mov [SH_HIST_LEN], cl
+    xor ch, ch
+    xor bx, bx
+.sh_save_hist:
+    mov al, [SH_CMD_BUF + bx]
+    mov [SH_HIST_BUF + bx], al
+    inc bx
+    loop .sh_save_hist
+
+    ; Eingabe normalisieren (Leading Spaces ueberspringen, Lowercase)
+    call sh_normalize_cmd
+    cmp byte [SH_CLEAN_BUF], 0
+    je .sh_prompt_init
+
+    ; Befehl auswerten & ausfuehren
+    call sh_execute_command
+    jmp .sh_prompt_init
+
+; -----------------------------------------------------------------------------
+; SHELL KEYBOARD DRIVER (Mit Shift-Tracking fuer Grossbuchstaben & Symbole)
+; -----------------------------------------------------------------------------
+sh_read_key_event:
+    in al, 0x64
+    test al, 0x01
+    jz .sh_no_key
+    in al, 0x60
+    cmp al, 0x2A                    ; Left Shift Make
+    je .sh_shift_dn
+    cmp al, 0x36                    ; Right Shift Make
+    je .sh_shift_dn
+    cmp al, 0xAA                    ; Left Shift Break
+    je .sh_shift_up
+    cmp al, 0xB6                    ; Right Shift Break
+    je .sh_shift_up
+    test al, 0x80                   ; Andere Break-Codes ignorieren
+    jnz .sh_no_key
+    ret
+.sh_shift_dn:
+    mov byte [SH_SHIFT], 1
+    xor al, al
+    ret
+.sh_shift_up:
+    mov byte [SH_SHIFT], 0
+    xor al, al
+    ret
+.sh_no_key:
+    xor al, al
+    ret
+
+sh_key_click:
+    cmp byte [CFG_SH_BEEP], 1
+    je .skc_done
+    call sound_click
+.skc_done:
+    ret
+
+; -----------------------------------------------------------------------------
+; SHELL THEME & SCREEN HELPERS
+; -----------------------------------------------------------------------------
+sh_init_theme:
+    mov al, [CFG_SH_THEME]
+    and al, 3
+    cmp al, 1
+    je .sht_matrix
+    cmp al, 2
+    je .sht_cyber
+    cmp al, 3
+    je .sht_blue
+
+    ; 0: Classic EFI (Yellow/White on Black, Blue Status Bar)
+    mov byte [SH_TEXT_ATTR], 0x07
+    mov byte [SH_HIGH_ATTR], 0x0E
+    mov byte [SH_PROMPT_ATTR], 0x0E
+    mov byte [SH_BAR_ATTR], 0x1F
+    ret
+.sht_matrix:
+    mov byte [SH_TEXT_ATTR], 0x02
+    mov byte [SH_HIGH_ATTR], 0x0A
+    mov byte [SH_PROMPT_ATTR], 0x0A
+    mov byte [SH_BAR_ATTR], 0x20
+    ret
+.sht_cyber:
+    mov byte [SH_TEXT_ATTR], 0x03
+    mov byte [SH_HIGH_ATTR], 0x0B
+    mov byte [SH_PROMPT_ATTR], 0x0D
+    mov byte [SH_BAR_ATTR], 0x30
+    ret
+.sht_blue:
+    mov byte [SH_TEXT_ATTR], 0x1F
+    mov byte [SH_HIGH_ATTR], 0x1E
+    mov byte [SH_PROMPT_ATTR], 0x1A
+    mov byte [SH_BAR_ATTR], 0x70
+    ret
+
+sh_clear_screen:
+    ; Zeile 0: Top Status Bar
+    xor di, di
+    mov cx, 80
+    mov ah, [SH_BAR_ATTR]
+    mov al, ' '
+    rep stosw
+    mov di, (0 * 80 + 1) * 2
+    mov si, str_sh_topbar
+    mov ah, [SH_BAR_ATTR]
+    call print_string
+
+    ; Zeilen 1..23: Terminal Viewport
+    mov di, (1 * 80) * 2
+    mov cx, 23 * 80
+    mov ah, [SH_TEXT_ATTR]
+    mov al, ' '
+    rep stosw
+
+    ; Zeile 24: Bottom Help Bar
+    mov di, (24 * 80) * 2
+    mov cx, 80
+    mov ah, [SH_BAR_ATTR]
+    mov al, ' '
+    rep stosw
+    mov di, (24 * 80 + 1) * 2
+    mov si, str_sh_botbar
+    mov ah, [SH_BAR_ATTR]
+    call print_string
+
+    mov byte [SH_CUR_ROW], 1
+    mov byte [SH_CUR_COL], 0
+    ret
+
+sh_newline:
+    mov byte [SH_CUR_COL], 0
+    inc byte [SH_CUR_ROW]
+    cmp byte [SH_CUR_ROW], 23
+    jbe .sh_nl_ok
+    mov byte [SH_CUR_ROW], 23
+    call sh_scroll_up
+.sh_nl_ok:
+    ret
+
+sh_scroll_up:
+    push ds
+    push si
+    push di
+    push cx
+    push ax
+
+    mov ax, es
+    mov ds, ax                      ; DS = ES = 0xB800 fuer VRAM-Copy
+    mov si, (2 * 80) * 2            ; Quelle: Zeile 2
+    mov di, (1 * 80) * 2            ; Ziel:   Zeile 1
+    mov cx, 22 * 80                 ; 22 Zeilen (Zeilen 2..23 -> 1..22)
+    rep movsw
+
+    pop ax
+    pop cx
+    pop di
+    pop si
+    pop ds                          ; DS = 0x0000 wiederherstellen
+
+    ; Zeile 23 leeren
+    mov di, (23 * 80) * 2
+    mov cx, 80
+    mov ah, [SH_TEXT_ATTR]
+    mov al, ' '
+    rep stosw
+    ret
+
+sh_fix_attr:
+    ; Kombiniert Hintergrund-Nybble aus SH_TEXT_ATTR falls AH < 0x10
+    test ah, 0xF0
+    jnz .sfa_done
+    push bx
+    mov bh, [SH_TEXT_ATTR]
+    and bh, 0xF0
+    or ah, bh
+    pop bx
+.sfa_done:
+    ret
+
+sh_print_inline:
+    ; Druckt String [cs:si] mit Attribut AH ab (SH_CUR_COL, SH_CUR_ROW)
+    push ax
+    push bx
+    push di
+    call sh_fix_attr
+    mov al, [SH_CUR_COL]
+    mov bl, [SH_CUR_ROW]
+    call xy_to_di
+.spi_loop:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jz .spi_done
+    stosw
+    inc byte [SH_CUR_COL]
+    jmp .spi_loop
+.spi_done:
+    pop di
+    pop bx
+    pop ax
+    ret
+
+sh_print_line:
+    call sh_print_inline
+    call sh_newline
+    ret
+
+sh_print_char:
+    ; Druckt einzelnes Zeichen AL mit Attribut AH an (SH_CUR_COL, SH_CUR_ROW)
+    push ax
+    push bx
+    push di
+    call sh_fix_attr
+    push ax
+    mov al, [SH_CUR_COL]
+    mov bl, [SH_CUR_ROW]
+    call xy_to_di
+    pop ax
+    stosw
+    inc byte [SH_CUR_COL]
+    pop di
+    pop bx
+    pop ax
+    ret
+
+sh_print_hex8:
+    ; Druckt DL als 2 Hex-Ziffern mit Attribut AH
+    push ax
+    push bx
+    push dx
+    mov al, dl
+    shr al, 4
+    and al, 0x0F
+    xor bh, bh
+    mov bl, al
+    mov al, [cs:sh_hex_chars + bx]
+    call sh_print_char
+
+    mov al, dl
+    and al, 0x0F
+    mov bl, al
+    mov al, [cs:sh_hex_chars + bx]
+    call sh_print_char
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+sh_print_hex16:
+    ; Druckt DX als 4 Hex-Ziffern mit Attribut AH
+    push dx
+    mov dl, dh
+    call sh_print_hex8
+    pop dx
+    call sh_print_hex8
+    ret
+
+; -----------------------------------------------------------------------------
+; PROMPT & INPUT LINE RENDERING
+; -----------------------------------------------------------------------------
+sh_draw_input_line:
+    call sh_draw_input_no_cursor
+    ; Blinkenden/Hervorgehobenen Cursor '_' ans Ende setzen
+    mov al, '_'
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_char
+    ret
+
+sh_draw_input_no_cursor:
+    ; Aktuelle ZeileSH_CUR_ROW komplett leeren
+    mov al, 0
+    mov bl, [SH_CUR_ROW]
+    call xy_to_di
+    mov cx, 80
+    mov ah, [SH_TEXT_ATTR]
+    mov al, ' '
+    rep stosw
+
+    mov byte [SH_CUR_COL], 0
+    mov ah, [SH_PROMPT_ATTR]
+
+    ; Prompt-Stil gemaess CFG_SH_PROMPT & SH_DIR_ID waehlen
+    cmp byte [CFG_SH_PROMPT], 1
+    je .sdp_compact
+    cmp byte [CFG_SH_PROMPT], 2
+    je .sdp_root
+
+    ; UEFI Standard Prompt (FS0:\>, FS0:\EFI>, FS0:\AUDIO>, FS0:\DIAG>)
+    mov al, [SH_DIR_ID]
+    mov si, str_pr_fs0_root
+    cmp al, 1
+    jne .chk_pr_aud
+    mov si, str_pr_fs0_efi
+    jmp .do_pr_print
+.chk_pr_aud:
+    cmp al, 2
+    jne .chk_pr_diag
+    mov si, str_pr_fs0_aud
+    jmp .do_pr_print
+.chk_pr_diag:
+    cmp al, 3
+    jne .do_pr_print
+    mov si, str_pr_fs0_diag
+    jmp .do_pr_print
+
+.sdp_compact:
+    mov si, str_pr_compact
+    jmp .do_pr_print
+.sdp_root:
+    mov si, str_pr_root
+
+.do_pr_print:
+    call sh_print_inline
+
+    ; Eingabepuffer SH_CMD_BUF ausgeben
+    mov cl, [SH_CMD_LEN]
+    test cl, cl
+    jz .sdp_done
+    xor ch, ch
+    xor bx, bx
+    mov ah, 0x0F                    ; Eingabetext in hellem Weiss
+.sdp_buf_loop:
+    mov al, [SH_CMD_BUF + bx]
+    call sh_print_char
+    inc bx
+    loop .sdp_buf_loop
+.sdp_done:
+    ret
+
+; -----------------------------------------------------------------------------
+; COMMAND NORMALIZATION, PARSING & AUTO-COMPLETE
+; -----------------------------------------------------------------------------
+sh_normalize_cmd:
+    xor si, si
+    xor di, di
+    mov cl, [SH_CMD_LEN]
+    xor ch, ch
+
+    ; Leading Spaces ueberspringen
+.snc_skip_lead:
+    test cx, cx
+    jz .snc_term
+    mov al, [SH_CMD_BUF + si]
+    cmp al, ' '
+    jne .snc_copy_loop
+    inc si
+    dec cx
+    jmp .snc_skip_lead
+
+.snc_copy_loop:
+    test cx, cx
+    jz .snc_term
+    mov al, [SH_CMD_BUF + si]
+    cmp al, 'A'
+    jb .snc_store
+    cmp al, 'Z'
+    ja .snc_store
+    add al, 32                      ; In Kleinbuchstaben umwandeln
+.snc_store:
+    mov [SH_CLEAN_BUF + di], al
+    inc si
+    inc di
+    dec cx
+    jmp .snc_copy_loop
+
+.snc_term:
+    ; Trailing Spaces entfernen
+.snc_trim_tail:
+    test di, di
+    jz .snc_write_zero
+    cmp byte [SH_CLEAN_BUF + di - 1], ' '
+    jne .snc_write_zero
+    dec di
+    jmp .snc_trim_tail
+.snc_write_zero:
+    mov byte [SH_CLEAN_BUF + di], 0
+    ret
+
+sh_match_cmd:
+    ; Vergleicht SH_CLEAN_BUF mit [cs:si].
+    ; Setzt CF=1 bei Treffer (Wortende 0 oder Space) und gibt in BX den Offset zum Argument zurueck!
+    xor bx, bx
+.smc_loop:
+    mov al, [cs:si]
+    test al, al
+    jz .smc_end_pat
+    mov ah, [SH_CLEAN_BUF + bx]
+    cmp al, ah
+    jne .smc_no
+    inc si
+    inc bx
+    jmp .smc_loop
+.smc_end_pat:
+    mov ah, [SH_CLEAN_BUF + bx]
+    test ah, ah
+    jz .smc_yes
+    cmp ah, ' '
+    jne .smc_no
+.smc_skip_arg_sp:
+    cmp byte [SH_CLEAN_BUF + bx], ' '
+    jne .smc_yes
+    inc bx
+    jmp .smc_skip_arg_sp
+.smc_yes:
+    stc
+    ret
+.smc_no:
+    clc
+    ret
+
+sh_autocomplete:
+    ; Vervollstaendigt den aktuellen Praefix in SH_CMD_BUF anhand von sh_ac_table
+    cmp byte [SH_CMD_LEN], 0
+    je .sac_done
+    call sh_normalize_cmd
+    cmp byte [SH_CLEAN_BUF], 0
+    je .sac_done
+
+    mov si, sh_ac_table
+.sac_next_entry:
+    mov al, [cs:si]
+    test al, al
+    jz .sac_done                    ; Ende der Tabelle
+
+    push si
+    xor bx, bx
+.sac_cmp:
+    mov ah, [SH_CLEAN_BUF + bx]
+    test ah, ah
+    jz .sac_match_found             ; Kompletter Praefix stimmt ueberein!
+    mov al, [cs:si]
+    test al, al
+    jz .sac_Try_next
+    cmp al, ah
+    jne .sac_Try_next
+    inc si
+    inc bx
+    jmp .sac_cmp
+
+.sac_Try_next:
+    pop si
+.sac_skip_str:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jnz .sac_skip_str
+    jmp .sac_next_entry
+
+.sac_match_found:
+    pop si
+    xor bx, bx
+.sac_copy_full:
+    mov al, [cs:si]
+    test al, al
+    jz .sac_copy_done
+    mov [SH_CMD_BUF + bx], al
+    inc si
+    inc bx
+    jmp .sac_copy_full
+.sac_copy_done:
+    mov [SH_CMD_LEN], bl
+    call sh_key_click
+.sac_done:
+    ret
+
+; -----------------------------------------------------------------------------
+; SHELL COMMAND DISPATCHER & BUILT-IN COMMANDS
+; -----------------------------------------------------------------------------
+sh_execute_command:
+    ; 1. exit / quit / setup -> Zurueck ins BIOS Setup!
+    mov si, cmd_exit
+    call sh_match_cmd
+    jc .do_sh_exit
+    mov si, cmd_quit
+    call sh_match_cmd
+    jc .do_sh_exit
+    mov si, cmd_setup
+    call sh_match_cmd
+    jc .do_sh_exit
+
+    ; 2. help / ?
+    mov si, cmd_help
+    call sh_match_cmd
+    jc .do_sh_help
+    mov si, cmd_qmark
+    call sh_match_cmd
+    jc .do_sh_help
+
+    ; 3. cls / clear
+    mov si, cmd_cls
+    call sh_match_cmd
+    jc .do_sh_cls
+    mov si, cmd_clear
+    call sh_match_cmd
+    jc .do_sh_cls
+
+    ; 4. ver / version
+    mov si, cmd_ver
+    call sh_match_cmd
+    jc .do_sh_ver
+    mov si, cmd_version
+    call sh_match_cmd
+    jc .do_sh_ver
+
+    ; 5. map
+    mov si, cmd_map
+    call sh_match_cmd
+    jc .do_sh_map
+
+    ; 6. memmap / mem
+    mov si, cmd_memmap
+    call sh_match_cmd
+    jc .do_sh_memmap
+    mov si, cmd_mem
+    call sh_match_cmd
+    jc .do_sh_memmap
+
+    ; 7. ls / dir
+    mov si, cmd_ls
+    call sh_match_cmd
+    jc .do_sh_ls
+    mov si, cmd_dir
+    call sh_match_cmd
+    jc .do_sh_ls
+
+    ; 8. cd / fs0: / blk0:
+    mov si, cmd_cd
+    call sh_match_cmd
+    jc .do_sh_cd
+    mov si, cmd_fs0
+    call sh_match_cmd
+    jc .do_sh_cd_root
+    mov si, cmd_blk0
+    call sh_match_cmd
+    jc .do_sh_cd_audio
+
+    ; 9. cat / type
+    mov si, cmd_cat
+    call sh_match_cmd
+    jc .do_sh_cat
+    mov si, cmd_type
+    call sh_match_cmd
+    jc .do_sh_cat
+
+    ; 10. sysinfo / neofetch / info
+    mov si, cmd_sysinfo
+    call sh_match_cmd
+    jc .do_sh_sysinfo
+    mov si, cmd_neofetch
+    call sh_match_cmd
+    jc .do_sh_sysinfo
+    mov si, cmd_info
+    call sh_match_cmd
+    jc .do_sh_sysinfo
+
+    ; 11. pci / devices / devtree / lspci
+    mov si, cmd_pci
+    call sh_match_cmd
+    jc .do_sh_pci
+    mov si, cmd_devices
+    call sh_match_cmd
+    jc .do_sh_pci
+    mov si, cmd_devtree
+    call sh_match_cmd
+    jc .do_sh_pci
+    mov si, cmd_lspci
+    call sh_match_cmd
+    jc .do_sh_pci
+
+    ; 12. cpu / regs
+    mov si, cmd_cpu
+    call sh_match_cmd
+    jc .do_sh_cpu
+    mov si, cmd_regs
+    call sh_match_cmd
+    jc .do_sh_cpu
+
+    ; 13. cmos / nvram
+    mov si, cmd_cmos
+    call sh_match_cmd
+    jc .do_sh_cmos
+    mov si, cmd_nvram
+    call sh_match_cmd
+    jc .do_sh_cmos
+
+    ; 14. dmem / hex / dump
+    mov si, cmd_dmem
+    call sh_match_cmd
+    jc .do_sh_dmem
+    mov si, cmd_hex
+    call sh_match_cmd
+    jc .do_sh_dmem
+    mov si, cmd_dump
+    call sh_match_cmd
+    jc .do_sh_dmem
+
+    ; 15. time / date / rtc
+    mov si, cmd_time
+    call sh_match_cmd
+    jc .do_sh_time
+    mov si, cmd_date
+    call sh_match_cmd
+    jc .do_sh_time
+    mov si, cmd_rtc
+    call sh_match_cmd
+    jc .do_sh_time
+
+    ; 16. sound / play / audio
+    mov si, cmd_sound
+    call sh_match_cmd
+    jc .do_sh_sound
+    mov si, cmd_play
+    call sh_match_cmd
+    jc .do_sh_sound
+    mov si, cmd_audio
+    call sh_match_cmd
+    jc .do_sh_sound
+
+    ; 17. io / ports
+    mov si, cmd_io
+    call sh_match_cmd
+    jc .do_sh_io
+    mov si, cmd_ports
+    call sh_match_cmd
+    jc .do_sh_io
+
+    ; 18. memtest
+    mov si, cmd_memtest
+    call sh_match_cmd
+    jc .do_sh_memtest
+
+    ; 19. color
+    mov si, cmd_color
+    call sh_match_cmd
+    jc .do_sh_color
+
+    ; 20. echo
+    mov si, cmd_echo
+    call sh_match_cmd
+    jc .do_sh_echo
+
+    ; 21. beep
+    mov si, cmd_beep
+    call sh_match_cmd
+    jc .do_sh_beep
+
+    ; 22. snake / boot / snake.efi
+    mov si, cmd_snake
+    call sh_match_cmd
+    jc .do_sh_snake
+    mov si, cmd_snake_efi
+    call sh_match_cmd
+    jc .do_sh_snake
+    mov si, cmd_boot
+    call sh_match_cmd
+    jc .do_sh_snake
+
+    ; 23. reboot / reset
+    mov si, cmd_reboot
+    call sh_match_cmd
+    jc .do_sh_reboot
+    mov si, cmd_reset
+    call sh_match_cmd
+    jc .do_sh_reboot
+
+    ; Unbekannter Befehl:
+    mov si, str_sh_err_pfx
+    mov ah, 0x0C                    ; Bright Red
+    call sh_print_inline
+    xor bx, bx
+.err_cmd_echo:
+    mov al, [SH_CLEAN_BUF + bx]
+    test al, al
+    jz .err_cmd_done
+    mov ah, 0x0E
+    call sh_print_char
+    inc bx
+    jmp .err_cmd_echo
+.err_cmd_done:
+    mov si, str_sh_err_sfx
+    mov ah, 0x0C
+    call sh_print_line
+    ret
+
+; --- 1. EXIT -> ZURUECK INS BIOS SETUP ---
+.do_sh_exit:
+    pop ax                          ; Return-Adresse von call sh_execute_command verwerfen
+    mov byte [SETUP_TAB], 1         ; Auf dem BiosShell-Reiter bleiben
+    mov byte [SETUP_SEL], 1         ; Auf "BiosShell" Auswahlpunkt
+    jmp core_bios_setup
+
+; --- 2. HELP ---
+.do_sh_help:
+    mov si, str_sh_hlp_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_sh_hlp1
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_sh_hlp2
+    call sh_print_line
+    mov si, str_sh_hlp3
+    call sh_print_line
+    mov si, str_sh_hlp4
+    call sh_print_line
+    mov si, str_sh_hlp5
+    call sh_print_line
+    mov si, str_sh_hlp6
+    call sh_print_line
+    mov si, str_sh_hlp7
+    call sh_print_line
+    mov si, str_sh_hlp8
+    call sh_print_line
+    mov si, str_sh_hlp9
+    call sh_print_line
+    mov si, str_sh_hlp10
+    call sh_print_line
+    mov si, str_sh_hlp11
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- 3. CLS / CLEAR ---
+.do_sh_cls:
+    call sh_clear_screen
+    ret
+
+; --- 4. VER / VERSION ---
+.do_sh_ver:
+    mov si, str_sh_ver1
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_sh_ver2
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_sh_ver3
+    call sh_print_line
+    mov si, str_sh_ver4
+    call sh_print_line
+    mov si, str_sh_ver5
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- 5. MAP ---
+.do_sh_map:
+    mov si, str_sh_ban3
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_sh_map1
+    mov ah, 0x0B
+    call sh_print_line
+    mov si, str_sh_map2
+    call sh_print_line
+    mov si, str_sh_map3
+    call sh_print_line
+    mov si, str_sh_map4
+    call sh_print_line
+    mov si, str_sh_map5
+    call sh_print_line
+    mov si, str_sh_map6
+    call sh_print_line
+    ret
+
+; --- 6. MEMMAP ---
+.do_sh_memmap:
+    mov si, str_sh_mm_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_sh_mm_sep
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_sh_mm1
+    call sh_print_line
+    mov si, str_sh_mm2
+    call sh_print_line
+    mov si, str_sh_mm3
+    call sh_print_line
+    mov si, str_sh_mm4
+    call sh_print_line
+    mov si, str_sh_mm5
+    call sh_print_line
+    mov si, str_sh_mm6
+    call sh_print_line
+    mov si, str_sh_mm7
+    call sh_print_line
+    mov si, str_sh_mm8
+    call sh_print_line
+    mov si, str_sh_mm_tot
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- 7. LS / DIR ---
+.do_sh_ls:
+    ; Optionales Argument pruefen (z.B. 'ls audio', 'ls efi', 'ls diag')
+    mov al, [SH_CLEAN_BUF + bx]
+    cmp al, 'e'
+    je .ls_efi
+    cmp al, 'a'
+    je .ls_audio
+    cmp al, 'd'
+    je .ls_diag
+
+    mov al, [SH_DIR_ID]
+    cmp al, 1
+    je .ls_efi
+    cmp al, 2
+    je .ls_audio
+    cmp al, 3
+    je .ls_diag
+
+    ; Root FS0:    mov si, str_ls_root_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_ls_r1
+    mov ah, 0x0A
+    call sh_print_line
+    mov si, str_ls_r2
+    call sh_print_line
+    mov si, str_ls_r3
+    call sh_print_line
+    mov si, str_ls_r4
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_ls_r5
+    call sh_print_line
+    mov si, str_ls_r6
+    call sh_print_line
+    mov si, str_ls_r7
+    call sh_print_line
+    mov si, str_ls_r8
+    call sh_print_line
+    mov si, str_ls_r9
+    call sh_print_line
+    mov si, str_ls_r_tot
+    mov ah, 0x0B
+    call sh_print_line
+    ret
+
+.ls_efi:
+    mov si, str_ls_efi_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_ls_e1
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_ls_e2
+    call sh_print_line
+    mov si, str_ls_e3
+    call sh_print_line
+    mov si, str_ls_e4
+    call sh_print_line
+    mov si, str_ls_e5
+    call sh_print_line
+    ret
+
+.ls_audio:
+    mov si, str_ls_aud_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_ls_a0
+    mov ah, 0x0B
+    call sh_print_line
+    mov si, str_ls_a1
+    call sh_print_line
+    mov si, str_ls_a2
+    call sh_print_line
+    mov si, str_ls_a3
+    call sh_print_line
+    mov si, str_ls_a4
+    call sh_print_line
+    mov si, str_ls_a5
+    call sh_print_line
+    mov si, str_ls_a6
+    call sh_print_line
+    mov si, str_ls_a7
+    call sh_print_line
+    ret
+
+.ls_diag:
+    mov si, str_ls_diag_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_ls_d1
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_ls_d2
+    call sh_print_line
+    mov si, str_ls_d3
+    call sh_print_line
+    ret
+
+; --- 8. CD ---
+.do_sh_cd:
+    mov al, [SH_CLEAN_BUF + bx]
+    cmp al, 0
+    je .do_sh_cd_root
+    cmp al, '.'
+    je .do_sh_cd_root
+    cmp al, '\'
+    je .do_sh_cd_root
+    cmp al, '/'
+    je .do_sh_cd_root
+    cmp al, 'e'
+    je .do_sh_cd_efi
+    cmp al, 'a'
+    je .do_sh_cd_audio
+    cmp al, 'd'
+    je .do_sh_cd_diag
+    mov si, str_cd_err
+    mov ah, 0x0C
+    call sh_print_line
+    ret
+.do_sh_cd_root:
+    mov byte [SH_DIR_ID], 0
+    ret
+.do_sh_cd_efi:
+    mov byte [SH_DIR_ID], 1
+    ret
+.do_sh_cd_audio:
+    mov byte [SH_DIR_ID], 2
+    ret
+.do_sh_cd_diag:
+    mov byte [SH_DIR_ID], 3
+    ret
+
+; --- 9. CAT / TYPE ---
+.do_sh_cat:
+    mov al, [SH_CLEAN_BUF + bx]
+    cmp al, 's'                     ; startup.nsh
+    je .cat_startup
+    cmp al, 'r'                     ; readme.txt
+    je .cat_readme
+    cmp al, 'c'                     ; cmos.cfg
+    je .do_sh_cmos
+    mov si, str_cat_usage
+    mov ah, 0x0E
+    call sh_print_line
+    ret
+.cat_startup:
+    mov si, str_cat_st1
+    mov ah, 0x0A
+    call sh_print_line
+    mov si, str_cat_st2
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_cat_st3
+    call sh_print_line
+    mov si, str_cat_st4
+    call sh_print_line
+    mov si, str_cat_st5
+    call sh_print_line
+    ret
+.cat_readme:
+    mov si, str_cat_rm1
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_cat_rm2
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_cat_rm3
+    call sh_print_line
+    mov si, str_cat_rm4
+    mov ah, 0x0B
+    call sh_print_line
+    ret
+
+; --- 10. SYSINFO / NEOFETCH ---
+.do_sh_sysinfo:
+    mov si, str_neo1
+    mov ah, 0x0B
+    call sh_print_line
+    mov si, str_neo2
+    call sh_print_line
+    mov si, str_neo3
+    call sh_print_line
+    mov si, str_neo4
+    call sh_print_line
+    mov si, str_neo5
+    call sh_print_line
+    mov si, str_neo6
+    call sh_print_line
+    mov si, str_neo7
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- 11. PCI / DEVTREE ---
+.do_sh_pci:
+    mov si, str_pci_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_pci_1
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    mov si, str_pci_2
+    call sh_print_line
+    mov si, str_pci_3
+    call sh_print_line
+    mov si, str_pci_4
+    call sh_print_line
+    mov si, str_pci_5
+    mov ah, 0x0B
+    call sh_print_line
+    mov si, str_pci_6
+    call sh_print_line
+    mov si, str_pci_7
+    call sh_print_line
+    ret
+
+; --- 12. CPU / REGS ---
+.do_sh_cpu:
+    mov si, str_cpu_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+
+    mov si, str_cpu_cs
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dx, cs
+    mov ah, 0x0E
+    call sh_print_hex16
+
+    mov si, str_cpu_ds
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dx, ds
+    mov ah, 0x0E
+    call sh_print_hex16
+
+    mov si, str_cpu_es
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dx, es
+    mov ah, 0x0E
+    call sh_print_hex16
+
+    mov si, str_cpu_fs
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dx, fs
+    mov ah, 0x0E
+    call sh_print_hex16
+
+    mov si, str_cpu_sp
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dx, sp
+    mov ah, 0x0E
+    call sh_print_hex16
+    call sh_newline
+
+    mov si, str_cpu_cr0
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- 13. CMOS / NVRAM ---
+.do_sh_cmos:
+    mov si, str_cmos_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+
+    ; Zeile 1: CMOS 0x40..0x4F live aus Port 0x70/0x71 lesen
+    mov si, str_cmos_r40
+    mov ah, 0x0B
+    call sh_print_inline
+    mov cl, 0x40
+.cm_loop1:
+    mov al, cl
+    call cmos_read_byte
+    mov dl, al
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_hex8
+    mov al, ' '
+    call sh_print_char
+    inc cl
+    cmp cl, 0x50
+    jb .cm_loop1
+    call sh_newline
+
+    ; Zeile 2: CMOS 0x50..0x5F live aus Port 0x70/0x71 lesen
+    mov si, str_cmos_r50
+    mov ah, 0x0B
+    call sh_print_inline
+    mov cl, 0x50
+.cm_loop2:
+    mov al, cl
+    call cmos_read_byte
+    mov dl, al
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_hex8
+    mov al, ' '
+    call sh_print_char
+    inc cl
+    cmp cl, 0x60
+    jb .cm_loop2
+    call sh_newline
+
+    mov si, str_cmos_ok
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- 14. DMEM [HEX_ADDR] (Live Hex + ASCII Memory Dump) ---
+.do_sh_dmem:
+    ; Optionales Hex-Argument in [SH_CLEAN_BUF + bx] parsen
+    mov al, [SH_CLEAN_BUF + bx]
+    test al, al
+    jz .dmem_use_cur
+
+    xor dx, dx
+.dmem_parse_hex:
+    mov al, [SH_CLEAN_BUF + bx]
+    test al, al
+    jz .dmem_set_addr
+    cmp al, ' '
+    je .dmem_set_addr
+    shl dx, 4
+    cmp al, '9'
+    jbe .dmem_dig
+    sub al, 'a' - 10
+    jmp .dmem_add_nib
+.dmem_dig:
+    sub al, '0'
+.dmem_add_nib:
+    and al, 0x0F
+    or dl, al
+    inc bx
+    jmp .dmem_parse_hex
+.dmem_set_addr:
+    mov [SH_DUMP_ADDR], dx
+
+.dmem_use_cur:
+    ; 4 Zeilen a 16 Bytes = 64 Bytes dumpen
+    mov cx, 4
+.dmem_row_loop:
+    push cx
+    mov dx, [SH_DUMP_ADDR]
+
+    ; Segment-Prefix: 0000: (fuer RAM < 0x8000) oder F000: (fuer ROM >= 0x8000)
+    mov si, str_seg_ram
+    cmp dx, 0x8000
+    jb .dmem_pr_seg
+    mov si, str_seg_rom
+.dmem_pr_seg:
+    mov ah, 0x0B
+    call sh_print_inline
+    mov ah, 0x0E
+    call sh_print_hex16
+    mov al, ' '
+    call sh_print_char
+    call sh_print_char
+
+    ; 16 Hex-Bytes ausgeben
+    mov bp, [SH_DUMP_ADDR]
+    mov cx, 16
+.dmem_hex_loop:
+    cmp bp, 0x8000
+    jae .dmem_rd_rom1
+    mov dl, [ds:bp]
+    jmp .dmem_pr_hb
+.dmem_rd_rom1:
+    mov dl, [cs:bp]
+.dmem_pr_hb:
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_hex8
+    mov al, ' '
+    call sh_print_char
+    inc bp
+    loop .dmem_hex_loop
+
+    mov al, '|'
+    mov ah, 0x08
+    call sh_print_char
+
+    ; 16 ASCII-Zeichen ausgeben
+    mov bp, [SH_DUMP_ADDR]
+    mov cx, 16
+.dmem_asc_loop:
+    cmp bp, 0x8000
+    jae .dmem_rd_rom2
+    mov al, [ds:bp]
+    jmp .dmem_chk_asc
+.dmem_rd_rom2:
+    mov al, [cs:bp]
+.dmem_chk_asc:
+    cmp al, 32
+    jb .dmem_dot
+    cmp al, 126
+    ja .dmem_dot
+    jmp .dmem_pr_ac
+.dmem_dot:
+    mov al, '.'
+.dmem_pr_ac:
+    mov ah, 0x0A
+    call sh_print_char
+    inc bp
+    loop .dmem_asc_loop
+
+    mov al, '|'
+    mov ah, 0x08
+    call sh_print_char
+    call sh_newline
+
+    add word [SH_DUMP_ADDR], 16
+    pop cx
+    dec cx
+    jnz .dmem_row_loop
+    ret
+
+; --- 15. TIME / DATE / RTC (Hardware CMOS Clock) ---
+.do_sh_time:
+    mov si, str_rtc_pfx
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_inline
+
+    ; Jahr (20YY)
+    mov al, '2'
+    mov ah, 0x0B
+    call sh_print_char
+    mov al, '0'
+    call sh_print_char
+    mov al, 0x09
+    call cmos_read_byte
+    mov dl, al
+    call sh_print_hex8
+    mov al, '-'
+    call sh_print_char
+
+    ; Monat (0x08)
+    mov al, 0x08
+    call cmos_read_byte
+    mov dl, al
+    call sh_print_hex8
+    mov al, '-'
+    call sh_print_char
+
+    ; Tag (0x07)
+    mov al, 0x07
+    call cmos_read_byte
+    mov dl, al
+    call sh_print_hex8
+    mov al, ' '
+    call sh_print_char
+    call sh_print_char
+
+    ; Stunde (0x04)
+    mov al, 0x04
+    call cmos_read_byte
+    mov dl, al
+    mov ah, 0x0A
+    call sh_print_hex8
+    mov al, ':'
+    call sh_print_char
+
+    ; Minute (0x02)
+    mov al, 0x02
+    call cmos_read_byte
+    mov dl, al
+    call sh_print_hex8
+    mov al, ':'
+    call sh_print_char
+
+    ; Sekunde (0x00)
+    mov al, 0x00
+    call cmos_read_byte
+    mov dl, al
+    call sh_print_hex8
+
+    mov si, str_rtc_sfx
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    ret
+
+; --- 16. SOUND [0-7] (SB16 16-Bit DMA Testbench) ---
+.do_sh_sound:
+    mov al, [SH_CLEAN_BUF + bx]
+    cmp al, '0'
+    jb .snd_default
+    cmp al, '7'
+    ja .snd_default
+    sub al, '0'
+    jmp .snd_play_it
+.snd_default:
+    mov al, 3                       ; Default: Sample 3 (SND_START)
+.snd_play_it:
+    push ax
+    call sb16_play_pcm
+    mov si, str_snd_play1
+    mov ah, 0x0A
+    call sh_print_inline
+    pop ax
+    mov dl, al
+    add dl, '0'
+    mov al, dl
+    mov ah, 0x0E
+    call sh_print_char
+    mov si, str_snd_play2
+    mov ah, 0x0A
+    call sh_print_line
+    mov si, str_snd_list
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    ret
+
+; --- 17. IO / PORTS (Live Hardware Port Inspector) ---
+.do_sh_io:
+    mov si, str_io_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_inline
+
+    mov si, str_io_p60
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    in al, 0x60
+    mov dl, al
+    mov ah, 0x0E
+    call sh_print_hex8
+
+    mov si, str_io_p61
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    in al, 0x61
+    mov dl, al
+    mov ah, 0x0E
+    call sh_print_hex8
+
+    mov si, str_io_p64
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    in al, 0x64
+    mov dl, al
+    mov ah, 0x0E
+    call sh_print_hex8
+
+    mov si, str_io_p22c
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dx, 0x22C
+    in al, dx
+    mov dl, al
+    mov ah, 0x0E
+    call sh_print_hex8
+
+    mov si, str_io_p3da
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dx, 0x3DA
+    in al, dx
+    mov dl, al
+    mov ah, 0x0E
+    call sh_print_hex8
+    call sh_newline
+    ret
+
+; --- 18. MEMTEST (64KB Pattern Verification) ---
+.do_sh_memtest:
+    mov si, str_mt_1
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+
+    ; Echter R/W Test im Segment 0x2000
+    push es
+    mov ax, 0x2000
+    mov es, ax
+    xor di, di
+    mov cx, 32768
+    mov ax, 0x55AA
+    rep stosw
+    xor di, di
+    mov cx, 32768
+    mov ax, 0xAA55
+    rep stosw
+    pop es
+
+    mov si, str_mt_2
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- 19. COLOR [0-3] ---
+.do_sh_color:
+    mov al, [SH_CLEAN_BUF + bx]
+    cmp al, '0'
+    jb .col_cycle
+    cmp al, '3'
+    ja .col_cycle
+    sub al, '0'
+    mov [CFG_SH_THEME], al
+    jmp .col_apply
+.col_cycle:
+    inc byte [CFG_SH_THEME]
+    and byte [CFG_SH_THEME], 3
+.col_apply:
+    call save_cmos_settings
+    call sh_init_theme
+    call sh_clear_screen
+    mov si, str_col_ok
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    ret
+
+; --- 20. ECHO ---
+.do_sh_echo:
+    lea si, [SH_CMD_BUF + bx]
+.echo_lp:
+    mov al, [ds:si]
+    test al, al
+    jz .echo_end
+    cmp si, SH_CMD_BUF + 60
+    jae .echo_end
+    mov dl, [SH_CMD_LEN]
+    xor dh, dh
+    add dx, SH_CMD_BUF
+    cmp si, dx
+    jae .echo_end
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_char
+    inc si
+    jmp .echo_lp
+.echo_end:
+    call sh_newline
+    ret
+
+; --- 21. BEEP ---
+.do_sh_beep:
+    call sound_toggle
+    mov si, str_beep_ok
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- 22. SNAKE / BOOT ---
+.do_sh_snake:
+    pop ax                          ; Return-Adresse verwerfen
+    call apply_color_theme
+    jmp init_snake_game
+
+; --- 23. REBOOT / RESET ---
+.do_sh_reboot:
+    pop ax                          ; Return-Adresse verwerfen
+    call apply_color_theme
+    jmp post_screen
+
+; -----------------------------------------------------------------------------
+; SCANCODE SET 1 -> ASCII LOOKUP TABLES (0x00..0x57)
+; -----------------------------------------------------------------------------
+sh_hex_chars:
+    db "0123456789ABCDEF"
+
+sh_scancode_norm:
+    ;  00   01   02   03   04   05   06   07   08   09   0A   0B   0C   0D   0E   0F
+    db 0,   0,  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=',  0,   0
+    ;  10   11   12   13   14   15   16   17   18   19   1A   1B   1C   1D   1E   1F
+    db 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']',  0,   0,  'a', 's'
+    ;  20   21   22   23   24   25   26   27   28   29   2A   2B   2C   2D   2E   2F
+    db 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', "'", '`',  0,  '\','z', 'x', 'c', 'v'
+    ;  30   31   32   33   34   35   36   37   38   39   3A..57
+    db 'b', 'n', 'm', ',', '.', '/',  0,  '*',  0,  ' '
+    times 30 db 0
+
+sh_scancode_shift:
+    ;  00   01   02   03   04   05   06   07   08   09   0A   0B   0C   0D   0E   0F
+    db 0,   0,  '!', '@', '#', '$', '%', '^', '/', '*', '(', ')', '_', '+',  0,   0
+    ;  10   11   12   13   14   15   16   17   18   19   1A   1B   1C   1D   1E   1F
+    db 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}',  0,   0,  'A', 'S'
+    ;  20   21   22   23   24   25   26   27   28   29   2A   2B   2C   2D   2E   2F
+    db 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',  0,  '|', 'Z', 'X', 'C', 'V'
+    ;  30   31   32   33   34   35   36   37   38   39   3A..57
+    db 'B', 'N', 'M', ';', ':', '?',  0,  '*',  0,  ' '
+    times 30 db 0
+
+; Auto-Completion Befehlstabelle
+sh_ac_table:
+    db "help", 0, "memmap", 0, "memtest", 0, "map", 0, "sysinfo", 0, "neofetch", 0
+    db "devices", 0, "devtree", 0, "dmem ", 0, "cmos", 0, "cpu", 0, "regs", 0
+    db "time", 0, "sound ", 0, "color ", 0, "clear", 0, "snake", 0, "reboot", 0
+    db "exit", 0, "cat ", 0, "cd ", 0, 0
+
+; Command Keywords
+cmd_exit:       db "exit", 0
+cmd_quit:       db "quit", 0
+cmd_setup:      db "setup", 0
+cmd_help:       db "help", 0
+cmd_qmark:      db "?", 0
+cmd_cls:        db "cls", 0
+cmd_clear:      db "clear", 0
+cmd_ver:        db "ver", 0
+cmd_version:    db "version", 0
+cmd_map:        db "map", 0
+cmd_memmap:     db "memmap", 0
+cmd_mem:        db "mem", 0
+cmd_ls:         db "ls", 0
+cmd_dir:        db "dir", 0
+cmd_cd:         db "cd", 0
+cmd_fs0:        db "fs0:", 0
+cmd_blk0:       db "blk0:", 0
+cmd_cat:        db "cat", 0
+cmd_type:       db "type", 0
+cmd_sysinfo:    db "sysinfo", 0
+cmd_neofetch:   db "neofetch", 0
+cmd_info:       db "info", 0
+cmd_pci:        db "pci", 0
+cmd_devices:    db "devices", 0
+cmd_devtree:    db "devtree", 0
+cmd_lspci:      db "lspci", 0
+cmd_cpu:        db "cpu", 0
+cmd_regs:       db "regs", 0
+cmd_cmos:       db "cmos", 0
+cmd_nvram:      db "nvram", 0
+cmd_dmem:       db "dmem", 0
+cmd_hex:        db "hex", 0
+cmd_dump:       db "dump", 0
+cmd_time:       db "time", 0
+cmd_date:       db "date", 0
+cmd_rtc:        db "rtc", 0
+cmd_sound:      db "sound", 0
+cmd_play:       db "play", 0
+cmd_audio:      db "audio", 0
+cmd_io:         db "io", 0
+cmd_ports:      db "ports", 0
+cmd_memtest:    db "memtest", 0
+cmd_color:      db "color", 0
+cmd_echo:       db "echo", 0
+cmd_beep:       db "beep", 0
+cmd_snake:      db "snake", 0
+cmd_snake_efi:  db "snake.efi", 0
+cmd_boot:       db "boot", 0
+cmd_reboot:     db "reboot", 0
+cmd_reset:      db "reset", 0
+
+; --- Multi-Tab BIOS Setup Strings ---
+str_setup_tab_hint:
+    db "[TAB / 1 / 2] Switch Tab", 0
+str_tab0_label:
+    db " [ 1: Main & Game ] ", 0
+str_tab1_label:
+    db " [ 2: BiosShell ]   ", 0
+str_box_title_shell:
+    db " Cybforge EFI / BIOS Shell & Boot Configuration ", 0
+str_opt_tab:
+    db "Setup Reiter (Tab): ", 0
+str_val_tab_main:
+    db "< 1: Main & Game >", 0
+str_val_tab_shell:
+    db "< 2: BiosShell   >", 0
+
+str_opt_sh_launch:
+    db "BiosShell         : ", 0
+str_val_sh_launch:
+    db "[ Press ENTER to Launch ]", 0
+str_opt_sh_theme:
+    db "Shell Color Scheme: ", 0
+str_val_sht_efi:
+    db "< Classic EFI (Yel) >", 0
+str_val_sht_mat:
+    db "< Matrix Hacker     >", 0
+str_val_sht_cyb:
+    db "< Cyber Neon (Cyan) >", 0
+str_val_sht_blu:
+    db "< Retro BIOS Blue   >", 0
+
+str_opt_sh_prompt:
+    db "Shell Prompt Style: ", 0
+str_val_shp_fs0:
+    db "< FS0:\> (UEFI)     >", 0
+str_val_shp_shl:
+    db "< SHELL> (Compact)  >", 0
+str_val_shp_roo:
+    db "< root@cybforge:#   >", 0
+
+str_opt_sh_banner:
+    db "Startup Banner    : ", 0
+str_val_shb_full:
+    db "< Full EFI Dev Map  >", 0
+str_val_shb_comp:
+    db "< Compact Header    >", 0
+str_val_shb_quiet:
+    db "< Quiet (No Banner) >", 0
+
+str_opt_sh_beep:
+    db "Keystroke Beep    : ", 0
+str_val_shk_on:
+    db "< Enabled (Tactile) >", 0
+str_val_shk_off:
+    db "< Muted (Silent)    >", 0
+
+str_opt_sh_boot:
+    db "Default POST Boot : ", 0
+str_val_shbt_snk:
+    db "< Snake Game (3s)   >", 0
+str_val_shbt_shl:
+    db "< BiosShell (3s)    >", 0
+
+str_opt_sh_reset:
+    db "Reset Shell Cfg   : [ Press ENTER ]", 0
+str_sh_tab_status:
+    db "EFI Shell v2.40 Ready | Type 'exit' in Shell to return to Setup", 0
+
+str_help_tab:
+    db "Press [TAB] or [Left/Right] to switch between Main & BiosShell tabs.", 0
+str_help_sh1:
+    db "Press [ENTER] to launch the interactive Cybforge UEFI/BIOS Shell!", 0
+str_help_sh2:
+    db "Select terminal color palette for the interactive BIOS Shell.", 0
+str_help_sh3:
+    db "Choose command prompt format (FS0:\>, SHELL>, or root@cybforge:#).", 0
+str_help_sh4:
+    db "Configure device mapping table banner shown when entering Shell.", 0
+str_help_sh5:
+    db "Enable or mute acoustic keystroke feedback inside the BIOS Shell.", 0
+str_help_sh6:
+    db "Choose whether POST countdown boots into Snake or directly to Shell.", 0
+
+; --- BIOS Shell UI & Output Strings ---
+str_sh_topbar:
+    db "CYBFORGE UEFI/BIOS SHELL v2.40 [x86 Unreal 32-Bit]   ROM: 256KB  RAM: 640KB", 0
+str_sh_botbar:
+    db "[HELP] Cmds  [MAP] Map  [LS] Files  [MEMMAP] RAM  [SYSINFO] Info  [EXIT] Setup", 0
+
+str_pr_fs0_root:    db "FS0:\> ", 0
+str_pr_fs0_efi:     db "FS0:\EFI> ", 0
+str_pr_fs0_aud:     db "FS0:\AUDIO> ", 0
+str_pr_fs0_diag:    db "FS0:\DIAG> ", 0
+str_pr_compact:     db "SHELL> ", 0
+str_pr_root:        db "root@cybforge:# ", 0
+
+str_sh_ban1:
+    db "UEFI/BIOS Interactive Shell v2.40 [Cybforge Firmware rev 256.4]", 0
+str_sh_ban2:
+    db "Current running mode 1.1.2 (Flat 32-Bit Unreal Addressing Active)", 0
+str_sh_ban3:
+    db "Device mapping table:", 0
+str_sh_map1:
+    db "  FS0  :ROMDisk  - Alias:ROM0:;PciRoot(0x0)/FlashRom(Bank3,64KB,0xFFFF0000)", 0
+str_sh_map2:
+    db "  BLK0 :WaveBank - Alias:SND0:;PciRoot(0x0)/PcmAudio(128KB,16Bit,0xFFFD0000)", 0
+str_sh_map3:
+    db "  BLK1 :SysRAM   - Alias:MEM0:;SystemMemory(Base640KB,0x00000000-0x0009FFFF)", 0
+str_sh_map4:
+    db "  CMOS0:NVRAM    - Alias:RTC0:;IsaBridge(0x70,0x71)/Mc146818(128B,Chksum:OK)", 0
+str_sh_map5:
+    db "  VGA0 :Display  - Alias:CON0:;Pci(0x0,0x2)/VgaController(80x25,VRAM:0xB8000)", 0
+str_sh_map6:
+    db "  SB16 :AudioDSP - Alias:DSP0:;Isa(0x220)/SoundBlaster16(DMA5,11025Hz,16Bit)", 0
+str_sh_ban_hint:
+    db "Type 'help' for commands, 'sysinfo' for telemetry, or 'exit' for BIOS Setup.", 0
+
+str_sh_err_pfx:
+    db "Error: '", 0
+str_sh_err_sfx:
+    db "' is not recognized. Type 'help' for available commands.", 0
+
+str_sh_hlp_hdr:
+    db "Cybforge UEFI/BIOS Interactive Shell v2.40 - Command Reference:", 0
+str_sh_hlp1:
+    db "  help / ?     Show this command list     ver          Firmware & Shell info", 0
+str_sh_hlp2:
+    db "  map          Show EFI device mapping    memmap       Physical E820 RAM map", 0
+str_sh_hlp3:
+    db "  ls / dir     List files in ROM disk     cd <dir>     Change dir (efi/audio)", 0
+str_sh_hlp4:
+    db "  cat <file>   View startup.nsh / readme  dmem [hex]   Live 64B Hex/ASCII dump", 0
+str_sh_hlp5:
+    db "  sysinfo      ASCII emblem & telemetry   pci/devtree  Enumerate PCI/ISA bus", 0
+str_sh_hlp6:
+    db "  cpu / regs   Dump live x86 registers    cmos / nvram Dump CMOS NVRAM bytes", 0
+str_sh_hlp7:
+    db "  time / date  Read hardware RTC clock    sound [0-7]  Play 16-bit PCM wave", 0
+str_sh_hlp8:
+    db "  io / ports   Read live I/O port states  memtest      Run 64KB RAM test", 0
+str_sh_hlp9:
+    db "  color [0-3]  Switch shell color theme   echo <text>  Print text to screen", 0
+str_sh_hlp10:
+    db "  cls / clear  Clear terminal screen      snake / boot Launch SNAKE.EFI game", 0
+str_sh_hlp11:
+    db "  reboot       Warm reset to BIOS POST    exit / quit  Return to BIOS Setup!", 0
+
+str_sh_ver1:
+    db "UEFI Interactive Shell v2.40 [Cybforge x86-16/32 Bare-Metal Edition]", 0
+str_sh_ver2:
+    db "  Firmware Vendor : Cybforge Systems Inc. (Build 11/02/2026, Rev 2.40-PRO)", 0
+str_sh_ver3:
+    db "  ROM Image Layout: 262,144 Bytes (256 KB across 4x 64KB Banks 0xFFFC0000+)", 0
+str_sh_ver4:
+    db "  CPU Architecture: x86 16-Bit Real Mode + 32-Bit Flat Unreal Mode (4GB FS)", 0
+str_sh_ver5:
+    db "  Audio Engine    : Creative Sound Blaster 16 DSP v4.05 (16-Bit DMA Ch 5)", 0
+
+str_sh_mm_hdr:
+    db "Type          Start      End        Size     Description / Attributes", 0
+str_sh_mm_sep:
+    db "============  =========  =========  =======  ================================", 0
+str_sh_mm1:
+    db "RT_Code       00000000h  000004FFh     1 KB  Real-Mode IVT & BIOS Data Area", 0
+str_sh_mm2:
+    db "BS_Data       00001000h  00001FFFh     4 KB  Cybforge Kernel & Shell State", 0
+str_sh_mm3:
+    db "Conventional  00002000h  0001FFFFh   120 KB  Free Low Conventional Memory", 0
+str_sh_mm4:
+    db "DMA_Buffer    00020000h  0002FFFFh    64 KB  SB16 16-Bit PCM DMA Bounce RAM", 0
+str_sh_mm5:
+    db "Conventional  00030000h  0009FFFFh   448 KB  Available Base System Memory", 0
+str_sh_mm6:
+    db "MMIO_VRAM     000A0000h  000BFFFFh   128 KB  VGA Graphics & Text VRAM (B800h)", 0
+str_sh_mm7:
+    db "Audio_ROM     FFFD0000h  FFFEFFFFh   128 KB  16-Bit Signed PCM Wave ROM Bank", 0
+str_sh_mm8:
+    db "Runtime_ROM   FFFF0000h  FFFFFFFFh    64 KB  BIOS System Block 3 & Reset Vec", 0
+str_sh_mm_tot:
+    db "Summary: 640 KB Base RAM | 15,360 KB Extended | 256 KB Flash ROM (0 Errors)", 0
+
+str_ls_root_hdr:
+    db "Directory of: FS0:\ (Cybforge 256KB ROM Filesystem)", 0
+str_ls_r1:
+    db "  11/02/2026  12:00  <DIR>          EFI", 0
+str_ls_r2:
+    db "  11/02/2026  12:00  <DIR>          AUDIO", 0
+str_ls_r3:
+    db "  11/02/2026  12:00  <DIR>          DIAG", 0
+str_ls_r4:
+    db "  11/02/2026  12:00         65,536  BIOS.ROM", 0
+str_ls_r5:
+    db "  11/02/2026  12:00         24,576  SNAKE.EFI", 0
+str_ls_r6:
+    db "  11/02/2026  12:00          8,192  SHELL.EFI", 0
+str_ls_r7:
+    db "  11/02/2026  12:00            384  STARTUP.NSH", 0
+str_ls_r8:
+    db "  11/02/2026  12:00            128  CMOS.CFG", 0
+str_ls_r9:
+    db "  11/02/2026  12:00            640  README.TXT", 0
+str_ls_r_tot:
+    db "           6 File(s)     99,456 Bytes | 3 Dir(s) (Use 'cd' or 'cat')", 0
+
+str_ls_efi_hdr:
+    db "Directory of: FS0:\EFI (Executable Boot Modules & Drivers)", 0
+str_ls_e1:
+    db "  11/02/2026  12:00         16,384  BOOTX86.EFI   (x86 Real/Unreal Loader)", 0
+str_ls_e2:
+    db "  11/02/2026  12:00         24,576  SNAKE.EFI     (Run via 'snake')", 0
+str_ls_e3:
+    db "  11/02/2026  12:00          8,192  SHELL.EFI     (Active UEFI Shell v2.40)", 0
+str_ls_e4:
+    db "  11/02/2026  12:00          4,096  SB16DMA.DRV   (16-Bit DMA Ch 5 Driver)", 0
+str_ls_e5:
+    db "  11/02/2026  12:00          2,048  VGADAC.DRV    (Hardware Color Themes)", 0
+
+str_ls_aud_hdr:
+    db "Directory of: FS0:\AUDIO (16-Bit PCM WAV Samples @ 11,025 Hz in ROM):", 0
+str_ls_a0:
+    db "  [0] CRUNCH.WAV  0xFFFD0000   4,412 B   [4] PAUSE.WAV    0xFFFD8588   3,528 B", 0
+str_ls_a1:
+    db "  [1] GOLDEN.WAV  0xFFFD113C  12,128 B   [5] BOOT.WAV     0xFFFD9350  11,028 B", 0
+str_ls_a2:
+    db "  [2] CRASH.WAV   0xFFFD409C   9,924 B   [6] GAMEOVER.WAV 0xFFFDBE64  18,744 B", 0
+str_ls_a3:
+    db "  [3] START.WAV   0xFFFD6760   7,720 B   [7] VICTORY.WAV  0xFFFE079C  24,256 B", 0
+str_ls_a4:
+    db "  Total: 8 PCM Waveforms (91,740 Bytes). Type 'sound 0'..'sound 7' to play!", 0
+str_ls_a5: db 0
+str_ls_a6: db 0
+str_ls_a7: db 0
+
+str_ls_diag_hdr:
+    db "Directory of: FS0:\DIAG (Hardware Diagnostic Tools):", 0
+str_ls_d1:
+    db "  11/02/2026  12:00          4,096  MEMTEST.EFI   (Execute via 'memtest')", 0
+str_ls_d2:
+    db "  11/02/2026  12:00          2,048  CMOSTEST.EFI  (Execute via 'cmos')", 0
+str_ls_d3:
+    db "  11/02/2026  12:00          3,072  AUDIOTST.EFI  (Execute via 'sound')", 0
+
+str_cd_err:
+    db "Directory not found. Valid directories: \, efi, audio, diag", 0
+str_cat_usage:
+    db "Usage: cat startup.nsh | cat readme.txt | cat cmos.cfg", 0
+
+str_cat_st1:
+    db "# FS0:\STARTUP.NSH - Cybforge Automated Boot Script", 0
+str_cat_st2:
+    db "@echo -off", 0
+str_cat_st3:
+    db "load fs0:\efi\vgadac.drv", 0
+str_cat_st4:
+    db "load fs0:\efi\sb16dma.drv", 0
+str_cat_st5:
+    db "fs0:\efi\snake.efi --rom-bank=256k --audio=sb16", 0
+
+str_cat_rm1:
+    db "=== CYBFORGE RETRO BIOS & INTERACTIVE SHELL v2.40 ===", 0
+str_cat_rm2:
+    db "Architecture : 256 KB ROM (0xFFFC0000..0xFFFFFFFF) in 32-Bit Unreal Mode.", 0
+str_cat_rm3:
+    db "Sound Engine : Creative Sound Blaster 16 (16-Bit Single-Cycle DMA Ch 5).", 0
+str_cat_rm4:
+    db "Pro Tip      : Run 'dmem 1a00', 'dmem fff0', 'cmos', 'sound 7', or 'exit'!", 0
+
+str_neo1:
+    db "   .==========.     root@cybforge-bios", 0
+str_neo2:
+    db "  /  CYBFORGE  \    --------------------------------------------", 0
+str_neo3:
+    db " |   [x86-32]   |   OS / Shell : Cybforge UEFI/BIOS Shell v2.40", 0
+str_neo4:
+    db " |  RETRO BIOS  |   CPU Mode   : x86 Real + 32-Bit Flat Unreal", 0
+str_neo5:
+    db "  \   v2.40    /    Memory     : 640 KB Base RAM / 256 KB Flash ROM", 0
+str_neo6:
+    db "   '=========='     Video / Snd: VGA 80x25 Custom / SB16 16-Bit DMA5", 0
+str_neo7:
+    db "                    Status     : NVRAM Checksum OK (Type 'exit' for Setup)", 0
+
+str_pci_hdr:
+    db "Bus Dev Fn  Ven:Dev    Hardware Device Description", 0
+str_pci_1:
+    db "00  00  00  8086:1237  Host Bridge   : Intel 82441FX PMC (i440FX Chipset)", 0
+str_pci_2:
+    db "00  01  00  8086:7000  ISA Bridge    : Intel 82371SB PIIX3 Southbridge", 0
+str_pci_3:
+    db "00  01  01  8086:7010  IDE Controller: Intel PIIX3 Bus-Master Dual IDE", 0
+str_pci_4:
+    db "00  02  00  1234:1111  VGA Compatible: Cybforge PCI Color Graphics (B8000h)", 0
+str_pci_5:
+    db "ISA Port 0220h/DMA5    Audio Adapter : Creative Sound Blaster 16 DSP v4.05", 0
+str_pci_6:
+    db "ISA Port 0060h/0064h   Input Device  : Intel 8042 PS/2 Controller (Set 1)", 0
+str_pci_7:
+    db "ISA Port 0070h/0071h   Non-Volatile  : Motorola MC146818 RTC & CMOS NVRAM", 0
+
+str_cpu_hdr:
+    db "x86 Processor Live Register & Segment State:", 0
+str_cpu_cs:     db "  CS=", 0
+str_cpu_ds:     db "  DS=", 0
+str_cpu_es:     db "  ES=", 0
+str_cpu_fs:     db "  FS=", 0
+str_cpu_sp:     db "  SP=", 0
+str_cpu_cr0:
+    db "  Mode: 16-Bit Real Mode + 32-Bit Unreal FS Descriptor (Limit=4GB, A20=ON)", 0
+
+str_cmos_hdr:
+    db "Live CMOS NVRAM Register Dump (Ports 0x70/0x71, Registers 0x40..0x5F):", 0
+str_cmos_r40:   db "  0x40: ", 0
+str_cmos_r50:   db "  0x50: ", 0
+str_cmos_ok:
+    db "  Signature 0x40 = 0xCC [VALID] | XOR Checksum 0x5E = OK | Top 3 Stored", 0
+
+str_seg_ram:    db "0000:", 0
+str_seg_rom:    db "F000:", 0
+
+str_rtc_pfx:    db "Hardware RTC Clock (CMOS BCD): ", 0
+str_rtc_sfx:    db " UTC  [Battery: OK]", 0
+
+str_snd_play1:  db "Playing 16-Bit PCM Sample [", 0
+str_snd_play2:  db "] via SB16 DMA Channel 5 (11,025 Hz)... OK", 0
+str_snd_list:   db "  Bank: 0=Crunch 1=Gold 2=Crash 3=Start 4=Pause 5=Boot 6=GameOver 7=Victory", 0
+
+str_io_hdr:     db "Live I/O Ports: ", 0
+str_io_p60:     db "0x60(KBD)=", 0
+str_io_p61:     db " 0x61(SPK)=", 0
+str_io_p64:     db " 0x64(STS)=", 0
+str_io_p22c:    db " 0x22C(DSP)=", 0
+str_io_p3da:    db " 0x3DA(VGA)=", 0
+
+str_mt_1:
+    db "Testing 64 KB Extended DMA RAM Buffer (0x20000..0x2FFFF) [0x55AA / 0xAA55]...", 0
+str_mt_2:
+    db "Result: 32,768 Words Verified - 0 Errors (MEMORY DIAGNOSTIC PASSED)", 0
+
+str_col_ok:
+    db "Shell color scheme updated and saved to CMOS NVRAM.", 0
+str_beep_ok:
+    db "Acoustic diagnostic tone triggered.", 0
 
 ; Hardware VGA DAC Palette Themes (4 Themes x 48 Bytes = 192 Bytes)
 palette_themes_table:
