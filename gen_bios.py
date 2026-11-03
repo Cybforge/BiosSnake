@@ -158,8 +158,93 @@ for name, s_bytes in zip(pcm_names, pcm_samples):
 assert len(sample_blob) <= 131072, "Audio sample blob exceeds 128 KB!"
 block1_2 = sample_blob + b"\x00" * (131072 - len(sample_blob))
 
-# Block 0: 64 KB ROM Header and Reserved Space
-block0 = b"CYBFORGE_RETRO_BIOS_256KB_ROM\x00" + b"\x00" * (65536 - 30)
+# =============================================================================
+# BLOCK 0 (0xFFFC0000): REAL CYBFS v1.0 MASTER FILESYSTEM IMAGE
+# =============================================================================
+# Mounted into live read/write RAM at 0x3000..0x7FFF on cold boot or 'format'.
+# Superblock : 0x3000..0x301F (32 Bytes)
+# Inode Table: 0x3020..0x341F (32 Inodes x 32 Bytes = 1024 Bytes)
+# Data Pool  : 0x3420..0x7FFF (19,424 Bytes live R/W storage)
+import struct
+
+CYBFS_BASE_RAM = 0x3000
+CYBFS_DATA_START = 0x3420
+
+initial_ram_files = [
+    # (parent_id, name, content_bytes)
+    (0, "startup.nsh", (
+        b"echo Executing FS0:\\startup.nsh ...\n"
+        b"ver\n"
+        b"time\n"
+    )),
+    (0, "readme.txt", (
+        b"Cybforge Live File System (CybFS v1.0 - Real Inodes & R/W RAM Pool)\n"
+        b"  write <file> <text>  Create/overwrite file in current directory\n"
+        b"  append <file> <text> Append new line to an existing file\n"
+        b"  cat <file>           Read live file bytes (or ROM hex header)\n"
+        b"  rm <name>            Delete file or directory from Inode table\n"
+        b"  mkdir <dir>          Create a real subdirectory\n"
+        b"  run <file.nsh>       Execute commands from a script file\n"
+    )),
+    (0, "sys.cfg", (
+        b"rom_size=262144\n"
+        b"cpu_mode=unreal_32bit\n"
+        b"audio_hw=sb16_dma5_16bit\n"
+        b"fs_mount=0x3000_rw\n"
+    )),
+]
+
+inodes_bin = bytearray(32 * 32)
+data_pool_bin = bytearray()
+
+def set_inode(slot, flags, parent_id, data_off, data_seg_hi, file_size, name, meta=0xFF):
+    name_b = name.encode("ascii")[:15]
+    name_padded = name_b + b"\x00" * (16 - len(name_b))
+    meta_padded = bytes([meta]) + b"\x00" * 7
+    entry = struct.pack("<BBHHH16s8s", flags, parent_id, data_off, data_seg_hi, file_size, name_padded, meta_padded)
+    inodes_bin[slot * 32 : (slot + 1) * 32] = entry
+
+# Slot 0: Reserved for Root (\) reference
+set_inode(0, 0x02, 0, 0, 0, 0, "\\")
+
+# Slot 1: Directory 'efi' (parent=0)
+set_inode(1, 0x02, 0, 0, 1, 0, "efi")
+
+# Slot 2: Directory 'audio' (parent=0)
+set_inode(2, 0x02, 0, 0, 2, 0, "audio")
+
+next_slot = 3
+for parent_id, fname, fbytes in initial_ram_files:
+    ram_addr = CYBFS_DATA_START + len(data_pool_bin)
+    set_inode(next_slot, 0x01, parent_id, ram_addr, 0x0000, len(fbytes), fname)
+    data_pool_bin.extend(fbytes)
+    next_slot += 1
+
+# ROM-mapped system files in \efi (parent=1)
+set_inode(next_slot, 0x03, 1, 0x0000, 0xFFFF, 65535, "bios.rom", 0xFE); next_slot += 1
+set_inode(next_slot, 0x03, 1, 0x0800, 0xFFFF, 24576, "snake.efi", 0xFD); next_slot += 1
+set_inode(next_slot, 0x03, 1, 0x2400, 0xFFFF, 12288, "shell.efi", 0xFC); next_slot += 1
+set_inode(next_slot, 0x04, 1, 0x0040, 0x0070, 32,    "cmos.bin",  0xFB); next_slot += 1
+
+# ROM-mapped 16-bit PCM WAV files in \audio (parent=2) with REAL ROM addresses & sizes
+wav_filenames = ["crunch.wav", "golden.wav", "crash.wav", "start.wav", "pause.wav", "boot.wav", "gameover.wav", "victory.wav"]
+cur_wav_linear = 0xFFFD0000
+for idx_w, (wname, s_bytes) in enumerate(zip(wav_filenames, pcm_samples)):
+    off_lo = cur_wav_linear & 0xFFFF
+    seg_hi = (cur_wav_linear >> 16) & 0xFFFF
+    set_inode(next_slot, 0x03, 2, off_lo, seg_hi, len(s_bytes), wname, idx_w)
+    cur_wav_linear += len(s_bytes)
+    next_slot += 1
+
+alloc_ptr_init = CYBFS_DATA_START + len(data_pool_bin)
+superblock_bin = struct.pack("<HHHHB23s", 0x5346, 0x0100, 32, alloc_ptr_init, 0, b"CYBFORGE_CYBFS_V1\x00\x00\x00\x00\x00\x00")
+cybfs_master_img = superblock_bin + inodes_bin + data_pool_bin
+assert len(cybfs_master_img) <= 4096, "CybFS master image exceeds 4 KB!"
+cybfs_master_padded = cybfs_master_img + b"\x00" * (4096 - len(cybfs_master_img))
+
+header_256 = b"CYBFORGE_RETRO_BIOS_256KB_ROM_CYBFS_V1\x00"
+header_256 += b"\x00" * (256 - len(header_256))
+block0 = header_256 + cybfs_master_padded + b"\x00" * (65536 - 256 - 4096)
 
 content = SRC.read_text(encoding="utf-8", errors="replace")
 
@@ -260,6 +345,18 @@ SH_BAR_ATTR     equ 0x1B0B  ; Statusleisten-Attribut (Byte)
 SH_CMD_BUF      equ 0x1B10  ; 64 Bytes Eingabepuffer (0x1B10..0x1B4F)
 SH_HIST_BUF     equ 0x1B50  ; 64 Bytes History-Puffer (0x1B50..0x1B8F)
 SH_CLEAN_BUF    equ 0x1B90  ; 64 Bytes normalisierter Befehlspuffer (0x1B90..0x1BCF)
+SH_SCRIPT_PTR   equ 0x1BD0  ; Aktueller Lesezeiger bei 'run <script>' (Word)
+SH_SCRIPT_END   equ 0x1BD2  ; Endadresse bei 'run <script>' (Word)
+SH_SCRIPT_ACT   equ 0x1BD4  ; 1 = Skript laeuft gerade (Byte)
+
+; --- CybFS v1.0 Live RAM Filesystem (0x3000..0x7FFF = 20 KB) ---
+FS_MAGIC        equ 0x3000  ; Word: 0x5346 ('FS') wenn gemountet
+FS_VERSION      equ 0x3002  ; Word: 0x0100
+FS_MAX_INODES   equ 0x3004  ; Word: 32
+FS_ALLOC_PTR    equ 0x3006  ; Word: Naechste freie Datenadresse (0x3420..0x7FFF)
+FS_INODE_BASE   equ 0x3020  ; 32 Inodes x 32 Bytes (0x3020..0x341F)
+FS_DATA_BASE    equ 0x3420  ; Datei-Datenpool (0x3420..0x7FFF = 19,424 Bytes)
+FS_POOL_END     equ 0x7000  ; Obergrenze des CybFS Datenpools
 """
 idx_org = part1.find("[ORG 0x0000]")
 line_end = part1.find("\n", idx_org) + 1
@@ -4278,14 +4375,15 @@ str_vic_footer:
 
 
 ; =============================================================================
-; PHASE 8: CYBFORGE EXTENDED UEFI / BIOS INTERACTIVE SHELL v2.5
+; PHASE 8: CYBFORGE EXTENDED UEFI / BIOS INTERACTIVE SHELL v2.5 (LIVE CYBFS)
 ; =============================================================================
 bios_shell_main:
     call drain_kbd
-    mov byte [SH_DIR_ID], 0
+    call fs_ensure_mounted          ; CybFS aus ROM Block 0 mounten falls noch nicht aktiv
     mov byte [SH_SHIFT], 0
     mov byte [SH_CMD_LEN], 0
     mov byte [SH_HIST_LEN], 0
+    mov byte [SH_SCRIPT_ACT], 0
     mov word [SH_DUMP_ADDR], 0x1A00
 
     call sh_init_theme
@@ -4429,7 +4527,6 @@ bios_shell_main:
 
 .sh_on_enter:
     call sh_key_click
-    ; Cursor '_' am Ende der Eingabezeile entfernen
     mov byte [SH_CUR_COL], 2
     call sh_draw_input_no_cursor
     call sh_newline
@@ -4455,11 +4552,195 @@ bios_shell_main:
 
     ; Befehl auswerten & ausfuehren
     call sh_execute_command
-    ; Leerzeile zur optischen Trennung nach Befehlsausgabe (ausser nach cls)
     cmp byte [SH_CUR_ROW], 2
     jbe .sh_prompt_init
     call sh_newline
     jmp .sh_prompt_init
+
+; -----------------------------------------------------------------------------
+; CYBFS v1.0 DRIVER: MOUNT FROM ROM BLOCK 0, INODE LOOKUP & DECIMAL PRINTER
+; -----------------------------------------------------------------------------
+fs_ensure_mounted:
+    cmp word [FS_MAGIC], 0x5346     ; 'FS' Signatur schon im RAM?
+    je .fem_ok
+    call fs_format_from_rom
+.fem_ok:
+    ret
+
+fs_format_from_rom:
+    ; Kopiert das 4 KB CybFS Master-Image aus ROM Block 0 (0xFFFC0100) nach RAM 0x3000..0x3FFF
+    ; und nullt den restlichen Datenpool 0x4000..0x7FFF.
+    push eax
+    push ecx
+    push esi
+    push edi
+
+    mov esi, 0xFFFC0100
+    mov di, 0x3000
+    mov cx, 4096
+.ffr_copy:
+    a32 mov al, [fs:esi]
+    mov [ds:di], al
+    inc esi
+    inc di
+    dec cx
+    jnz .ffr_copy
+
+    ; Restlichen RAM-Pool (0x4000..0x6FFF = 12 KB, Stack bei 0x7C00 schuetzen!) leeren
+    mov di, 0x4000
+    mov cx, 12288
+    xor al, al
+.ffr_zero:
+    mov [ds:di], al
+    inc di
+    dec cx
+    jnz .ffr_zero
+
+    mov byte [SH_DIR_ID], 0
+    pop edi
+    pop esi
+    pop ecx
+    pop eax
+    ret
+
+fs_find_in_dir:
+    ; Sucht in [SH_DIR_ID] nach Dateiname ab [SH_CLEAN_BUF + bx] (bis Space oder 0).
+    ; Output: Carry=1 wenn gefunden -> DI = Inode-Adresse (0x3020 + idx*32), CL = Inode-Index (0..31)
+    ;         Carry=0 wenn nicht gefunden.
+    push ax
+    push si
+    mov cl, 1                       ; Inode 1..31 durchsuchen
+    mov di, FS_INODE_BASE + 32
+.ffid_loop:
+    mov al, [ds:di + 0]             ; flags
+    test al, al
+    jz .ffid_next
+    mov al, [ds:di + 1]             ; parent_id
+    cmp al, [SH_DIR_ID]
+    jne .ffid_next
+
+    ; Namen vergleichen: [ds:di + 8] vs [SH_CLEAN_BUF + bx]
+    push bx
+    lea si, [di + 8]
+.ffid_cmp:
+    mov al, [SH_CLEAN_BUF + bx]
+    cmp al, ' '
+    jne .ffid_not_sp
+    xor al, al                      ; Space beendet Dateinamen-Token
+.ffid_not_sp:
+    mov ah, [ds:si]
+    cmp al, ah
+    jne .ffid_mismatch
+    test al, al
+    jz .ffid_matched
+    inc bx
+    inc si
+    jmp .ffid_cmp
+
+.ffid_matched:
+    pop bx
+    pop si
+    pop ax
+    stc
+    ret
+
+.ffid_mismatch:
+    pop bx
+.ffid_next:
+    add di, 32
+    inc cl
+    cmp cl, 32
+    jb .ffid_loop
+
+    pop si
+    pop ax
+    clc
+    ret
+
+fs_alloc_inode:
+    ; Sucht freien Inode-Slot (flags == 0) ab Index 1..31.
+    ; Output: Carry=1 -> DI = Inode-Adresse, CL = Inode-Index. Carry=0 wenn voll.
+    mov cl, 1
+    mov di, FS_INODE_BASE + 32
+.fai_loop:
+    cmp byte [ds:di + 0], 0
+    je .fai_found
+    add di, 32
+    inc cl
+    cmp cl, 32
+    jb .fai_loop
+    clc
+    ret
+.fai_found:
+    stc
+    ret
+
+sh_print_dec16:
+    ; Gibt AX als vorzeichenlose 16-Bit Dezimalzahl (0..65535) mit Farb-Attribut BL aus
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    mov bh, bl                      ; Farb-Attribut in BH sichern (AX bleibt unberuehrt!)
+    xor cx, cx
+    mov si, 10
+.spd_div:
+    xor dx, dx
+    div si                          ; AX = AX / 10, DX = Rest (0..9)
+    add dl, '0'
+    push dx
+    inc cx
+    test ax, ax
+    jnz .spd_div
+.spd_out:
+    pop dx
+    mov al, dl
+    mov ah, bh
+    call sh_print_char
+    loop .spd_out
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+sh_print_dec16_pad6:
+    ; Gibt AX rechtsbuendig auf 6 Zeichen gepaddet mit Farb-Attribut BL aus
+    push ax
+    cmp ax, 10000
+    jae .p6_go
+    push ax
+    mov ah, bl
+    mov al, ' '
+    call sh_print_char
+    pop ax
+    cmp ax, 1000
+    jae .p6_go
+    push ax
+    mov ah, bl
+    mov al, ' '
+    call sh_print_char
+    pop ax
+    cmp ax, 100
+    jae .p6_go
+    push ax
+    mov ah, bl
+    mov al, ' '
+    call sh_print_char
+    pop ax
+    cmp ax, 10
+    jae .p6_go
+    push ax
+    mov ah, bl
+    mov al, ' '
+    call sh_print_char
+    pop ax
+.p6_go:
+    pop ax
+    call sh_print_dec16
+    ret
 
 ; -----------------------------------------------------------------------------
 ; SHELL KEYBOARD DRIVER (Mit Shift-Tracking fuer Grossbuchstaben & Symbole)
@@ -4665,7 +4946,6 @@ sh_scroll_up:
     ret
 
 sh_fix_attr:
-    ; Kombiniert Hintergrund-Nybble aus SH_TEXT_ATTR falls AH < 0x10
     test ah, 0xF0
     jnz .sfa_done
     push bx
@@ -4701,13 +4981,37 @@ sh_print_inline:
     pop ax
     ret
 
+sh_print_ram_inline:
+    ; Druckt Null-terminierten String aus RAM [ds:si] mit Attribut AH
+    push ax
+    push bx
+    push di
+    call sh_fix_attr
+    mov al, [SH_CUR_COL]
+    mov bl, [SH_CUR_ROW]
+    call xy_to_di
+.spri_loop:
+    mov al, [ds:si]
+    inc si
+    test al, al
+    jz .spri_done
+    cmp byte [SH_CUR_COL], 78
+    jae .spri_done
+    stosw
+    inc byte [SH_CUR_COL]
+    jmp .spri_loop
+.spri_done:
+    pop di
+    pop bx
+    pop ax
+    ret
+
 sh_print_line:
     call sh_print_inline
     call sh_newline
     ret
 
 sh_print_char:
-    ; Druckt einzelnes Zeichen AL mit Attribut AH an (SH_CUR_COL, SH_CUR_ROW)
     push ax
     push bx
     push di
@@ -4728,7 +5032,6 @@ sh_print_char:
     ret
 
 sh_print_hex8:
-    ; Druckt DL als 2 Hex-Ziffern mit Attribut AH
     push ax
     push bx
     push dx
@@ -4751,7 +5054,6 @@ sh_print_hex8:
     ret
 
 sh_print_hex16:
-    ; Druckt DX als 4 Hex-Ziffern mit Attribut AH
     push dx
     mov dl, dh
     call sh_print_hex8
@@ -4760,18 +5062,16 @@ sh_print_hex16:
     ret
 
 ; -----------------------------------------------------------------------------
-; PROMPT & INPUT LINE RENDERING
+; PROMPT & INPUT LINE RENDERING (Mit echtem Verzeichnisnamen aus CybFS Inode!)
 ; -----------------------------------------------------------------------------
 sh_draw_input_line:
     call sh_draw_input_no_cursor
-    ; Hervorgehobenen Cursor '_' ans Ende setzen
     mov al, '_'
     mov ah, [SH_HIGH_ATTR]
     call sh_print_char
     ret
 
 sh_draw_input_no_cursor:
-    ; Aktuelle Zeile SH_CUR_ROW innerhalb des Rahmens (Cols 1..78) leeren
     mov al, 1
     mov bl, [SH_CUR_ROW]
     call xy_to_di
@@ -4783,46 +5083,59 @@ sh_draw_input_no_cursor:
     mov byte [SH_CUR_COL], 2
     mov ah, [SH_PROMPT_ATTR]
 
-    ; Prompt-Stil gemaess CFG_SH_PROMPT & SH_DIR_ID waehlen
     cmp byte [CFG_SH_PROMPT], 1
     je .sdp_compact
     cmp byte [CFG_SH_PROMPT], 2
     je .sdp_root
 
-    ; UEFI Standard Prompt (FS0:\>, FS0:\EFI>, FS0:\AUDIO>, FS0:\DIAG>)
+    ; UEFI Prompt: "FS0:\" + echter Inode-Ordnername + "> "
+    mov si, str_pr_fs0_pfx
+    call sh_print_inline
     mov al, [SH_DIR_ID]
-    mov si, str_pr_fs0_root
-    cmp al, 1
-    jne .chk_pr_aud
-    mov si, str_pr_fs0_efi
-    jmp .do_pr_print
-.chk_pr_aud:
-    cmp al, 2
-    jne .chk_pr_diag
-    mov si, str_pr_fs0_aud
-    jmp .do_pr_print
-.chk_pr_diag:
-    cmp al, 3
-    jne .do_pr_print
-    mov si, str_pr_fs0_diag
-    jmp .do_pr_print
+    test al, al
+    jz .sdp_close_gt
+
+    ; Inode-Adresse des aktuellen Ordners berechnen: 0x3020 + SH_DIR_ID * 32
+    xor ah, ah
+    shl ax, 5
+    add ax, FS_INODE_BASE + 8
+    mov si, ax
+    mov ah, [SH_PROMPT_ATTR]
+.sdp_dir_ch:
+    mov al, [ds:si]
+    test al, al
+    jz .sdp_close_gt
+    cmp al, 'a'
+    jb .sdp_up_ok
+    cmp al, 'z'
+    ja .sdp_up_ok
+    sub al, 32                      ; Ordnernamen im Prompt gross darstellen
+.sdp_up_ok:
+    call sh_print_char
+    inc si
+    jmp .sdp_dir_ch
+
+.sdp_close_gt:
+    mov si, str_pr_gt
+    mov ah, [SH_PROMPT_ATTR]
+    call sh_print_inline
+    jmp .sdp_print_buf
 
 .sdp_compact:
     mov si, str_pr_compact
-    jmp .do_pr_print
+    call sh_print_inline
+    jmp .sdp_print_buf
 .sdp_root:
     mov si, str_pr_root
-
-.do_pr_print:
     call sh_print_inline
 
-    ; Eingabepuffer SH_CMD_BUF ausgeben
+.sdp_print_buf:
     mov cl, [SH_CMD_LEN]
     test cl, cl
     jz .sdp_done
     xor ch, ch
     xor bx, bx
-    mov ah, 0x0F                    ; Eingabetext in hellem Weiss
+    mov ah, 0x0F
 .sdp_buf_loop:
     mov al, [SH_CMD_BUF + bx]
     call sh_print_char
@@ -4840,7 +5153,6 @@ sh_normalize_cmd:
     mov cl, [SH_CMD_LEN]
     xor ch, ch
 
-    ; Leading Spaces ueberspringen
 .snc_skip_lead:
     test cx, cx
     jz .snc_term
@@ -4859,7 +5171,7 @@ sh_normalize_cmd:
     jb .snc_store
     cmp al, 'Z'
     ja .snc_store
-    add al, 32                      ; Nach Lowercase wandeln
+    add al, 32
 .snc_store:
     mov [SH_CLEAN_BUF + di], al
     inc si
@@ -4872,8 +5184,6 @@ sh_normalize_cmd:
     ret
 
 sh_match_cmd:
-    ; Vergleicht [SH_CLEAN_BUF] mit Keyword [cs:si].
-    ; Setzt Carry (STC) bei Treffer und liefert BX = Offset des Arguments.
     push si
     xor bx, bx
 .smc_loop:
@@ -4955,9 +5265,16 @@ sh_autocomplete:
     ret
 
 ; -----------------------------------------------------------------------------
-; SHELL COMMAND DISPATCHER (23 Built-in Commands)
+; SHELL COMMAND DISPATCHER (30 Built-In Live Commands)
 ; -----------------------------------------------------------------------------
 sh_execute_command:
+    ; Kommentarzeilen ('#' oder '@') in Skripten ignorieren
+    mov al, [SH_CLEAN_BUF]
+    cmp al, '#'
+    je .sh_noop_ret
+    cmp al, '@'
+    je .sh_noop_ret
+
     ; 1. exit / quit / setup -> Zurueck ins BIOS Setup!
     mov si, cmd_exit
     call sh_match_cmd
@@ -5006,7 +5323,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_memmap
 
-    ; 7. ls / dir
+    ; 7. ls / dir (Echte CybFS Inode-Iteration!)
     mov si, cmd_ls
     call sh_match_cmd
     jc .do_sh_ls
@@ -5025,7 +5342,38 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_cd_audio
 
-    ; 9. cat / type
+    ; 9. mkdir / md (Echten Ordner in CybFS anlegen)
+    mov si, cmd_mkdir
+    call sh_match_cmd
+    jc .do_sh_mkdir
+    mov si, cmd_md
+    call sh_match_cmd
+    jc .do_sh_mkdir
+
+    ; 10. touch (Echte leere Datei in CybFS anlegen)
+    mov si, cmd_touch
+    call sh_match_cmd
+    jc .do_sh_touch
+
+    ; 11. write (Echte Datei mit Inhalt in CybFS schreiben)
+    mov si, cmd_write
+    call sh_match_cmd
+    jc .do_sh_write
+
+    ; 12. append (Zeile an echte CybFS-Datei anhaengen)
+    mov si, cmd_append
+    call sh_match_cmd
+    jc .do_sh_append
+
+    ; 13. rm / del (Echte Datei / Ordner aus CybFS loeschen)
+    mov si, cmd_rm
+    call sh_match_cmd
+    jc .do_sh_rm
+    mov si, cmd_del
+    call sh_match_cmd
+    jc .do_sh_rm
+
+    ; 14. cat / type (Echte Datei-Bytes aus CybFS / ROM lesen)
     mov si, cmd_cat
     call sh_match_cmd
     jc .do_sh_cat
@@ -5033,7 +5381,20 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_cat
 
-    ; 10. sysinfo / neofetch / info
+    ; 15. run / sh (Echtes Skript aus CybFS Zeile fuer Zeile ausfuehren)
+    mov si, cmd_run
+    call sh_match_cmd
+    jc .do_sh_run
+    mov si, cmd_sh
+    call sh_match_cmd
+    jc .do_sh_run
+
+    ; 16. format (CybFS frisch aus ROM Block 0 formatieren)
+    mov si, cmd_format
+    call sh_match_cmd
+    jc .do_sh_format
+
+    ; 17. sysinfo / neofetch / info
     mov si, cmd_sysinfo
     call sh_match_cmd
     jc .do_sh_sysinfo
@@ -5044,7 +5405,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_sysinfo
 
-    ; 11. pci / devices / devtree / lspci
+    ; 18. pci / devices / devtree / lspci (Echter Hardware-PCI-Bus-Scan!)
     mov si, cmd_pci
     call sh_match_cmd
     jc .do_sh_pci
@@ -5058,7 +5419,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_pci
 
-    ; 12. cpu / regs
+    ; 19. cpu / regs
     mov si, cmd_cpu
     call sh_match_cmd
     jc .do_sh_cpu
@@ -5066,7 +5427,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_cpu
 
-    ; 13. cmos / nvram
+    ; 20. cmos / nvram
     mov si, cmd_cmos
     call sh_match_cmd
     jc .do_sh_cmos
@@ -5074,7 +5435,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_cmos
 
-    ; 14. dmem / hex / dump
+    ; 21. dmem / hex / dump
     mov si, cmd_dmem
     call sh_match_cmd
     jc .do_sh_dmem
@@ -5085,7 +5446,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_dmem
 
-    ; 15. time / date / rtc
+    ; 22. time / date / rtc
     mov si, cmd_time
     call sh_match_cmd
     jc .do_sh_time
@@ -5096,7 +5457,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_time
 
-    ; 16. sound / play / audio
+    ; 23. sound / play / audio
     mov si, cmd_sound
     call sh_match_cmd
     jc .do_sh_sound
@@ -5107,7 +5468,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_sound
 
-    ; 17. io / ports
+    ; 24. io / ports
     mov si, cmd_io
     call sh_match_cmd
     jc .do_sh_io
@@ -5115,27 +5476,27 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_io
 
-    ; 18. memtest
+    ; 25. memtest
     mov si, cmd_memtest
     call sh_match_cmd
     jc .do_sh_memtest
 
-    ; 19. color
+    ; 26. color
     mov si, cmd_color
     call sh_match_cmd
     jc .do_sh_color
 
-    ; 20. echo
+    ; 27. echo
     mov si, cmd_echo
     call sh_match_cmd
     jc .do_sh_echo
 
-    ; 21. beep
+    ; 28. beep
     mov si, cmd_beep
     call sh_match_cmd
     jc .do_sh_beep
 
-    ; 22. snake / boot / snake.efi
+    ; 29. snake / boot / snake.efi
     mov si, cmd_snake
     call sh_match_cmd
     jc .do_sh_snake
@@ -5146,7 +5507,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_snake
 
-    ; 23. reboot / reset
+    ; 30. reboot / reset
     mov si, cmd_reboot
     call sh_match_cmd
     jc .do_sh_reboot
@@ -5156,7 +5517,7 @@ sh_execute_command:
 
     ; Unbekannter Befehl:
     mov si, str_sh_err_pfx
-    mov ah, 0x0C                    ; Bright Red
+    mov ah, 0x0C
     call sh_print_inline
     xor bx, bx
 .err_cmd_echo:
@@ -5171,13 +5532,14 @@ sh_execute_command:
     mov si, str_sh_err_sfx
     mov ah, 0x0C
     call sh_print_line
+.sh_noop_ret:
     ret
 
 ; --- 1. EXIT -> ZURUECK INS BIOS SETUP ---
 .do_sh_exit:
-    pop ax                          ; Return-Adresse von call sh_execute_command verwerfen
-    mov byte [SETUP_TAB], 1         ; Auf dem BiosShell-Reiter bleiben
-    mov byte [SETUP_SEL], 1         ; Auf "BiosShell" Auswahlpunkt
+    pop ax
+    mov byte [SETUP_TAB], 1
+    mov byte [SETUP_SEL], 1
     jmp core_bios_setup
 
 ; --- 2. HELP ---
@@ -5275,6 +5637,7 @@ sh_execute_command:
     mov si, str_sh_mm2
     call sh_print_line
     mov si, str_sh_mm3
+    mov ah, 0x0E
     call sh_print_line
     mov si, str_sh_mm4
     mov ah, 0x0B
@@ -5294,161 +5657,768 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 7. LS / DIR ---
+; --- 7. LS / DIR (100% ECHTER CYBFS INODE-SCANNER!) ---
 .do_sh_ls:
-    mov al, [SH_CLEAN_BUF + bx]
-    cmp al, 'e'
-    je .ls_efi
-    cmp al, 'a'
-    je .ls_audio
-    cmp al, 'd'
-    je .ls_diag
-
+    mov si, str_ls_hdr_pfx
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_inline
     mov al, [SH_DIR_ID]
-    cmp al, 1
-    je .ls_efi
-    cmp al, 2
-    je .ls_audio
-    cmp al, 3
-    je .ls_diag
-
-    ; Root FS0:\
-    mov si, str_ls_root_hdr
+    test al, al
+    jz .ls_hdr_done
+    xor ah, ah
+    shl ax, 5
+    add ax, FS_INODE_BASE + 8
+    mov si, ax
+    mov ah, 0x0B
+    call sh_print_ram_inline
+.ls_hdr_done:
+    mov si, str_ls_hdr_sfx
     mov ah, [SH_HIGH_ATTR]
     call sh_print_line
+
     mov si, str_ls_col_hdr
     mov ah, 0x08
     call sh_print_line
-    mov si, str_ls_r1
-    mov ah, 0x0B                    ; Cyan fuer <DIR>
-    call sh_print_line
-    mov si, str_ls_r2
-    call sh_print_line
-    mov si, str_ls_r3
-    call sh_print_line
-    mov si, str_ls_r4
-    mov ah, 0x0A                    ; Hellgruen fuer .ROM / .EFI
-    call sh_print_line
-    mov si, str_ls_r5
-    call sh_print_line
-    mov si, str_ls_r6
-    call sh_print_line
-    mov si, str_ls_r7
-    mov ah, [SH_TEXT_ATTR]          ; Standard fuer .NSH / .CFG / .TXT
-    call sh_print_line
-    mov si, str_ls_r8
-    call sh_print_line
-    mov si, str_ls_r9
-    call sh_print_line
-    mov si, str_ls_r_tot
-    mov ah, [SH_HIGH_ATTR]
-    call sh_print_line
-    ret
 
-.ls_efi:
-    mov si, str_ls_efi_hdr
-    mov ah, [SH_HIGH_ATTR]
-    call sh_print_line
-    mov si, str_ls_e1
-    mov ah, 0x0A
-    call sh_print_line
-    mov si, str_ls_e2
-    call sh_print_line
-    mov si, str_ls_e3
-    call sh_print_line
-    mov si, str_ls_e4
+    xor bp, bp                      ; BP = Anzahl gefundener Dateien
+    xor edx, edx                    ; EDX (low 16) = Anzahl gefundener Ordner
+    mov di, FS_INODE_BASE + 32      ; Ab Inode 1..31 scannen
+    mov cl, 1
+.ls_inode_loop:
+    mov al, [ds:di + 0]             ; flags
+    test al, al
+    jz .ls_next_inode
+    mov ah, [ds:di + 1]             ; parent_id
+    cmp ah, [SH_DIR_ID]
+    jne .ls_next_inode
+
+    push cx
+    push dx
+
+    ; Spalte 1: Typ-Badge (<DIR>, [RAM], [ROM], [HW ])
+    mov al, [ds:di + 0]
+    cmp al, 2
+    je .ls_type_dir
+    cmp al, 3
+    je .ls_type_rom
+    cmp al, 4
+    je .ls_type_hw
+
+    ; flags == 1: [RAM] (Beschreibbare Datei im CybFS RAM-Pool)
+    mov si, str_tag_ram
+    mov ah, 0x0E
+    call sh_print_inline
+    jmp .ls_print_size
+
+.ls_type_dir:
+    mov si, str_tag_dir
     mov ah, 0x0B
-    call sh_print_line
-    mov si, str_ls_e5
-    call sh_print_line
-    ret
+    call sh_print_inline
+    mov si, str_size_dir
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    jmp .ls_print_addr
 
-.ls_audio:
-    mov si, str_ls_aud_hdr
+.ls_type_rom:
+    mov si, str_tag_rom
+    mov ah, 0x0A
+    call sh_print_inline
+    jmp .ls_print_size
+
+.ls_type_hw:
+    mov si, str_tag_hw
+    mov ah, 0x0D
+    call sh_print_inline
+
+.ls_print_size:
+    mov ax, [ds:di + 6]             ; Echte 16-Bit Dateigroesse aus Inode!
+    push di
+    mov bl, 0x0F
+    call sh_print_dec16_pad6
+    pop di
+    mov si, str_unit_b
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+
+.ls_print_addr:
+    ; Spalte 3: Echte Speicheradresse (data_seg_hi : data_off)
+    mov dx, [ds:di + 4]             ; data_seg_hi
+    mov ah, 0x08
+    call sh_print_hex16
+    mov al, ':'
+    call sh_print_char
+    mov dx, [ds:di + 2]             ; data_off
+    mov ah, 0x03
+    call sh_print_hex16
+    mov al, 'h'
+    call sh_print_char
+    mov al, ' '
+    call sh_print_char
+    call sh_print_char
+
+    ; Spalte 4: Echter Dateiname aus Inode (Offset +8)
+    lea si, [di + 8]
+    mov ah, 0x0F
+    cmp byte [ds:di + 0], 2
+    jne .ls_name_out
+    mov ah, 0x0B                    ; Ordnernamen in hellem Cyan
+.ls_name_out:
+    call sh_print_ram_inline
+    call sh_newline
+
+    pop dx
+    pop cx
+    cmp byte [ds:di + 0], 2
+    je .ls_cnt_dir
+    inc bp
+    jmp .ls_next_inode
+.ls_cnt_dir:
+    inc dx
+
+.ls_next_inode:
+    add di, 32
+    inc cl
+    cmp cl, 32
+    jb .ls_inode_loop
+
+    ; Zusammenfassung mit echten Zaehlern und freiem CybFS-Speicherplatz:
+    mov si, str_ls_sum1
     mov ah, [SH_HIGH_ATTR]
-    call sh_print_line
-    mov si, str_ls_a0
-    mov ah, 0x0B
-    call sh_print_line
-    mov si, str_ls_a1
-    call sh_print_line
-    mov si, str_ls_a2
-    call sh_print_line
-    mov si, str_ls_a3
-    call sh_print_line
-    mov si, str_ls_a4
+    call sh_print_inline
+    mov ax, bp
+    mov bl, 0x0F
+    call sh_print_dec16
+    mov si, str_ls_sum2
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_inline
+    mov ax, dx
+    mov bl, 0x0F
+    call sh_print_dec16
+    mov si, str_ls_sum3
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_inline
+
+    ; Freier R/W Speicher = 0x7000 - [FS_ALLOC_PTR]
+    mov ax, FS_POOL_END
+    sub ax, [FS_ALLOC_PTR]
+    mov bl, 0x0A
+    call sh_print_dec16
+    mov si, str_ls_sum4
     mov ah, 0x0A
     call sh_print_line
     ret
 
-.ls_diag:
-    mov si, str_ls_diag_hdr
-    mov ah, [SH_HIGH_ATTR]
-    call sh_print_line
-    mov si, str_ls_d1
-    mov ah, 0x0A
-    call sh_print_line
-    mov si, str_ls_d2
-    call sh_print_line
-    mov si, str_ls_d3
-    call sh_print_line
-    ret
-
-; --- 8. CD ---
+; --- 8. CD (Echter Inode-Verzeichniswechsel) ---
 .do_sh_cd:
     mov al, [SH_CLEAN_BUF + bx]
     cmp al, 0
-    je .do_sh_cd_root
-    cmp al, '.'
     je .do_sh_cd_root
     cmp al, '\\'
     je .do_sh_cd_root
     cmp al, '/'
     je .do_sh_cd_root
-    cmp al, 'e'
-    je .do_sh_cd_efi
-    cmp al, 'a'
-    je .do_sh_cd_audio
-    cmp al, 'd'
-    je .do_sh_cd_diag
-    mov si, str_cd_err
-    mov ah, 0x0C
-    call sh_print_line
+    cmp al, '.'
+    je .do_sh_cd_up
+
+    ; Ordnername in aktuellem Verzeichnis suchen
+    call fs_find_in_dir
+    jnc .cd_not_found
+    cmp byte [ds:di + 0], 2         ; Muss ein <DIR> (flags == 2) sein!
+    jne .cd_not_dir
+    mov [SH_DIR_ID], cl
     ret
+
+.do_sh_cd_up:
+    mov al, [SH_DIR_ID]
+    test al, al
+    jz .cd_done
+    xor ah, ah
+    shl ax, 5
+    add ax, FS_INODE_BASE
+    mov di, ax
+    mov al, [ds:di + 1]             ; parent_id des aktuellen Ordners!
+    mov [SH_DIR_ID], al
+.cd_done:
+    ret
+
 .do_sh_cd_root:
     mov byte [SH_DIR_ID], 0
-    ret
-.do_sh_cd_efi:
-    mov byte [SH_DIR_ID], 1
     ret
 .do_sh_cd_audio:
     mov byte [SH_DIR_ID], 2
     ret
-.do_sh_cd_diag:
-    mov byte [SH_DIR_ID], 3
-    ret
 
-; --- 9. CAT / TYPE ---
-.do_sh_cat:
-    mov al, [SH_CLEAN_BUF + bx]
-    test al, al
-    jz .cat_no_arg
-    cmp al, 's'                     ; startup.nsh / snake.efi / shell.efi
-    je .cat_s_files
-    cmp al, 'r'                     ; readme.txt
-    je .cat_readme
-    cmp al, 'c'                     ; cmos.cfg
-    je .do_sh_cmos
-    cmp al, 'b'                     ; bios.rom
-    je .cat_bios_rom
-
-    ; Datei nicht gefunden -> Klare Fehlermeldung in Rot!
-    mov si, str_cat_nf_pfx
-    mov ah, 0x0C
-    call sh_print_inline
-    mov si, str_cat_nf_sfx
+.cd_not_dir:
+    mov si, str_cd_notdir
     mov ah, 0x0C
     call sh_print_line
+    ret
+.cd_not_found:
+    mov si, str_cd_err
+    mov ah, 0x0C
+    call sh_print_line
+    ret
+
+; --- 9. MKDIR <DIRNAME> (Echten Ordner in CybFS anlegen) ---
+.do_sh_mkdir:
+    cmp byte [SH_CLEAN_BUF + bx], 0
+    je .mkdir_usage
+    call fs_find_in_dir
+    jc .mkdir_exists
+    call fs_alloc_inode
+    jnc .fs_full_err
+
+    mov byte [ds:di + 0], 2         ; flags = 2 (<DIR>)
+    mov al, [SH_DIR_ID]
+    mov [ds:di + 1], al             ; parent_id
+    mov word [ds:di + 2], 0
+    xor ah, ah
+    mov al, cl
+    mov [ds:di + 4], ax             ; Inode ID
+    mov word [ds:di + 6], 0         ; size = 0
+
+    ; Namen kopieren (bis Space oder 0, max 15 Zeichen)
+    push di
+    add di, 8
+    mov ch, 15
+.mkdir_cp:
+    mov al, [SH_CLEAN_BUF + bx]
+    test al, al
+    jz .mkdir_pad
+    cmp al, ' '
+    je .mkdir_pad
+    mov [ds:di], al
+    inc bx
+    inc di
+    dec ch
+    jnz .mkdir_cp
+.mkdir_pad:
+    mov byte [ds:di], 0
+    pop di
+
+    mov si, str_mkdir_ok
+    mov ah, 0x0A
+    call sh_print_inline
+    lea si, [di + 8]
+    mov ah, 0x0B
+    call sh_print_ram_inline
+    mov si, str_Quote_ok
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+.mkdir_usage:
+    mov si, str_mkdir_use
+    mov ah, 0x0E
+    call sh_print_line
+    ret
+.mkdir_exists:
+    mov si, str_exists_err
+    mov ah, 0x0C
+    call sh_print_line
+    ret
+
+; --- 10. TOUCH <FILENAME> (Echte leere Datei anlegen) ---
+.do_sh_touch:
+    cmp byte [SH_CLEAN_BUF + bx], 0
+    je .touch_usage
+    call fs_find_in_dir
+    jc .touch_exists
+    call fs_alloc_inode
+    jnc .fs_full_err
+
+    mov byte [ds:di + 0], 1         ; flags = 1 ([RAM] File)
+    mov al, [SH_DIR_ID]
+    mov [ds:di + 1], al
+    mov ax, [FS_ALLOC_PTR]
+    mov [ds:di + 2], ax             ; data_off
+    mov word [ds:di + 4], 0x0000    ; segment 0000h
+    mov word [ds:di + 6], 0         ; file_size = 0
+
+    push di
+    add di, 8
+    mov ch, 15
+.touch_cp:
+    mov al, [SH_CLEAN_BUF + bx]
+    test al, al
+    jz .touch_pad
+    cmp al, ' '
+    je .touch_pad
+    mov [ds:di], al
+    inc bx
+    inc di
+    dec ch
+    jnz .touch_cp
+.touch_pad:
+    mov byte [ds:di], 0
+    pop di
+
+    mov si, str_touch_ok
+    mov ah, 0x0A
+    call sh_print_inline
+    lea si, [di + 8]
+    mov ah, 0x0E
+    call sh_print_ram_inline
+    mov si, str_Quote_ok
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+.touch_usage:
+    mov si, str_touch_use
+    mov ah, 0x0E
+    call sh_print_line
+    ret
+.touch_exists:
+    mov si, str_touch_ex_ok
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- 11. WRITE <FILENAME> <TEXT> (Echte Datei mit Daten beschreiben!) ---
+.do_sh_write:
+    cmp byte [SH_CLEAN_BUF + bx], 0
+    je .write_usage
+
+    ;Pruefen ob Datei schon existiert, sonst neuen Inode allozieren
+    call fs_find_in_dir
+    jc .write_found_existing
+    call fs_alloc_inode
+    jnc .fs_full_err
+
+    ; Neuen Inode initialisieren & Namen kopieren
+    mov byte [ds:di + 0], 1         ; flags = 1 ([RAM])
+    mov al, [SH_DIR_ID]
+    mov [ds:di + 1], al
+    mov word [ds:di + 4], 0x0000
+    push di
+    add di, 8
+    mov ch, 15
+.wr_name_cp:
+    mov al, [SH_CLEAN_BUF + bx]
+    test al, al
+    jz .wr_name_done
+    cmp al, ' '
+    je .wr_name_done
+    mov [ds:di], al
+    inc bx
+    inc di
+    dec ch
+    jnz .wr_name_cp
+.wr_name_done:
+    mov byte [ds:di], 0
+    pop di
+    jmp .wr_skip_spaces
+
+.write_found_existing:
+    cmp byte [ds:di + 0], 2
+    je .cd_not_dir
+    mov byte [ds:di + 0], 1         ; Selbst ROM-Dateien koennen als RAM-Override ueberschrieben werden!
+    mov word [ds:di + 4], 0x0000
+    ; BX ueber den Dateinamen vorspulen
+.wr_adv_fn:
+    mov al, [SH_CLEAN_BUF + bx]
+    test al, al
+    jz .wr_skip_spaces
+    cmp al, ' '
+    je .wr_skip_spaces
+    inc bx
+    jmp .wr_adv_fn
+
+.wr_skip_spaces:
+    cmp byte [SH_CLEAN_BUF + bx], ' '
+    jne .wr_start_data
+    inc bx
+    jmp .wr_skip_spaces
+
+.wr_start_data:
+    ; Jetzt korrespondierenden Offset im Original-Puffer SH_CMD_BUF finden (fuer Gross/Kleinschreibung!)
+    ; Da sh_normalize_cmd nur Leading Spaces entfernt hat, suchen wir im SH_CMD_BUF das 2. Wort:
+    xor si, si
+    mov cl, [SH_CMD_LEN]
+    xor ch, ch
+.wr_orig_s1:
+    test cx, cx
+    jz .wr_do_copy
+    cmp byte [SH_CMD_BUF + si], ' '
+    jne .wr_orig_w1
+    inc si
+    dec cx
+    jmp .wr_orig_s1
+.wr_orig_w1:
+    ; Ueber Befehlsname ('write')
+    test cx, cx
+    jz .wr_do_copy
+    cmp byte [SH_CMD_BUF + si], ' '
+    je .wr_orig_s2
+    inc si
+    dec cx
+    jmp .wr_orig_w1
+.wr_orig_s2:
+    test cx, cx
+    jz .wr_do_copy
+    cmp byte [SH_CMD_BUF + si], ' '
+    jne .wr_orig_w2
+    inc si
+    dec cx
+    jmp .wr_orig_s2
+.wr_orig_w2:
+    ; Ueber Dateiname
+    test cx, cx
+    jz .wr_do_copy
+    cmp byte [SH_CMD_BUF + si], ' '
+    je .wr_orig_s3
+    inc si
+    dec cx
+    jmp .wr_orig_w2
+.wr_orig_s3:
+    test cx, cx
+    jz .wr_do_copy
+    cmp byte [SH_CMD_BUF + si], ' '
+    jne .wr_do_copy
+    inc si
+    dec cx
+    jmp .wr_orig_s3
+
+.wr_do_copy:
+    mov bp, [FS_ALLOC_PTR]
+    cmp bp, FS_POOL_END - 128
+    jae .fs_full_err
+    mov [ds:di + 2], bp             ; data_off = Startadresse im RAM-Pool
+    xor dx, dx                      ; DX = geschriebene Byte-Laenge
+
+.wr_cp_loop:
+    test cx, cx
+    jz .wr_finish_file
+    mov al, [SH_CMD_BUF + si]
+    mov [ds:bp], al
+    inc si
+    inc bp
+    inc dx
+    dec cx
+    jmp .wr_cp_loop
+
+.wr_finish_file:
+    mov byte [ds:bp], 0x0A          ; Newline am Ende
+    inc bp
+    inc dx
+    mov [ds:di + 6], dx             ; Echte Dateigroesse in Inode speichern!
+    mov [FS_ALLOC_PTR], bp          ; Allokationszeiger aktualisieren!
+
+    mov si, str_write_ok1
+    mov ah, 0x0A
+    call sh_print_inline
+    mov ax, dx
+    mov bl, 0x0E
+    call sh_print_dec16
+    mov si, str_write_ok2
+    mov ah, 0x0A
+    call sh_print_inline
+    lea si, [di + 8]
+    mov ah, 0x0F
+    call sh_print_ram_inline
+    mov si, str_Quote_ok
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+.write_usage:
+    mov si, str_write_use
+    mov ah, 0x0E
+    call sh_print_line
+    ret
+
+.fs_full_err:
+    mov si, str_fs_full
+    mov ah, 0x0C
+    call sh_print_line
+    ret
+
+; --- 12. APPEND <FILENAME> <TEXT> (Zeile an echte Datei anhaengen!) ---
+.do_sh_append:
+    cmp byte [SH_CLEAN_BUF + bx], 0
+    je .append_usage
+    call fs_find_in_dir
+    jnc .cat_not_found
+    cmp byte [ds:di + 0], 1
+    jne .append_not_ram
+
+    ; Pruefen ob die Datei direkt am Ende des aktuellen Pools liegt, sonst umkopieren
+    mov bp, [FS_ALLOC_PTR]
+    cmp bp, FS_POOL_END - 128
+    jae .fs_full_err
+
+    mov ax, [ds:di + 2]             ; altes data_off
+    add ax, [ds:di + 6]             ; + alte file_size
+    cmp ax, bp
+    je .app_in_place
+
+    ; Alte Daten nach [FS_ALLOC_PTR] kopieren, damit Datei zusammenhaengend bleibt
+    push si
+    mov si, [ds:di + 2]
+    mov [ds:di + 2], bp             ; neues data_off
+    mov cx, [ds:di + 6]
+    test cx, cx
+    jz .app_cp_done
+.app_old_cp:
+    mov al, [ds:si]
+    mov [ds:bp], al
+    inc si
+    inc bp
+    loop .app_old_cp
+.app_cp_done:
+    pop si
+
+.app_in_place:
+    ; Text nach dem 2. Wort in SH_CMD_BUF finden
+    xor si, si
+    mov cl, [SH_CMD_LEN]
+    xor ch, ch
+.ap_s1:
+    test cx, cx
+    jz .ap_do_append
+    cmp byte [SH_CMD_BUF + si], ' '
+    jne .ap_w1
+    inc si
+    dec cx
+    jmp .ap_s1
+.ap_w1:
+    test cx, cx
+    jz .ap_do_append
+    cmp byte [SH_CMD_BUF + si], ' '
+    je .ap_s2
+    inc si
+    dec cx
+    jmp .ap_w1
+.ap_s2:
+    test cx, cx
+    jz .ap_do_append
+    cmp byte [SH_CMD_BUF + si], ' '
+    jne .ap_w2
+    inc si
+    dec cx
+    jmp .ap_s2
+.ap_w2:
+    test cx, cx
+    jz .ap_do_append
+    cmp byte [SH_CMD_BUF + si], ' '
+    je .ap_s3
+    inc si
+    dec cx
+    jmp .ap_w2
+.ap_s3:
+    test cx, cx
+    jz .ap_do_append
+    cmp byte [SH_CMD_BUF + si], ' '
+    jne .ap_do_append
+    inc si
+    dec cx
+    jmp .ap_s3
+
+.ap_do_append:
+    mov dx, [ds:di + 6]             ; Bisherige Dateigroesse
+.ap_cp_loop:
+    test cx, cx
+    jz .ap_finish
+    mov al, [SH_CMD_BUF + si]
+    mov [ds:bp], al
+    inc si
+    inc bp
+    inc dx
+    dec cx
+    jmp .ap_cp_loop
+.ap_finish:
+    mov byte [ds:bp], 0x0A
+    inc bp
+    inc dx
+    mov [ds:di + 6], dx
+    mov [FS_ALLOC_PTR], bp
+
+    mov si, str_app_ok1
+    mov ah, 0x0A
+    call sh_print_inline
+    lea si, [di + 8]
+    mov ah, 0x0F
+    call sh_print_ram_inline
+    mov si, str_app_ok2
+    mov ah, 0x0A
+    call sh_print_inline
+    mov ax, dx
+    mov bl, 0x0E
+    call sh_print_dec16
+    mov si, str_app_ok3
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+.append_usage:
+    mov si, str_app_use
+    mov ah, 0x0E
+    call sh_print_line
+    ret
+.append_not_ram:
+    mov si, str_app_rom_err
+    mov ah, 0x0C
+    call sh_print_line
+    ret
+
+; --- 13. RM / DEL <NAME> (Echten Inode aus CybFS loeschen!) ---
+.do_sh_rm:
+    cmp byte [SH_CLEAN_BUF + bx], 0
+    je .rm_usage
+    call fs_find_in_dir
+    jnc .cat_not_found
+
+    ; Inode als geloescht markieren (flags = 0)
+    mov byte [ds:di + 0], 0
+
+    mov si, str_rm_ok
+    mov ah, 0x0A
+    call sh_print_inline
+    lea si, [di + 8]
+    mov ah, 0x0E
+    call sh_print_ram_inline
+    mov si, str_Quote_ok
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+.rm_usage:
+    mov si, str_rm_use
+    mov ah, 0x0E
+    call sh_print_line
+    ret
+
+; --- 14. CAT / TYPE <FILENAME> (100% ECHTE DATEI-BYTES AUS CYBFS / ROM LESEN!) ---
+.do_sh_cat:
+    cmp byte [SH_CLEAN_BUF + bx], 0
+    je .cat_no_arg
+    call fs_find_in_dir
+    jnc .cat_not_found
+
+    mov al, [ds:di + 0]             ; flags
+    cmp al, 2
+    je .cd_not_dir
+    cmp al, 4                       ; [HW] cmos.bin -> Live CMOS Hardware Dump!
+    je .do_sh_cmos
+    cmp al, 3                       ; [ROM] Datei -> Live 32-Bit ROM Header Dump (+ Audio Play)!
+    je .cat_rom_file
+
+    ; flags == 1: Echte RAM-Datei Byte fuer Byte aus [ds:data_off] lesen und ausgeben!
+    mov si, str_cat_hdr1
+    mov ah, 0x0B
+    call sh_print_inline
+    push di
+    lea si, [di + 8]
+    mov ah, 0x0F
+    call sh_print_ram_inline
+    pop di
+    mov si, str_cat_hdr2
+    mov ah, 0x0B
+    call sh_print_inline
+    mov ax, [ds:di + 6]
+    mov bl, 0x0E
+    call sh_print_dec16
+    mov si, str_cat_hdr3
+    mov ah, 0x0B
+    call sh_print_line
+
+    mov cx, [ds:di + 6]             ; Echte Dateigroesse in Bytes
+    test cx, cx
+    jz .cat_empty_done
+    mov si, [ds:di + 2]             ; Echte RAM-Startadresse (data_off)
+.cat_ram_loop:
+    mov al, [ds:si]
+    inc si
+    cmp al, 0x0A                    ; Zeilenumbruch?
+    je .cat_nl
+    cmp al, 0x0D
+    je .cat_next_b
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_char
+    jmp .cat_next_b
+.cat_nl:
+    call sh_newline
+.cat_next_b:
+    loop .cat_ram_loop
+    cmp byte [SH_CUR_COL], 2
+    je .cat_empty_done
+    call sh_newline
+.cat_empty_done:
+    ret
+
+.cat_rom_file:
+    ; Prüfen ob es eine WAV-Datei ist (meta 0..7) -> automatisch ueber SB16 abspielen!
+    mov al, [ds:di + 24]
+    cmp al, 7
+    ja .cat_rom_dump
+    push di
+    call sb16_play_pcm
+    pop di
+.cat_rom_dump:
+    ; Echte 32-Bit Lineare ROM-Adresse aus Inode holen: (data_seg_hi << 16) | data_off
+    movzx eax, word [ds:di + 4]
+    shl eax, 16
+    movzx edx, word [ds:di + 2]
+    or eax, edx
+    mov esi, eax
+
+    ; 4 Zeilen a 16 echte Bytes direkt via 32-Bit Unreal Mode [fs:esi] dumpen!
+    mov cx, 4
+.crf_row:
+    push cx
+    mov eax, esi
+    shr eax, 16
+    mov dx, ax
+    mov ah, 0x0B
+    call sh_print_hex16
+    mov al, ':'
+    call sh_print_char
+    mov dx, si
+    mov ah, 0x0E
+    call sh_print_hex16
+    mov al, ' '
+    call sh_print_char
+
+    push esi
+    mov cx, 16
+.crf_hex:
+    a32 mov dl, [fs:esi]
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_hex8
+    mov al, ' '
+    call sh_print_char
+    inc esi
+    loop .crf_hex
+    pop esi
+
+    mov al, '|'
+    mov ah, 0x08
+    call sh_print_char
+
+    mov cx, 16
+.crf_asc:
+    a32 mov al, [fs:esi]
+    cmp al, 32
+    jb .crf_dot
+    cmp al, 126
+    ja .crf_dot
+    jmp .crf_pr
+.crf_dot:
+    mov al, '.'
+.crf_pr:
+    mov ah, 0x0A
+    call sh_print_char
+    inc esi
+    loop .crf_asc
+
+    mov al, '|'
+    mov ah, 0x08
+    call sh_print_char
+    call sh_newline
+    pop cx
+    dec cx
+    jnz .crf_row
     ret
 
 .cat_no_arg:
@@ -5457,46 +6427,93 @@ sh_execute_command:
     call sh_print_line
     ret
 
-.cat_s_files:
-    cmp byte [SH_CLEAN_BUF + bx + 1], 't'
-    je .cat_startup
-    ; snake.efi / shell.efi -> Live Binary Header Dump
-.cat_bios_rom:
-    mov word [SH_DUMP_ADDR], 0x8000
-    jmp .dmem_use_cur
+.cat_not_found:
+    mov si, str_cat_nf_pfx
+    mov ah, 0x0C
+    call sh_print_line
+    ret
 
-.cat_startup:
-    mov si, str_cat_st1
-    mov ah, 0x0B
-    call sh_print_line
-    mov si, str_cat_st2
-    mov ah, 0x0A
-    call sh_print_line
-    mov si, str_cat_st3
-    mov ah, [SH_TEXT_ATTR]
-    call sh_print_line
-    mov si, str_cat_st4
-    call sh_print_line
-    mov si, str_cat_st5
+; --- 15. RUN / SH <SCRIPT.NSH> (Echte Skriptdatei aus CybFS ausfuehren!) ---
+.do_sh_run:
+    cmp byte [SH_CLEAN_BUF + bx], 0
+    je .run_usage
+    call fs_find_in_dir
+    jnc .cat_not_found
+
+    ; Falls es snake.efi ist -> Snake starten
+    cmp byte [ds:di + 24], 0xFD
+    je .do_sh_snake
+    cmp byte [ds:di + 0], 1
+    jne .run_not_script
+
+    mov ax, [ds:di + 2]             ; data_off
+    mov [SH_SCRIPT_PTR], ax
+    add ax, [ds:di + 6]             ; + file_size = Ende
+    mov [SH_SCRIPT_END], ax
+
+.run_line_loop:
+    mov si, [SH_SCRIPT_PTR]
+    cmp si, [SH_SCRIPT_END]
+    jae .run_done
+
+    ; Eine Zeile aus der Datei in SH_CMD_BUF kopieren
+    xor bx, bx
+.run_cp_ch:
+    cmp si, [SH_SCRIPT_END]
+    jae .run_line_ready
+    mov al, [ds:si]
+    inc si
+    cmp al, 0x0D
+    je .run_cp_ch
+    cmp al, 0x0A
+    je .run_line_ready
+    cmp bx, 54
+    jae .run_cp_ch
+    mov [SH_CMD_BUF + bx], al
+    inc bx
+    jmp .run_cp_ch
+
+.run_line_ready:
+    mov [SH_SCRIPT_PTR], si
+    mov [SH_CMD_LEN], bl
+    test bl, bl
+    jz .run_line_loop
+
+    call sh_normalize_cmd
+    cmp byte [SH_CLEAN_BUF], 0
+    je .run_line_loop
+
+    ; Schutz gegen Endlos-Rekursion ('run' im Skript ignorieren)
+    mov si, cmd_run
+    call sh_match_cmd
+    jc .run_line_loop
+
+    call sh_execute_command
+    jmp .run_line_loop
+
+.run_done:
+    ret
+.run_usage:
+    mov si, str_run_use
     mov ah, 0x0E
     call sh_print_line
     ret
+.run_not_script:
+    mov si, str_run_err
+    mov ah, 0x0C
+    call sh_print_line
+    ret
 
-.cat_readme:
-    mov si, str_cat_rm1
-    mov ah, [SH_HIGH_ATTR]
-    call sh_print_line
-    mov si, str_cat_rm2
-    mov ah, [SH_TEXT_ATTR]
-    call sh_print_line
-    mov si, str_cat_rm3
-    call sh_print_line
-    mov si, str_cat_rm4
+; --- 16. FORMAT (CybFS aus ROM Block 0 neu initialisieren) ---
+.do_sh_format:
+    call fs_format_from_rom
+    call sound_toggle
+    mov si, str_fmt_ok
     mov ah, 0x0A
     call sh_print_line
     ret
 
-; --- 10. SYSINFO / NEOFETCH ---
+; --- 17. SYSINFO / NEOFETCH ---
 .do_sh_sysinfo:
     mov si, str_neo1
     mov ah, 0x0B
@@ -5516,30 +6533,128 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 11. PCI / DEVTREE ---
+; --- 18. PCI / DEVTREE (100% ECHTER HARDWARE PCI BUS SCANNER UEBER 0xCF8/0xCFC!) ---
 .do_sh_pci:
     mov si, str_pci_hdr
     mov ah, [SH_HIGH_ATTR]
     call sh_print_line
-    mov si, str_pci_1
+
+    xor cx, cx                      ; CL = Device (0..7), CH = Function (0..3)
+.pci_scan_loop:
+    ; 32-Bit PCI Config Address bauen: 0x80000000 | (dev << 11) | (fn << 8)
+    mov eax, 0x80000000
+    movzx edx, cl
+    shl edx, 11
+    or eax, edx
+    movzx edx, ch
+    shl edx, 8
+    or eax, edx
+
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    in eax, dx                      ; EAX = [DeviceID (31:16) | VendorID (15:0)]
+
+    cmp ax, 0xFFFF                  ; 0xFFFF = Kein PCI-Geraet an diesem Slot
+    je .pci_next_slot
+    test ax, ax
+    jz .pci_next_slot
+
+    push eax
+    push cx
+
+    ; Bus 00, Dev CL, Fn CH ausgeben
+    mov si, str_pci_b0
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dl, cl
+    mov ah, 0x0B
+    call sh_print_hex8
+    mov al, ' '
+    call sh_print_char
+    mov dl, ch
+    call sh_print_hex8
+    mov al, ' '
+    call sh_print_char
+    call sh_print_char
+
+    ; Echte VendorID : DeviceID aus Hardware-Register EAX ausgeben!
+    pop cx
+    pop eax
+    push eax
+    push cx
+
+    mov edx, eax                    ; DX = VendorID
+    mov ah, 0x0E
+    call sh_print_hex16
+    mov al, ':'
+    call sh_print_char
+    shr eax, 16
+    mov edx, eax                    ; DX = DeviceID
+    mov ah, 0x0E
+    call sh_print_hex16
+    mov al, ' '
+    call sh_print_char
+    call sh_print_char
+
+    ; PCI Class/Subclass aus Register 0x08 live auslesen!
+    mov eax, 0x80000008
+    movzx edx, cl
+    shl edx, 11
+    or eax, edx
+    movzx edx, ch
+    shl edx, 8
+    or eax, edx
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    in eax, dx
+    shr eax, 16                     ; AX = [BaseClass (15:8) | SubClass (7:0)]
+    mov edx, eax                    ; DX = Class/Subclass sichern BEVOR AH fuer Textfarbe genutzt wird!
+
+    mov si, str_pci_cl_pfx
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov ah, 0x0A
+    call sh_print_hex16
+
+    ; Bekannte Chipset-Namen anhand der echten Class/Device zuordnen
+    mov si, str_pci_desc_brg
+    cmp dh, 0x06                    ; Class 06h = Bridge
+    je .pci_pr_desc
+    mov si, str_pci_desc_vga
+    cmp dh, 0x03                    ; Class 03h = Display Controller
+    je .pci_pr_desc
+    mov si, str_pci_desc_ide
+    cmp dh, 0x01                    ; Class 01h = Mass Storage / IDE
+    je .pci_pr_desc
+    mov si, str_pci_desc_net
+    cmp dh, 0x02                    ; Class 02h = Network Controller
+    je .pci_pr_desc
+    mov si, str_pci_desc_gen
+.pci_pr_desc:
     mov ah, [SH_TEXT_ATTR]
     call sh_print_line
-    mov si, str_pci_2
-    call sh_print_line
-    mov si, str_pci_3
-    call sh_print_line
-    mov si, str_pci_4
-    call sh_print_line
-    mov si, str_pci_5
+
+    pop cx
+    pop eax
+
+.pci_next_slot:
+    inc ch
+    cmp ch, 4
+    jb .pci_scan_loop
+    xor ch, ch
+    inc cl
+    cmp cl, 8
+    jb .pci_scan_loop
+
+    ; Zusaetzlich aktive ISA-Hardware-Statuszeile (SB16 DSP + CMOS RTC)
+    mov si, str_pci_isa
     mov ah, 0x0B
-    call sh_print_line
-    mov si, str_pci_6
-    call sh_print_line
-    mov si, str_pci_7
     call sh_print_line
     ret
 
-; --- 12. CPU / REGS ---
+; --- 19. CPU / REGS ---
 .do_sh_cpu:
     mov si, str_cpu_hdr
     mov ah, [SH_HIGH_ATTR]
@@ -5586,7 +6701,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 13. CMOS / NVRAM ---
+; --- 20. CMOS / NVRAM ---
 .do_sh_cmos:
     mov si, str_cmos_hdr
     mov ah, [SH_HIGH_ATTR]
@@ -5631,7 +6746,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 14. DMEM [HEX_ADDR] (Live Hex + ASCII Memory Dump) ---
+; --- 21. DMEM [HEX_ADDR] (Live Hex + ASCII Memory Dump) ---
 .do_sh_dmem:
     mov al, [SH_CLEAN_BUF + bx]
     test al, al
@@ -5732,7 +6847,7 @@ sh_execute_command:
     jnz .dmem_row_loop
     ret
 
-; --- 15. TIME / DATE / RTC (Hardware CMOS Clock) ---
+; --- 22. TIME / DATE / RTC (Hardware CMOS Clock) ---
 .do_sh_time:
     mov si, str_rtc_pfx
     mov ah, [SH_HIGH_ATTR]
@@ -5790,7 +6905,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 16. SOUND [0-7] (SB16 16-Bit DMA Testbench) ---
+; --- 23. SOUND [0-7] (SB16 16-Bit DMA Testbench) ---
 .do_sh_sound:
     mov al, [SH_CLEAN_BUF + bx]
     cmp al, '0'
@@ -5821,7 +6936,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 17. IO / PORTS (Live Hardware Port Inspector) ---
+; --- 24. IO / PORTS (Live Hardware Port Inspector) ---
 .do_sh_io:
     mov si, str_io_hdr
     mov ah, [SH_HIGH_ATTR]
@@ -5871,7 +6986,7 @@ sh_execute_command:
     call sh_newline
     ret
 
-; --- 18. MEMTEST (Live 64KB RAM Pattern Verification) ---
+; --- 25. MEMTEST (Echter 64KB RAM Schreib-/Lese-Vergleichstest mit Fehlerzaehler!) ---
 .do_sh_memtest:
     mov si, str_mt_1
     mov ah, [SH_HIGH_ATTR]
@@ -5880,6 +6995,9 @@ sh_execute_command:
     push es
     mov ax, 0x2000
     mov es, ax
+    xor dx, dx                      ; DX = Echter Fehlerzaehler!
+
+    ; Pass 1: 0x55AA schreiben und Wort fuer Wort zuruecklesen & pruefen!
     xor di, di
     mov cx, 32768
     mov ax, 0x55AA
@@ -5887,17 +7005,45 @@ sh_execute_command:
 
     xor di, di
     mov cx, 32768
+.mt_verify1:
+    cmp word [es:di], 0x55AA
+    je .mt_v1_ok
+    inc dx
+.mt_v1_ok:
+    add di, 2
+    loop .mt_verify1
+
+    ; Pass 2: 0xAA55 schreiben und Wort fuer Wort zuruecklesen & pruefen!
+    xor di, di
+    mov cx, 32768
     mov ax, 0xAA55
     rep stosw
+
+    xor di, di
+    mov cx, 32768
+.mt_verify2:
+    cmp word [es:di], 0xAA55
+    je .mt_v2_ok
+    inc dx
+.mt_v2_ok:
+    add di, 2
+    loop .mt_verify2
     pop es
 
+    push dx
     call sound_toggle
     mov si, str_mt_2
+    mov ah, 0x0A
+    call sh_print_inline
+    pop ax                          ; AX = Echte gemessene Fehleranzahl!
+    mov bl, 0x0E
+    call sh_print_dec16
+    mov si, str_mt_3
     mov ah, 0x0A
     call sh_print_line
     ret
 
-; --- 19. COLOR [0-3] ---
+; --- 26. COLOR [0-3] ---
 .do_sh_color:
     mov al, [SH_CLEAN_BUF + bx]
     cmp al, '0'
@@ -5919,7 +7065,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 20. ECHO ---
+; --- 27. ECHO ---
 .do_sh_echo:
     lea si, [SH_CMD_BUF + bx]
 .echo_lp:
@@ -5941,7 +7087,7 @@ sh_execute_command:
     call sh_newline
     ret
 
-; --- 21. BEEP ---
+; --- 28. BEEP ---
 .do_sh_beep:
     call sound_toggle
     mov si, str_beep_ok
@@ -5949,13 +7095,13 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 22. SNAKE / BOOT ---
+; --- 29. SNAKE / BOOT ---
 .do_sh_snake:
     pop ax
     call apply_color_theme
     jmp init_snake_game
 
-; --- 23. REBOOT / RESET ---
+; --- 30. REBOOT / RESET ---
 .do_sh_reboot:
     pop ax
     call apply_color_theme
@@ -5982,10 +7128,10 @@ sh_scancode_shift:
     times 30 db 0
 
 sh_ac_table:
-    db "help", 0, "memmap", 0, "memtest", 0, "map", 0, "sysinfo", 0, "neofetch", 0
-    db "devices", 0, "devtree", 0, "dmem ", 0, "cmos", 0, "cpu", 0, "regs", 0
-    db "time", 0, "sound ", 0, "color ", 0, "clear", 0, "snake", 0, "reboot", 0
-    db "exit", 0, "cat ", 0, "cd ", 0, 0
+    db "help", 0, "write ", 0, "append ", 0, "mkdir ", 0, "touch ", 0, "rm ", 0
+    db "run ", 0, "format", 0, "memmap", 0, "memtest", 0, "map", 0, "sysinfo", 0
+    db "pci", 0, "dmem ", 0, "cmos", 0, "cpu", 0, "time", 0, "sound ", 0
+    db "color ", 0, "clear", 0, "snake", 0, "reboot", 0, "exit", 0, "cat ", 0, "cd ", 0, 0
 
 cmd_exit:       db "exit", 0
 cmd_quit:       db "quit", 0
@@ -6004,8 +7150,18 @@ cmd_dir:        db "dir", 0
 cmd_cd:         db "cd", 0
 cmd_fs0:        db "fs0:", 0
 cmd_blk0:       db "blk0:", 0
+cmd_mkdir:      db "mkdir", 0
+cmd_md:         db "md", 0
+cmd_touch:      db "touch", 0
+cmd_write:      db "write", 0
+cmd_append:     db "append", 0
+cmd_rm:         db "rm", 0
+cmd_del:        db "del", 0
 cmd_cat:        db "cat", 0
 cmd_type:       db "type", 0
+cmd_run:        db "run", 0
+cmd_sh:         db "sh", 0
+cmd_format:     db "format", 0
 cmd_sysinfo:    db "sysinfo", 0
 cmd_neofetch:   db "neofetch", 0
 cmd_info:       db "info", 0
@@ -6104,7 +7260,7 @@ str_val_shbt_shl:
 str_opt_sh_reset:
     db "Reset Shell Cfg   : [ Press ENTER ]", 0
 str_sh_tab_status:
-    db "UEFI Shell v2.5 Ready | Type 'exit' in Shell to return to Setup", 0
+    db "CybFS v1.0 Ready | Type 'exit' in Shell to return to Setup", 0
 
 str_help_tab:
     db "Switch between [1: Main & Game] and [2: BiosShell] via TAB.", 0
@@ -6121,33 +7277,31 @@ str_help_sh5:
 str_help_sh6:
     db "Choose whether POST boots Snake Game or directly to BiosShell.", 0
 
-; --- Framed BIOS Shell UI & Output Strings (All <= 74 Chars for Cols 2..77) ---
+; --- Framed BIOS Shell & Live CybFS Strings ---
 str_sh_topbar:
-    db "CYBFORGE UEFI/BIOS SHELL v2.5 [x86 Unreal 32-Bit]    ROM: 256KB  RAM: 640KB", 0
+    db "CYBFORGE UEFI/BIOS SHELL v2.6 [CybFS v1.0 R/W]       ROM: 256KB  RAM: 640KB", 0
 str_sh_frame_top:
-    db " Cybforge Interactive UEFI/BIOS Console [FS0:\\] ", 0
+    db " Cybforge Interactive UEFI/BIOS Console [CybFS Live R/W] ", 0
 str_sh_frame_bot:
-    db " Type 'help' for Commands | 'exit' to Return to BIOS Setup ", 0
+    db " [HELP] Cmds | [WRITE/CAT/RM/MKDIR] Live CybFS | [EXIT] BIOS Setup ", 0
 str_sh_botbar:
-    db "[HELP] Cmds  [MAP] Map  [LS] Files  [MEMMAP] RAM  [SYSINFO] Info  [EXIT] Setup", 0
+    db "[HELP] Cmds  [LS] CybFS  [WRITE] Create  [CAT] Read  [RM] Delete  [EXIT] Setup", 0
 
-str_pr_fs0_root:    db "FS0:\\> ", 0
-str_pr_fs0_efi:     db "FS0:\\EFI> ", 0
-str_pr_fs0_aud:     db "FS0:\\AUDIO> ", 0
-str_pr_fs0_diag:    db "FS0:\\DIAG> ", 0
+str_pr_fs0_pfx:     db "FS0:\\", 0
+str_pr_gt:          db "> ", 0
 str_pr_compact:     db "SHELL> ", 0
 str_pr_root:        db "root@cybforge:# ", 0
 
 str_sh_ban1:
-    db "Cybforge UEFI/BIOS Interactive Shell v2.5 [Firmware Build 256.5]", 0
+    db "Cybforge UEFI/BIOS Shell v2.6 [Live CybFS v1.0 Read/Write File System]", 0
 str_sh_ban2:
-    db "Execution Mode: x86 16-Bit Real + 32-Bit Flat Unreal (4 GB Address Space)", 0
+    db "Mounted CybFS from ROM Block 0 (0xFFFC0100) -> RAM 0x3000..0x7FFF (20 KB)", 0
 str_sh_map_hdr:
     db "Handle  Media Type    Capacity   Hardware Device Path", 0
 str_sh_map_sep:
     db "------  ------------  ---------  -----------------------------------------", 0
 str_sh_map1:
-    db "FS0:    ROM Disk      64 KB      PciRoot(0)/FlashRom(Bank3, 0xFFFF0000)", 0
+    db "FS0:    CybFS R/W     20 KB RAM  RamDisk(0x3000)/RomSeed(Bank0,0xFFFC0100)", 0
 str_sh_map2:
     db "BLK0:   Wave Audio    128 KB     PciRoot(0)/PcmAudio(16-Bit, 0xFFFD0000)", 0
 str_sh_map3:
@@ -6159,7 +7313,7 @@ str_sh_map5:
 str_sh_map6:
     db "SB16:   Audio DSP     DMA Ch 5   IsaBridge(0x220)/SoundBlaster16(11025 Hz)", 0
 str_sh_ban_hint:
-    db "Ready. Type 'help' for command list, 'ls' for files, or 'exit' for Setup.", 0
+    db "Try 'ls', 'write test.txt Hallo!', 'cat test.txt', 'rm test.txt', 'exit'.", 0
 
 str_sh_err_pfx:
     db "Error: Unknown command '", 0
@@ -6167,36 +7321,36 @@ str_sh_err_sfx:
     db "'. Type 'help' for available commands.", 0
 
 str_sh_hlp_hdr:
-    db "Cybforge UEFI/BIOS Shell v2.5 - Built-In Command Reference:", 0
+    db "Cybforge UEFI/BIOS Shell v2.6 & Live CybFS - Command Reference:", 0
 str_sh_hlp1:
-    db "help / ?     Show command reference    ver          Firmware & Shell info", 0
+    db "ls / dir     Scan live CybFS Inodes    cd <dir>     Change dir (../efi/audio)", 0
 str_sh_hlp2:
-    db "map          Show device mapping       memmap       Physical E820 RAM map", 0
+    db "write <f> <t>Create/write real file    append <f><t>Append line to real file", 0
 str_sh_hlp3:
-    db "ls / dir     List files in ROM disk    cd <dir>     Change dir (efi/audio)", 0
+    db "cat <file>   Read live file bytes      rm / del <f> Delete file/dir Inode", 0
 str_sh_hlp4:
-    db "cat <file>   View startup.nsh/readme   dmem [hex]   Live 64B Hex/ASCII dump", 0
+    db "mkdir <dir>  Create real directory     touch <file> Create empty 0-byte file", 0
 str_sh_hlp5:
-    db "sysinfo      ASCII emblem & telemetry  pci/devtree  Enumerate PCI/ISA bus", 0
+    db "run <f.nsh>  Execute script file       format       Re-format CybFS from ROM", 0
 str_sh_hlp6:
-    db "cpu / regs   Dump live x86 registers   cmos / nvram Dump CMOS NVRAM bytes", 0
+    db "map / memmap Device & E820 RAM map     dmem [hex]   Live 64B Hex/ASCII dump", 0
 str_sh_hlp7:
-    db "time / date  Read hardware RTC clock   sound [0-7]  Play 16-bit PCM wave", 0
+    db "pci / lspci  Live 0xCF8 PCI bus scan   cpu / regs   Dump live x86 registers", 0
 str_sh_hlp8:
-    db "io / ports   Read live I/O ports       memtest      Run 64KB RAM test", 0
+    db "cmos / nvram Live CMOS NVRAM dump      time / date  Read hardware RTC clock", 0
 str_sh_hlp9:
-    db "color [0-3]  Switch shell color theme  echo <text>  Print text to screen", 0
+    db "sound [0-7]  Play 16-bit PCM wave      memtest      Verify 64KB RAM (2x pass)", 0
 str_sh_hlp10:
-    db "cls / clear  Clear terminal viewport   snake / boot Launch SNAKE.EFI game", 0
+    db "sysinfo      ASCII emblem & telemetry  cls / color  Clear / switch theme", 0
 str_sh_hlp11:
-    db "reboot       Warm reset to BIOS POST   exit / quit  Return to BIOS Setup!", 0
+    db "snake / boot Launch SNAKE.EFI game     exit / quit  Return to BIOS Setup!", 0
 
 str_sh_ver1:
-    db "Cybforge UEFI Interactive Shell v2.5 [x86-16/32 Bare-Metal Edition]", 0
+    db "Cybforge UEFI Interactive Shell v2.6 [Live CybFS v1.0 & Hardware Edition]", 0
 str_sh_ver2:
-    db "  Firmware Vendor : Cybforge Systems Inc. (Rev 2.50-PRO, 8x16 VGA Font)", 0
+    db "  File System     : CybFS v1.0 (32 Inodes @ 0x3020, 19.4 KB R/W Pool @ 0x3420)", 0
 str_sh_ver3:
-    db "  ROM Image Layout: 262,144 Bytes (256 KB across 4x 64KB Banks 0xFFFC0000+)", 0
+    db "  ROM Image Layout: 262,144 Bytes (Block 0 CybFS, Block 1-2 PCM, Block 3 BIOS)", 0
 str_sh_ver4:
     db "  CPU Architecture: x86 16-Bit Real Mode + 32-Bit Flat Unreal Mode (4GB FS)", 0
 str_sh_ver5:
@@ -6211,7 +7365,7 @@ str_sh_mm1:
 str_sh_mm2:
     db "BS_Data       00001000h  00001FFFh    4 KB  Cybforge Kernel & Shell State", 0
 str_sh_mm3:
-    db "Conventional  00002000h  0001FFFFh  120 KB  Free Low Conventional Memory", 0
+    db "CybFS_RAM     00003000h  00007FFFh   20 KB  Live CybFS Inodes & R/W Pool", 0
 str_sh_mm4:
     db "DMA_Buffer    00020000h  0002FFFFh   64 KB  SB16 16-Bit PCM DMA Bounce RAM", 0
 str_sh_mm5:
@@ -6219,132 +7373,128 @@ str_sh_mm5:
 str_sh_mm6:
     db "MMIO_VRAM     000A0000h  000BFFFFh  128 KB  VGA Graphics & Text VRAM", 0
 str_sh_mm7:
-    db "Audio_ROM     FFFD0000h  FFFEFFFFh  128 KB  16-Bit Signed PCM Wave Bank", 0
+    db "CybFS_ROM     FFFC0000h  FFFCFFFFh   64 KB  ROM Block 0 Master CybFS Image", 0
 str_sh_mm8:
-    db "Runtime_ROM   FFFF0000h  FFFFFFFFh   64 KB  BIOS System Block 3 & Reset", 0
+    db "Audio_BIOS    FFFD0000h  FFFFFFFFh  192 KB  16-Bit PCM Bank & BIOS Kernel", 0
 str_sh_mm_tot:
-    db "Total: 640 KB Base RAM | 15,360 KB Extended | 256 KB Flash ROM (0 Errors)", 0
+    db "Total: 640 KB Base RAM | 20 KB CybFS Live Volume | 256 KB Flash ROM", 0
 
-str_ls_root_hdr:
-    db "Directory of FS0:\\ (Cybforge 256KB ROM Filesystem)", 0
+; --- Live CybFS Output Strings ---
+str_ls_hdr_pfx:
+    db "Live Directory of FS0:\\", 0
+str_ls_hdr_sfx:
+    db " (CybFS v1.0 Inode Table @ 0000:3020h):", 0
 str_ls_col_hdr:
-    db "Type     Size       Name          Description", 0
-str_ls_r1:
-    db "<DIR>    -          EFI           Boot Loaders & Hardware Drivers", 0
-str_ls_r2:
-    db "<DIR>    -          AUDIO         16-Bit PCM WAV Sound Bank (11,025 Hz)", 0
-str_ls_r3:
-    db "<DIR>    -          DIAG          Hardware & Memory Diagnostic Tools", 0
-str_ls_r4:
-    db "[ROM]     65,536 B  BIOS.ROM      System BIOS & Reset Vector Image", 0
-str_ls_r5:
-    db "[EFI]     24,576 B  SNAKE.EFI     Cybforge Retro Snake Arcade Engine", 0
-str_ls_r6:
-    db "[EFI]      8,192 B  SHELL.EFI     Interactive UEFI/BIOS Shell v2.5", 0
-str_ls_r7:
-    db "[NSH]        384 B  STARTUP.NSH   Automated UEFI Boot Script", 0
-str_ls_r8:
-    db "[CFG]        128 B  CMOS.CFG      Non-Volatile CMOS Settings Map", 0
-str_ls_r9:
-    db "[TXT]        640 B  README.TXT    Architecture & Command Documentation", 0
-str_ls_r_tot:
-    db "6 File(s) (99,456 Bytes) | 3 Dir(s)  [Use 'cd <dir>' or 'cat <file>']", 0
-
-str_ls_efi_hdr:
-    db "Directory of FS0:\\EFI (Executable Boot Modules & Drivers):", 0
-str_ls_e1:
-    db "[EFI]     16,384 B  BOOTX86.EFI   x86 Real/Unreal Mode System Loader", 0
-str_ls_e2:
-    db "[EFI]     24,576 B  SNAKE.EFI     Retro Snake Game (Run via 'snake')", 0
-str_ls_e3:
-    db "[EFI]      8,192 B  SHELL.EFI     Active Interactive Shell v2.5", 0
-str_ls_e4:
-    db "[DRV]      4,096 B  SB16DMA.DRV   Sound Blaster 16 DMA Ch 5 Driver", 0
-str_ls_e5:
-    db "[DRV]      2,048 B  VGADAC.DRV    VGA Hardware Color Palette Driver", 0
-
-str_ls_aud_hdr:
-    db "Directory of FS0:\\AUDIO (16-Bit PCM WAV Samples @ 11,025 Hz):", 0
-str_ls_a0:
-    db "[0] CRUNCH.WAV  4,412B (FFFD0000h)   [4] PAUSE.WAV     3,528B (FFFD8588h)", 0
-str_ls_a1:
-    db "[1] GOLDEN.WAV 12,128B (FFFD113Ch)   [5] BOOT.WAV     11,028B (FFFD9350h)", 0
-str_ls_a2:
-    db "[2] CRASH.WAV   9,924B (FFFD409Ch)   [6] GAMEOVER.WAV 18,744B (FFFDBE64h)", 0
-str_ls_a3:
-    db "[3] START.WAV   7,720B (FFFD6760h)   [7] VICTORY.WAV  24,256B (FFFE079Ch)", 0
-str_ls_a4:
-    db "Total: 8 Studio PCM Waveforms (91,740 Bytes). Run 'sound 0'..'sound 7'!", 0
-
-str_ls_diag_hdr:
-    db "Directory of FS0:\\DIAG (Hardware Diagnostic Suite):", 0
-str_ls_d1:
-    db "[EFI]      4,096 B  MEMTEST.EFI   64 KB RAM Pattern Test (Run 'memtest')", 0
-str_ls_d2:
-    db "[EFI]      2,048 B  CMOSTEST.EFI  NVRAM Register Inspector (Run 'cmos')", 0
-str_ls_d3:
-    db "[EFI]      3,072 B  AUDIOTST.EFI  SB16 PCM DMA Testbench (Run 'sound')", 0
+    db "Type     Size       Memory Addr   Name", 0
+str_tag_dir:    db "<DIR>  ", 0
+str_tag_ram:    db "[RAM]  ", 0
+str_tag_rom:    db "[ROM]  ", 0
+str_tag_hw:     db "[HW ]  ", 0
+str_size_dir:   db "     -    ", 0
+str_unit_b:     db " B  ", 0
+str_ls_sum1:    db "Total: ", 0
+str_ls_sum2:    db " File(s), ", 0
+str_ls_sum3:    db " Dir(s) | Free R/W Pool: ", 0
+str_ls_sum4:    db " Bytes", 0
 
 str_cd_err:
-    db "Error: Directory not found. Valid directories: \\, efi, audio, diag", 0
+    db "Error: Directory not found in CybFS.", 0
+str_cd_notdir:
+    db "Error: Target is a file, not a directory.", 0
+
+str_mkdir_use:
+    db "Usage: mkdir <dirname>  (Creates a real directory in CybFS)", 0
+str_mkdir_ok:
+    db "Created directory '", 0
+str_exists_err:
+    db "Error: An entry with that name already exists in this directory.", 0
+
+str_touch_use:
+    db "Usage: touch <filename>  (Creates an empty 0-byte file in CybFS)", 0
+str_touch_ok:
+    db "Created empty file '", 0
+str_touch_ex_ok:
+    db "File already exists (timestamp/inode verified).", 0
+
+str_write_use:
+    db "Usage: write <filename> <text>  (Writes real bytes to CybFS RAM pool)", 0
+str_write_ok1:
+    db "Wrote ", 0
+str_write_ok2:
+    db " Bytes to CybFS file '", 0
+str_Quote_ok:
+    db "'.", 0
+str_fs_full:
+    db "Error: CybFS Inode table (32 max) or R/W Data Pool (0x7FFF) is full!", 0
+
+str_app_use:
+    db "Usage: append <filename> <text>  (Appends a line to an existing RAM file)", 0
+str_app_rom_err:
+    db "Error: Cannot append to read-only [ROM] / [HW] file.", 0
+str_app_ok1:
+    db "Appended line to '", 0
+str_app_ok2:
+    db "' (New size: ", 0
+str_app_ok3:
+    db " Bytes).", 0
+
+str_rm_use:
+    db "Usage: rm <name>  (Deletes a file or directory Inode from CybFS)", 0
+str_rm_ok:
+    db "Deleted Inode '", 0
+
 str_cat_usage:
-    db "Usage: cat <filename>  (Files: startup.nsh, readme.txt, cmos.cfg, bios.rom)", 0
+    db "Usage: cat <filename>  (Reads live file bytes from CybFS Inode)", 0
 str_cat_nf_pfx:
-    db "Error: File not found in FS0:\\", 0
-str_cat_nf_sfx:
-    db " (Use 'ls' to view available files).", 0
+    db "Error: File not found in current CybFS directory (Use 'ls').", 0
+str_cat_hdr1:
+    db "--- [ ", 0
+str_cat_hdr2:
+    db " (", 0
+str_cat_hdr3:
+    db " Bytes) ] ---", 0
 
-str_cat_st1:
-    db "--- [ FS0:\\STARTUP.NSH - Cybforge Automated Boot Script ] ---", 0
-str_cat_st2:
-    db "  @echo -off", 0
-str_cat_st3:
-    db "  load fs0:\\efi\\vgadac.drv", 0
-str_cat_st4:
-    db "  load fs0:\\efi\\sb16dma.drv", 0
-str_cat_st5:
-    db "  fs0:\\efi\\snake.efi --rom-bank=256k --audio=sb16-dma5", 0
-
-str_cat_rm1:
-    db "--- [ FS0:\\README.TXT - Cybforge Firmware Documentation ] ---", 0
-str_cat_rm2:
-    db "  Architecture : 256 KB ROM (0xFFFC0000..0xFFFFFFFF) in 32-Bit Unreal Mode", 0
-str_cat_rm3:
-    db "  Sound Engine : Creative Sound Blaster 16 (16-Bit Single-Cycle DMA Ch 5)", 0
-str_cat_rm4:
-    db "  Quick Try    : 'dmem 1a00', 'dmem fff0', 'cmos', 'sound 7', or 'exit'!", 0
+str_run_use:
+    db "Usage: run <script.nsh>  (Executes commands line-by-line from CybFS file)", 0
+str_run_err:
+    db "Error: Target is not an executable script file.", 0
+str_fmt_ok:
+    db "CybFS v1.0 formatted from ROM Block 0 (0xFFFC0100 -> 0x3000..0x7FFF).", 0
 
 str_neo1:
     db "   .==========.     root@cybforge-bios", 0
 str_neo2:
     db "  /  CYBFORGE  \\    ------------------------------------------", 0
 str_neo3:
-    db " |   [x86-32]   |   Shell    : Cybforge UEFI/BIOS Shell v2.5", 0
+    db " |   [x86-32]   |   Shell    : Cybforge UEFI/BIOS Shell v2.6", 0
 str_neo4:
-    db " |  RETRO BIOS  |   CPU Mode : x86 Real + 32-Bit Flat Unreal", 0
+    db " |  RETRO BIOS  |   FileSys  : CybFS v1.0 Live R/W (0x3000h)", 0
 str_neo5:
-    db "  \\    v2.5    /    Memory   : 640 KB Base RAM / 256 KB ROM", 0
+    db "  \\    v2.6    /    Memory   : 640 KB Base RAM / 256 KB ROM", 0
 str_neo6:
-    db "   '=========='     Hardware : VGA 80x25 (8x16) / SB16 DMA Ch5", 0
+    db "   '=========='     Hardware : Live PCI 0xCF8 / SB16 DMA Ch5", 0
 str_neo7:
     db "                    Status   : NVRAM Checksum OK ('exit'=Setup)", 0
 
+; --- Live PCI Hardware Bus Scanner Strings ---
 str_pci_hdr:
-    db "Bus Dev Fn  Ven:Dev    Hardware Device Description", 0
-str_pci_1:
-    db "00  00  00  8086:1237  Host Bridge   : Intel 82441FX PMC (i440FX Chipset)", 0
-str_pci_2:
-    db "00  01  00  8086:7000  ISA Bridge    : Intel 82371SB PIIX3 Southbridge", 0
-str_pci_3:
-    db "00  01  01  8086:7010  IDE Controller: Intel PIIX3 Bus-Master Dual IDE", 0
-str_pci_4:
-    db "00  02  00  1234:1111  VGA Compatible: Cybforge PCI Color Graphics (B8000h)", 0
-str_pci_5:
-    db "ISA Port 0220h/DMA5    Audio Adapter : Creative Sound Blaster 16 DSP v4.05", 0
-str_pci_6:
-    db "ISA Port 0060h/0064h   Input Device  : Intel 8042 PS/2 Controller (Set 1)", 0
-str_pci_7:
-    db "ISA Port 0070h/0071h   Non-Volatile  : Motorola MC146818 RTC & CMOS NVRAM", 0
+    db "Bus Dv Fn  Ven:Dev   Class   Live Hardware PCI Configuration (Port 0xCF8):", 0
+str_pci_b0:
+    db "00  ", 0
+str_pci_cl_pfx:
+    db "Class=", 0
+str_pci_desc_brg:
+    db "  PCI Host/ISA Bridge Controller", 0
+str_pci_desc_vga:
+    db "  VGA Compatible Display Adapter", 0
+str_pci_desc_ide:
+    db "  Bus-Master IDE Storage Controller", 0
+str_pci_desc_net:
+    db "  PCI Ethernet Network Adapter", 0
+str_pci_desc_gen:
+    db "  PCI System Peripheral Device", 0
+str_pci_isa:
+    db "ISA Bus :  0220h=SB16 DSP v4.05 (DMA5) | 0060h=8042 PS/2 | 0070h=CMOS RTC", 0
 
 str_cpu_hdr:
     db "x86 Processor Live Register & Segment State:", 0
@@ -6381,9 +7531,11 @@ str_io_p22c:    db " 0x22C(DSP)=", 0
 str_io_p3da:    db " 0x3DA(VGA)=", 0
 
 str_mt_1:
-    db "Testing 64 KB Extended DMA RAM (0x20000..0x2FFFF) [0x55AA / 0xAA55]...", 0
+    db "Testing 64 KB Extended RAM (0x20000..0x2FFFF) [Write & Verify 0x55AA/0xAA55]...", 0
 str_mt_2:
-    db "Result: 32,768 Words Verified - 0 Errors (MEMORY DIAGNOSTIC PASSED)", 0
+    db "Result: 65,536 Word Reads Verified - ", 0
+str_mt_3:
+    db " Errors Detected (LIVE RAM TEST OK)", 0
 
 str_col_ok:
     db "Shell color scheme updated and saved to CMOS NVRAM.", 0

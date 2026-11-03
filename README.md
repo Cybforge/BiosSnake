@@ -1,14 +1,15 @@
-# Cybforge Retro BIOS, UEFI/BIOS Shell & Snake v2.5 (256 KB ROM Edition)
+# Cybforge Retro BIOS, UEFI/BIOS Shell & Snake v2.6 (256 KB ROM + CybFS v1.0 Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-x86%2016%2F32--bit%20Unreal%20Mode-lightgrey.svg)](#)
 [![Format](https://img.shields.io/badge/ROM-256KB%20Binary-brightgreen.svg)](#)
-[![Shell](https://img.shields.io/badge/Shell-UEFI%2FBIOS%20Shell%20v2.40-yellow.svg)](#)
+[![Filesystem](https://img.shields.io/badge/Filesystem-CybFS%20v1.0%20Live%20R%2FW-cyan.svg)](#)
+[![Shell](https://img.shields.io/badge/Shell-UEFI%2FBIOS%20Shell%20v2.6-yellow.svg)](#)
 [![Audio](https://img.shields.io/badge/Audio-Sound%20Blaster%2016%2016--Bit%20PCM-blueviolet.svg)](#)
 [![Emulator](https://img.shields.io/badge/Emulator-QEMU%20x86__64-orange.svg)](#)
-[![Version](https://img.shields.io/badge/Version-2.5%20BiosShell%20Edition-brightgreen.svg)](#)
+[![Version](https://img.shields.io/badge/Version-2.6%20CybFS%20Edition-brightgreen.svg)](#)
 
-A custom, bare-metal **x86 16/32-bit PC BIOS** in a full **256 KB (`262,144 Bytes`) ROM image**. It boots an authentic AMIBIOS-style POST diagnostic sequence with Sound Blaster 16 hardware auto-detection, features a **Multi-Tab Cybforge Retro BIOS Setup Utility** (`[ 1: Main & Game ]` and `[ 2: BiosShell ]`) with CMOS NVRAM persistence, includes an interactive **UEFI/EFI-style BIOS Shell (`v2.40`)** with 23 built-in hardware/memory/filesystem/audio commands, and directly launches an arcade **Snake Game v2.5** with **16-bit Sound Blaster 16 PCM WAV audio** in pure assembly.
+A custom, bare-metal **x86 16/32-bit PC BIOS** in a full **256 KB (`262,144 Bytes`) ROM image**. It boots an authentic AMIBIOS-style POST diagnostic sequence with Sound Blaster 16 hardware auto-detection, features a **Multi-Tab Cybforge Retro BIOS Setup Utility** (`[ 1: Main & Game ]` and `[ 2: BiosShell ]`) with CMOS NVRAM persistence, includes an interactive **UEFI/EFI-style BIOS Shell (`v2.6`)** backed by a real live read/write filesystem (**CybFS v1.0**) and a real hardware PCI Bus Configuration scanner (`0xCF8`/`0xCFC`), and directly launches an arcade **Snake Game v2.6** with **16-bit Sound Blaster 16 PCM WAV audio** in pure assembly.
 
 ![Cybforge Snake Matrix Green Gameplay](assets/screenshot_gameplay.png)
 
@@ -20,13 +21,13 @@ A custom, bare-metal **x86 16/32-bit PC BIOS** in a full **256 KB (`262,144 Byte
 | :---: | :---: |
 | ![POST Screen](assets/screenshot_post.png) | ![BIOS Setup Main Tab](assets/screenshot_setup.png) |
 
-| BIOS Setup Tab 2: `[ 2: BiosShell ]` | Interactive UEFI/BIOS Shell (`help` Reference) |
+| BIOS Setup Tab 2: `[ 2: BiosShell ]` | CybFS v1.0 Live Filesystem (`write`, `append`, `cat`, `ls`) |
 | :---: | :---: |
-| ![BIOS Setup BiosShell Tab](assets/screenshot_setup_biosshell.png) | ![BIOS Shell Help](assets/screenshot_shell_help.png) |
+| ![BIOS Setup BiosShell Tab](assets/screenshot_setup_biosshell.png) | ![CybFS Write Cat LS](assets/bios_shell_console.png) |
 
-| BIOS Shell: `sysinfo` Emblem & `memmap` | BIOS Shell: `ls`, Live `dmem` Hex Dump, `cmos` & `time` |
+| CybFS Script Execution (`run`) & Live Hardware `pci` Scan | ROM-Mapped WAV Directory (`FS0:\AUDIO`) & Live 32-Bit Dump |
 | :---: | :---: |
-| ![BIOS Shell Sysinfo & Memmap](assets/screenshot_shell_sysinfo.png) | ![BIOS Shell Diagnostics](assets/screenshot_shell_diag.png) |
+| ![CybFS Script & PCI](assets/bios_shell_cybfs.png) | ![CybFS Audio ROM Dump](assets/bios_shell_commands.png) |
 
 | In-Game Pause Modal Dialog `[P]` | Amber CRT Theme & The Maze Arena |
 | :---: | :---: |
@@ -57,28 +58,35 @@ Press **`[F12]`** or **`[DEL]`** during POST (or **`[ESC]`** from the game) to o
   * **`Default POST Boot`** — Configure whether the 3-second POST countdown boots `< Snake Game (3s) >` or directly into `< BiosShell (3s) >`.
   * **`Reset Shell Cfg`** — Restores all BiosShell settings to factory defaults and saves to CMOS NVRAM.
 
-### 2. Cybforge Interactive UEFI/BIOS Shell (`v2.40`)
-Inspired by the classic EDK2 UEFI Shell and extended with live bare-metal x86 diagnostic tools, the **Cybforge BIOS Shell** features hardware scrolling, `[UP ARROW]` command history recall, `[TAB]` auto-completion, and Shift-aware keyboard input. Typing **`exit`** (or `quit` / `setup`) returns cleanly to the **BIOS Setup Utility** on the `BiosShell` tab.
+### 2. Cybforge Interactive UEFI/BIOS Shell (`v2.6`) & CybFS v1.0 Filesystem
+Backed by **CybFS v1.0**, a real bare-metal filesystem mounted from ROM Block 0 (`0xFFFC0100`) into a 16 KB live read/write RAM volume (`0x3000..0x6FFF`), with a 32-entry binary Inode table (`0x3020..0x341F`). You can create, overwrite, append to, read, execute, and delete real files and subdirectories in live memory, or inspect/play ROM-mapped files (`0xFFFD0000`–`0xFFFF0000`).
 
 | Command / Alias | Description |
 | :--- | :--- |
 | **`help`** / **`?`** | Displays the formatted 2-column command reference table |
 | **`exit`** / **`quit`** / **`setup`** | Exits the BIOS Shell and returns directly to the **BIOS Setup Utility** |
+| **`ls`** / **`dir`** | Dynamically scans the 32-entry CybFS Inode table (`0x3020`), displaying real type (`<DIR>`, `[RAM]`, `[ROM]`, `[HW ]`), real byte size, memory address, name, and free byte pool |
+| **`cd <dir>`** / **`cd ..`** / **`cd \`** | Traverses real directory Inodes (`flags == 2`, `parent_id`) and updates the prompt (`FS0:\<DIR>>`) directly from the Inode name |
+| **`mkdir <dir>`** / **`md <dir>`** | Allocates a new real directory Inode (`flags = 2`) inside the current directory |
+| **`touch <file>`** | Allocates a new real 0-byte file Inode (`flags = 1`) in the current directory |
+| **`write <file> <text>`** | Creates or overwrites a real file in the CybFS RAM pool (`0x3420..0x6FFF`), storing exact bytes and updating `file_size` & `FS_ALLOC_PTR` |
+| **`append <file> <text>`** | Appends a new text line (`\n`) to an existing RAM file in CybFS and updates its byte size |
+| **`cat <file>`** / **`type <file>`** | Reads real file bytes from RAM (`[RAM]`), dumps live 32-bit ROM bytes + plays WAV audio via SB16 DMA (`[ROM]`), or dumps live CMOS (`[HW ]`) |
+| **`rm <name>`** / **`del <name>`** | Deletes a file or directory from CybFS by clearing its Inode (`flags = 0`) |
+| **`run <file.nsh>`** / **`sh <file.nsh>`** | Reads a script file's real bytes line-by-line from CybFS and executes each command in the BIOS Shell |
+| **`format`** | Re-initializes the live CybFS RAM volume (`0x3000..0x6FFF`) from the master image in ROM Block 0 (`0xFFFC0100`) |
+| **`pci`** / **`devices`** / **`lspci`** | Live hardware PCI Configuration Mechanism #1 scanner via I/O ports `0xCF8`/`0xCFC` (reads real `Vendor:Device` and `Class/Subclass` registers) |
+| **`memtest`** | Performs a real word-by-word write & read-back verification (`cmp word [es:di], 0x55AA` / `0xAA55`) across 64 KB extended RAM (`0x20000..0x2FFFF`) with live error counter |
 | **`ver`** / **`version`** | Shows Cybforge UEFI/BIOS Shell version, ROM bank layout, CPU mode, and SB16 DSP info |
 | **`map`** | Displays the UEFI-style device mapping table (`FS0:`, `BLK0:`, `BLK1:`, `CMOS0:`, `VGA0:`, `SB16:`) |
 | **`memmap`** / **`mem`** | Displays the physical E820/UEFI memory map (`0x00000000`–`0xFFFFFFFF`, 256 KB ROM + 640 KB RAM) |
-| **`ls`** / **`dir`** | Lists files and subdirectories in the virtual ROM disk (`FS0:\`, `FS0:\EFI`, `FS0:\AUDIO`, `FS0:\DIAG`) |
-| **`cd <dir>`** / **`fs0:`** | Changes current directory (`\`, `efi`, `audio`, `diag`, `..`) and updates the `FS0:\...>` prompt |
-| **`cat <file>`** / **`type`** | Displays file contents (`cat startup.nsh`, `cat readme.txt`, or live `cat cmos.cfg`) |
 | **`sysinfo`** / **`neofetch`** | Renders the Cybforge ASCII hardware emblem alongside live system & NVRAM telemetry |
-| **`pci`** / **`devices`** / **`lspci`** | Enumerates PCI (`i440FX`, `PIIX3`, `VGA`) and ISA (`SB16 DSP`, `8042 PS/2`, `MC146818 RTC`) buses |
 | **`cpu`** / **`regs`** | Dumps live 16-bit x86 segment & pointer registers (`CS`, `DS`, `ES`, `FS`, `SP`) and Unreal Mode status |
 | **`cmos`** / **`nvram`** | Reads and hex-dumps live hardware CMOS NVRAM registers `0x40..0x5F` via ports `0x70`/`0x71` |
-| **`dmem [hex]`** / **`dump`** | Live 64-byte Hex + ASCII memory viewer (e.g. `dmem 1a00` for kernel RAM, `dmem fff0` for Reset Vector) |
+| **`dmem [hex]`** / **`dump`** | Live 64-byte Hex + ASCII memory viewer (e.g. `dmem 3020` for CybFS Inodes, `dmem fff0` for Reset Vector) |
 | **`time`** / **`date`** / **`rtc`** | Reads the live hardware Motorola MC146818 RTC BCD clock & calendar (`20YY-MM-DD HH:MM:SS UTC`) |
 | **`sound [0-7]`** / **`play`** | Interactive Sound Blaster 16 16-bit PCM testbench — plays any of the 8 ROM WAV samples via DMA Ch 5 |
 | **`io`** / **`ports`** | Reads live hardware I/O port states (`0x60` KBD, `0x61` SPK, `0x64` STS, `0x22C` DSP, `0x3DA` VGA) |
-| **`memtest`** | Performs a live 64 KB dual-pattern (`0x55AA` / `0xAA55`) verification on extended RAM (`0x20000..0x2FFFF`) |
 | **`color [0-3]`** | Dynamically switches the Shell color scheme (`0..3`) and persists the choice to CMOS NVRAM |
 | **`echo <text>`** | Prints custom text to the terminal |
 | **`beep`** | Triggers an acoustic diagnostic tone via the active sound engine |
@@ -182,6 +190,15 @@ build.bat
 ---
 
 ## Changelog
+
+### v2.6: CybFS v1.0 Live Read/Write Filesystem & Hardware PCI Scanner
+- **CybFS v1.0 Bare-Metal Filesystem**:
+  - Replaced hardcoded shell file listings with a **real Inode-based filesystem (`CybFS v1.0`)** stored as a binary master image in ROM Block 0 (`0xFFFC0100`) and mounted into a 16 KB live read/write RAM volume (`0x3000..0x6FFF`).
+  - Added full read/write file and directory management commands: `ls`/`dir` (dynamic 32-inode scan with live byte counter), `cd` (real Inode directory traversal), `mkdir`/`md`, `touch`, `write <file> <text>`, `append <file> <text>`, `rm`/`del`, `cat`/`type` (reads real RAM files, plays & hex-dumps 32-bit ROM WAV files, or dumps CMOS), `run`/`sh <file.nsh>` (line-by-line script execution), and `format`.
+- **Live Hardware PCI Bus Scanner & RAM Verification**:
+  - Replaced static PCI device strings with a live **PCI Configuration Mechanism #1 scanner** (`Ports 0xCF8 / 0xCFC`) that queries real hardware `VendorID:DeviceID` and `Class/Subclass` registers across Bus 0.
+  - Upgraded `memtest` to perform a word-by-word read-back verification (`cmp word [es:di], 0x55AA` / `0xAA55`) across 64 KB extended RAM (`0x20000..0x2FFFF`) with a live error counter.
+  - Upgraded the VGA display engine to a genuine **16-scanline IBM VGA 8x16 font** (`CRTC 0x09 = 0x0F`, hardware cursor hidden via `CRTC 0x0A = 0x20`) with a framed double-line BIOS Shell console UI.
 
 ### v2.5: Multi-Tab BIOS Setup & Interactive UEFI/BIOS Shell
 - **Multi-Tab BIOS Setup Utility**:
