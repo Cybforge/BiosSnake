@@ -365,8 +365,9 @@ FS_VERSION      equ 0x3002  ; Word: 0x0100
 FS_MAX_INODES   equ 0x3004  ; Word: 32
 FS_ALLOC_PTR    equ 0x3006  ; Word: Naechste freie Datenadresse (0x3420..0x7FFF)
 FS_INODE_BASE   equ 0x3020  ; 32 Inodes x 32 Bytes (0x3020..0x341F)
-FS_DATA_BASE    equ 0x3420  ; Datei-Datenpool (0x3420..0x7FFF = 19,424 Bytes)
-FS_POOL_END     equ 0x7000  ; Obergrenze des CybFS Datenpools
+FS_DATA_BASE    equ 0x3420  ; Datei-Datenpool (0x3420..0x6FDF = 15,296 Bytes)
+FS_POOL_END     equ 0x6FE0  ; Obergrenze des CybFS Datenpools (0x6FE0..0x6FFF = 32B NVRAM Settings Mirror)
+NVRAM_MIRROR    equ 0x6FE0  ; 32-Byte Persistenter CMOS/Setup/Highscore-Spiegel auf ATA LBA 31
 """
 idx_org = part1.find("[ORG 0x0000]")
 line_end = part1.find("\n", idx_org) + 1
@@ -445,12 +446,13 @@ part2 = """
     call sb16_init
     call sound_boot
 
-    ; Gespeicherte Einstellungen & Top 3 Highscore aus CMOS NVRAM laden
+    ; Gespeicherte Einstellungen, CybFS & Top 3 Highscore von ATA-Disk / CMOS laden
+    mov byte [CFG_SH_FONT], 2       ; Default vor dem Laden: 2 (Large 8x16)
     call load_cmos_settings
     call apply_color_theme
+    call vga_apply_font_scale
     mov byte [SETUP_SEL], 0         ; Zeile 0 ausgewaehlt
     mov byte [SETUP_TAB], 0         ; Standard-Reiter: 0 (Main & Game)
-    mov byte [CFG_SH_FONT], 2       ; Standard-Schriftgroesse: 2 (Large 8x16)
 
     ; =========================================================================
     ; PHASE 1: CYBFORGE RETRO BIOS POST SCREEN (3 Sekunden Wartezeit fuer F12)
@@ -3220,6 +3222,31 @@ cmos_write_byte:
     ret
 
 load_cmos_settings:
+    ; 1. Zuerst versuchen, das 16 KB Persistenz-Volume (LBA 0..31 -> 0x3000..0x6FFF) von ATA-Disk zu laden!
+    call ata_load_nvram
+    cmp word [FS_MAGIC], 0x5346     ; Gueltiges 'FS' (CybFS v1.0) auf der Festplatte gefunden?
+    je .ata_fs_valid
+
+    ; Kein gueltiges CybFS auf Disk -> Frisch aus ROM Block 0 (0xFFFC0100) ins RAM formatieren
+    call fs_format_from_rom
+    jmp .check_cmos_hw
+
+.ata_fs_valid:
+    ; Wenn im Disk-Image bei 0x6FE0 die Signatur 0xCC steht, CMOS-Register 0x40..0x5F daraus wiederherstellen!
+    cmp byte [NVRAM_MIRROR], 0xCC
+    jne .check_cmos_hw
+    mov cl, 0x40
+    mov si, NVRAM_MIRROR
+.restore_cmos_from_disk:
+    mov al, cl
+    mov ah, [ds:si]
+    call cmos_write_byte
+    inc si
+    inc cl
+    cmp cl, 0x60
+    jb .restore_cmos_from_disk
+
+.check_cmos_hw:
     ; Pruefen ob Signatur 0xCC bei Index 0x40 steht
     mov al, 0x40
     call cmos_read_byte
@@ -3303,6 +3330,20 @@ load_cmos_settings:
     and al, 1
     mov [CFG_BOOT_MODE], al
 
+    ; Schriftgroesse CFG_SH_FONT aus Register 0x5F laden (Signatur-Nibble 0xD0)
+    mov al, 0x5F
+    call cmos_read_byte
+    mov ah, al
+    and ah, 0xFC
+    cmp ah, 0xD0
+    jne .font_default
+    and al, 3
+    mov [CFG_SH_FONT], al
+    jmp .font_loaded
+.font_default:
+    mov byte [CFG_SH_FONT], 2
+.font_loaded:
+
     mov ax, [TOP3_TABLE + 3]
     mov [HIGH_SCORE], ax
     ret
@@ -3324,6 +3365,7 @@ load_cmos_settings:
     mov byte [CFG_SH_BANNER], 0
     mov byte [CFG_SH_BEEP],   0
     mov byte [CFG_BOOT_MODE], 0
+    mov byte [CFG_SH_FONT],   2
 
     ; Default Top 3: CYB (30), JON (20), ACE (10)
     mov byte [TOP3_TABLE + 0], 'C'
@@ -3420,6 +3462,17 @@ save_cmos_settings:
     mov al, 0x5E
     mov ah, bl
     call cmos_write_byte
+
+    ; Aktuelle Schriftgroesse CFG_SH_FONT mit Signatur 0xD0 in Register 0x5F sichern
+    mov al, [CFG_SH_FONT]
+    and al, 3
+    or al, 0xD0
+    mov ah, al
+    mov al, 0x5F
+    call cmos_write_byte
+
+    ; Komplettes CybFS + CMOS NVRAM Spiegelbild (0x3000..0x6FFF) persistent auf ATA-Festplatte schreiben!
+    call ata_sync_nvram
     ret
 
     ; --- VGA HARDWARE DAC THEMES ---
@@ -4598,9 +4651,9 @@ fs_format_from_rom:
     dec cx
     jnz .ffr_copy
 
-    ; Restlichen RAM-Pool (0x4000..0x6FFF = 12 KB, Stack bei 0x7C00 schuetzen!) leeren
+    ; Restlichen CybFS-Datenpool (0x4000..0x6FDF = 12,256 Bytes) leeren
     mov di, 0x4000
-    mov cx, 12288
+    mov cx, 12256
     xor al, al
 .ffr_zero:
     mov [ds:di], al
@@ -5421,7 +5474,16 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_run
 
-    ; 16. format (CybFS frisch aus ROM Block 0 formatieren)
+    ; 16. factoryreset / wipe / resetbios / format (Kompletter Werkseinstellungs-Reset!)
+    mov si, cmd_factoryreset
+    call sh_match_cmd
+    jc .do_sh_format
+    mov si, cmd_wipe
+    call sh_match_cmd
+    jc .do_sh_format
+    mov si, cmd_resetbios
+    call sh_match_cmd
+    jc .do_sh_format
     mov si, cmd_format
     call sh_match_cmd
     jc .do_sh_format
@@ -5615,8 +5677,10 @@ sh_execute_command:
     mov si, str_sh_hlp6
     call sh_print_line
     mov si, str_sh_hlp7
+    mov ah, 0x0E
     call sh_print_line
     mov si, str_sh_hlp8
+    mov ah, [SH_TEXT_ATTR]
     call sh_print_line
     mov si, str_sh_hlp9
     call sh_print_line
@@ -5952,6 +6016,7 @@ sh_execute_command:
 .mkdir_pad:
     mov byte [ds:di], 0
     pop di
+    call ata_sync_nvram
 
     mov si, str_mkdir_ok
     mov ah, 0x0A
@@ -6009,6 +6074,7 @@ sh_execute_command:
 .touch_pad:
     mov byte [ds:di], 0
     pop di
+    call ata_sync_nvram
 
     mov si, str_touch_ok
     mov ah, 0x0A
@@ -6699,6 +6765,7 @@ sh_execute_command:
     mov byte [NANO_MOD], 0
     mov byte [NANO_SAVED_FLAG], 1
     mov byte [NANO_MSG_ID], 1
+    call ata_sync_nvram
     ret
 
 .nsb_found_last_row:
@@ -6774,6 +6841,7 @@ sh_execute_command:
     mov byte [NANO_MOD], 0
     mov byte [NANO_SAVED_FLAG], 1
     mov byte [NANO_MSG_ID], 1
+    call ata_sync_nvram
     ret
 
 .nano_render_screen:
@@ -7170,6 +7238,7 @@ sh_execute_command:
     inc dx
     mov [ds:di + 6], dx
     mov [FS_ALLOC_PTR], bp
+    call ata_sync_nvram
 
     mov si, str_app_ok1
     mov ah, 0x0A
@@ -7206,8 +7275,9 @@ sh_execute_command:
     call fs_find_in_dir
     jnc .cat_not_found
 
-    ; Inode als geloescht markieren (flags = 0)
+    ; Inode als geloescht markieren (flags = 0) & persistent auf Festplatte synchronisieren
     mov byte [ds:di + 0], 0
+    call ata_sync_nvram
 
     mov si, str_rm_ok
     mov ah, 0x0A
@@ -7443,12 +7513,64 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 16. FORMAT (CybFS aus ROM Block 0 neu initialisieren) ---
+; --- 16. FACTORYRESET / WIPE / FORMAT (Kompletter Werkseinstellungs-Reset fuer Disk, CybFS & BIOS!) ---
 .do_sh_format:
+    ; 1. CybFS im RAM (0x3000..0x6FDF) komplett loeschen & frisch aus ROM Block 0 (0xFFFC0100) laden
     call fs_format_from_rom
+
+    ; 2. Alle BIOS Setup Einstellungen, Shell-Theme, Font-Skalierung & Top-3 Highscores auf Werkseinstellungen setzen!
+    mov byte [CFG_SPEED], 0
+    mov byte [CFG_WALLS], 0
+    mov byte [CFG_SOUND], 0
+    mov byte [CFG_FACE],  0
+    mov byte [CFG_LEN],   0
+    mov byte [CFG_WIN],   0
+    mov byte [CFG_DISP],  0
+    mov byte [CFG_THEME], 0
+    mov byte [CFG_ARENA], 0
+
+    mov byte [CFG_SH_THEME],  0
+    mov byte [CFG_SH_PROMPT], 0
+    mov byte [CFG_SH_BANNER], 0
+    mov byte [CFG_SH_BEEP],   0
+    mov byte [CFG_BOOT_MODE], 0
+    mov byte [CFG_SH_FONT],   2     ; Standard 8x16 IBM VGA Schriftgroesse
+
+    ; Default Top 3 Leaderboard wiederherstellen: CYB (30), JON (20), ACE (10)
+    mov byte [TOP3_TABLE + 0], 'C'
+    mov byte [TOP3_TABLE + 1], 'Y'
+    mov byte [TOP3_TABLE + 2], 'B'
+    mov word [TOP3_TABLE + 3], 30
+
+    mov byte [TOP3_TABLE + 5], 'J'
+    mov byte [TOP3_TABLE + 6], 'O'
+    mov byte [TOP3_TABLE + 7], 'N'
+    mov word [TOP3_TABLE + 8], 20
+
+    mov byte [TOP3_TABLE + 10], 'A'
+    mov byte [TOP3_TABLE + 11], 'C'
+    mov byte [TOP3_TABLE + 12], 'E'
+    mov word [TOP3_TABLE + 13], 10
+    mov word [HIGH_SCORE], 30
+
+    ; 3. Werkseinstellungen in Hardware-CMOS (0x70/0x71) UND auf die ATA-Festplatte (LBA 0..31) ueberschreiben!
+    call save_cmos_settings
+
+    ; 4. VGA Farbpalette, Schriftgroesse (8x16) und Shell-Oberflaeche sofort live zuruecksetzen
+    call apply_color_theme
+    call vga_apply_font_scale
+    call sh_init_theme
+    call sh_clear_screen
     call sound_toggle
-    mov si, str_fmt_ok
+
+    mov si, str_fmt_ok1
+    mov ah, 0x0E
+    call sh_print_line
+    mov si, str_fmt_ok2
     mov ah, 0x0A
+    call sh_print_line
+    mov si, str_fmt_ok3
+    mov ah, 0x0B
     call sh_print_line
     ret
 
@@ -8092,7 +8214,8 @@ sh_execute_command:
     mov byte [CFG_SH_FONT], 3
 
 .sf_apply:
-    call .vga_apply_font_scale
+    call vga_apply_font_scale
+    call save_cmos_settings
     call sound_toggle
 
     mov si, str_sf_ok_pfx
@@ -8124,231 +8247,32 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- LIVE HARDWARE VGA PLANE 2 FONT SCALER (0xA000:0000) ---
-.vga_apply_font_scale:
-    push ax
-    push bx
-    push cx
-    push dx
-    push si
-    push di
-    push es
-
-    ; 1. VGA Sequencer & Graphics Controller fuer Plane 2 (0xA0000) freischalten
-    mov dx, 0x3C4
-    mov ax, 0x0100
-    out dx, ax
-    mov ax, 0x0402                  ; SR02 = Plane 2
-    out dx, ax
-    mov ax, 0x0604                  ; SR04 = Sequential
-    out dx, ax
-    mov ax, 0x0300
-    out dx, ax
-
-    mov dx, 0x3CE
-    mov ax, 0x0204                  ; GR04 = Plane 2
-    out dx, ax
-    mov ax, 0x0005                  ; GR05 = Write Mode 0
-    out dx, ax
-    mov ax, 0x0406                  ; GR06 = 0xA0000
-    out dx, ax
-
-    mov ax, 0xA000
-    mov es, ax
-
-    ; 2. Alle ASCII-Glyphen aus font_table entsprechend [CFG_SH_FONT] (0..3) skalieren!
-    mov si, font_table
-.vafs_char_lp:
-    mov al, [cs:si]
-    inc si
-    test al, al
-    jz .vafs_restore_custom
-
-    xor ah, ah
-    shl ax, 5                       ; Offset in Plane 2 = char_code * 32
-    mov di, ax
-
-    mov bl, [CFG_SH_FONT]
-    and bl, 3
-    cmp bl, 0
-    je .vafs_scale_small            ; 0: Small 8x8 Micro (5px Cap Height)
-    cmp bl, 1
-    je .vafs_scale_medium           ; 1: Medium 8x12 Compact (8px Cap Height)
-    cmp bl, 3
-    je .vafs_scale_huge             ; 3: Huge 8x16 XL Wide-Bold (14px Cap Height)
-
-    ; 2: Large 8x16 Standard IBM VGA (10px Cap Height, 1:1 Kopie)
-    mov cx, 16
-.vafs_std_lp:
-    mov al, [cs:si]
-    inc si
-    stosb
-    loop .vafs_std_lp
-    jmp .vafs_char_lp
-
-.vafs_scale_small:
-    ; Small (1): 4 Leerzeilen oben + 8 komprimierte Scanlines (2:1 OR) + 4 Leerzeilen unten
-    xor al, al
-    stosb
-    stosb
-    stosb
-    stosb
-    mov cx, 8
-.vafs_sm_lp:
-    mov al, [cs:si]
-    or al, [cs:si + 1]              ; Gerade + ungerade Scanline verschmelzen (kein Strich geht verloren!)
-    add si, 2
-    stosb
-    loop .vafs_sm_lp
-    xor al, al
-    stosb
-    stosb
-    stosb
-    stosb
-    jmp .vafs_char_lp
-
-.vafs_scale_medium:
-    ; Medium (2): 12 aktive Scanlines zentriert (8px Cap Height statt 10px)
-    xor al, al
-    stosb
-    stosb
-    stosb
-    mov al, [cs:si + 2]
-    stosb
-    mov al, [cs:si + 3]
-    or al, [cs:si + 4]
-    stosb
-    mov al, [cs:si + 5]
-    stosb
-    mov al, [cs:si + 6]
-    stosb
-    mov al, [cs:si + 7]
-    stosb
-    mov al, [cs:si + 8]
-    or al, [cs:si + 9]
-    stosb
-    mov al, [cs:si + 10]
-    stosb
-    mov al, [cs:si + 11]
-    stosb
-    mov al, [cs:si + 12]
-    or al, [cs:si + 13]
-    stosb
-    xor al, al
-    stosb
-    stosb
-    stosb
-    stosb
-    add si, 16
-    jmp .vafs_char_lp
-
-.vafs_scale_huge:
-    ; Huge (4): Vertikal auf 14 aktive Scanlines gestreckt + horizontal aufgedickt (al | (al >> 1))!
-    xor al, al
-    stosb                           ; Scanline 0
-    mov bx, si
-    ; Scanlines 1..14 mit vertikaler Streckung + Fettdruck ausgeben
-    mov al, [cs:bx + 2]             ; Top Cap doppelt
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 2]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 3]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 4]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 5]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 6]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 7]             ; Mittelbalken doppelt
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 7]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 8]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 9]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 10]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 11]            ; Baseline doppelt
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 11]
-    or al, [cs:bx + 12]
-    call .vafs_bold_stosb
-    mov al, [cs:bx + 13]
-    call .vafs_bold_stosb
-    xor al, al
-    stosb                           ; Scanline 15
-    add si, 16
-    jmp .vafs_char_lp
-
-.vafs_restore_custom:
-    ; 3. Rahmen-Glyphen (0x01..0x0A) immer in voller 16-Scanline Qualitaet halten (damit Rahmen nahtlos bleiben!)
-    mov si, custom_glyphs_table
-.vafs_cg_lp:
-    mov al, [cs:si]
-    inc si
-    test al, al
-    jz .vafs_cg_done
-    xor ah, ah
-    shl ax, 5
-    mov di, ax
-    mov cx, 16
-.vafs_cg_cp:
-    mov al, [cs:si]
-    inc si
-    stosb
-    loop .vafs_cg_cp
-    jmp .vafs_cg_lp
-.vafs_cg_done:
-
-    ; 4. Zurueck in den Odd/Even Text-Mode bei 0xB8000 schalten
-    mov dx, 0x3C4
-    mov ax, 0x0100
-    out dx, ax
-    mov ax, 0x0302                  ; SR02 = Plane 0 & 1
-    out dx, ax
-    mov ax, 0x0204                  ; SR04 = Odd/Even
-    out dx, ax
-    mov ax, 0x0300
-    out dx, ax
-
-    mov dx, 0x3CE
-    mov ax, 0x0004
-    out dx, ax
-    mov ax, 0x1005
-    out dx, ax
-    mov ax, 0x0E06                  ; GR06 = 0xB8000 Textfenster
-    out dx, ax
-
-    pop es
-    pop di
-    pop si
-    pop dx
-    pop cx
-    pop bx
-    pop ax
-    ret
-
-.vafs_bold_stosb:
-    stosb
-    ret
-
-; --- 31. REBOOT / RESET (Echter Warm-Reboot zurueck zum BIOS POST!) ---
+; --- 31. REBOOT / RESET (Echter x86 Hardware-Reset via 8042 Port 0x64 & PCI 0xCF9!) ---
 .do_sh_reboot:
     mov si, str_reboot_msg
     mov ah, 0x0E
     call sh_print_line
+    call ata_sync_nvram             ; Vor dem Hardware-Reset alle Daten auf Festplatte flushen!
     call sound_toggle
-    mov ecx, 120000000              ; ~0.4s kurze Anzeige vor dem Reset
+    mov ecx, 100000000              ; ~0.35s kurze Anzeige vor dem Hardware-Reset
     call delay_cycles
-    pop ax
-    mov byte [CFG_SH_FONT], 2
-    call .vga_apply_font_scale
-    call apply_color_theme
-    jmp post_screen
 
-; --- 32. SHUTDOWN / POWEROFF / HALT (Echter Hardware ACPI S5 Soft-Off!) ---
+    cli
+    ; 1. Echter 8042 Keyboard Controller CPU Reset-Puls (Port 0x64 <- 0xFE)
+    mov al, 0xFE
+    out 0x64, al
+    jmp $+2
+
+    ; 2. Echter Intel PIIX/ICH PCI Reset Control Register Hard-Reset (Port 0xCF9 <- 0x06)
+    mov dx, 0x0CF9
+    mov al, 0x06
+    out dx, al
+    jmp $+2
+
+    ; 3. Fallback: Sprung zum x86 Hardware Reset-Vektor F000:FFF0
+    jmp 0xF000:0xFFF0
+
+; --- 32. SHUTDOWN / POWEROFF / HALT (Echter Hardware ACPI S5 Soft-Off + Disk Sync!) ---
 .do_sh_shutdown:
     mov si, str_shut_msg1
     mov ah, 0x0E
@@ -8356,6 +8280,9 @@ sh_execute_command:
     mov si, str_shut_msg2
     mov ah, 0x0C
     call sh_print_line
+
+    ; Komplettes CybFS & CMOS-Mirror persistent auf Festplatte (cybfs_nvram.img) sichern!
+    call ata_sync_nvram
 
     ; Akustisches Shutdown-Signal abspielen
     mov al, 6                       ; Sample 6 (Descending Chime)
@@ -8410,6 +8337,462 @@ sh_execute_command:
     hlt
     jmp .shut_hlt_loop
 
+; =============================================================================
+; LIVE HARDWARE VGA PLANE 2 FONT SCALER (0xA000:0000, Global Callable)
+; =============================================================================
+vga_apply_font_scale:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push es
+
+    ; 1. VGA Sequencer & Graphics Controller fuer Plane 2 (0xA0000) freischalten
+    mov dx, 0x3C4
+    mov ax, 0x0100
+    out dx, ax
+    mov ax, 0x0402                  ; SR02 = Plane 2
+    out dx, ax
+    mov ax, 0x0604                  ; SR04 = Sequential
+    out dx, ax
+    mov ax, 0x0300
+    out dx, ax
+
+    mov dx, 0x3CE
+    mov ax, 0x0204                  ; GR04 = Plane 2
+    out dx, ax
+    mov ax, 0x0005                  ; GR05 = Write Mode 0
+    out dx, ax
+    mov ax, 0x0406                  ; GR06 = 0xA0000
+    out dx, ax
+
+    mov ax, 0xA000
+    mov es, ax
+
+    ; 2. Alle ASCII-Glyphen aus font_table entsprechend [CFG_SH_FONT] (0..3) skalieren!
+    mov si, font_table
+.vafs_char_lp:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jz .vafs_restore_custom
+
+    xor ah, ah
+    shl ax, 5                       ; Offset in Plane 2 = char_code * 32
+    mov di, ax
+
+    mov bl, [CFG_SH_FONT]
+    and bl, 3
+    cmp bl, 0
+    je .vafs_scale_small            ; 0: Small 8x8 Micro (5px Cap Height)
+    cmp bl, 1
+    je .vafs_scale_medium           ; 1: Medium 8x12 Compact (8px Cap Height)
+    cmp bl, 3
+    je .vafs_scale_huge             ; 3: Huge 8x16 XL Tall (14px Cap Height)
+
+    ; 2: Large 8x16 Standard IBM VGA (10px Cap Height, 1:1 Kopie)
+    mov cx, 16
+.vafs_std_lp:
+    mov al, [cs:si]
+    inc si
+    stosb
+    loop .vafs_std_lp
+    jmp .vafs_char_lp
+
+.vafs_scale_small:
+    ; Small (1): 4 Leerzeilen oben + 8 komprimierte Scanlines (2:1 OR) + 4 Leerzeilen unten
+    xor al, al
+    stosb
+    stosb
+    stosb
+    stosb
+    mov cx, 8
+.vafs_sm_lp:
+    mov al, [cs:si]
+    or al, [cs:si + 1]
+    add si, 2
+    stosb
+    loop .vafs_sm_lp
+    xor al, al
+    stosb
+    stosb
+    stosb
+    stosb
+    jmp .vafs_char_lp
+
+.vafs_scale_medium:
+    ; Medium (2): 12 aktive Scanlines zentriert (8px Cap Height)
+    xor al, al
+    stosb
+    stosb
+    stosb
+    mov al, [cs:si + 2]
+    stosb
+    mov al, [cs:si + 3]
+    or al, [cs:si + 4]
+    stosb
+    mov al, [cs:si + 5]
+    stosb
+    mov al, [cs:si + 6]
+    stosb
+    mov al, [cs:si + 7]
+    stosb
+    mov al, [cs:si + 8]
+    or al, [cs:si + 9]
+    stosb
+    mov al, [cs:si + 10]
+    stosb
+    mov al, [cs:si + 11]
+    stosb
+    mov al, [cs:si + 12]
+    or al, [cs:si + 13]
+    stosb
+    xor al, al
+    stosb
+    stosb
+    stosb
+    stosb
+    add si, 16
+    jmp .vafs_char_lp
+
+.vafs_scale_huge:
+    ; Huge (4): Vertikal auf 14 aktive Scanlines gestreckt
+    xor al, al
+    stosb
+    mov bx, si
+    mov al, [cs:bx + 2]
+    stosb
+    mov al, [cs:bx + 2]
+    stosb
+    mov al, [cs:bx + 3]
+    stosb
+    mov al, [cs:bx + 4]
+    stosb
+    mov al, [cs:bx + 5]
+    stosb
+    mov al, [cs:bx + 6]
+    stosb
+    mov al, [cs:bx + 7]
+    stosb
+    mov al, [cs:bx + 7]
+    stosb
+    mov al, [cs:bx + 8]
+    stosb
+    mov al, [cs:bx + 9]
+    stosb
+    mov al, [cs:bx + 10]
+    stosb
+    mov al, [cs:bx + 11]
+    stosb
+    mov al, [cs:bx + 11]
+    or al, [cs:bx + 12]
+    stosb
+    mov al, [cs:bx + 13]
+    stosb
+    xor al, al
+    stosb
+    add si, 16
+    jmp .vafs_char_lp
+
+.vafs_restore_custom:
+    ; 3. Rahmen-Glyphen (0x01..0x0A) immer in voller 16-Scanline Qualitaet halten
+    mov si, custom_glyphs_table
+.vafs_cg_lp:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jz .vafs_cg_done
+    xor ah, ah
+    shl ax, 5
+    mov di, ax
+    mov cx, 16
+.vafs_cg_cp:
+    mov al, [cs:si]
+    inc si
+    stosb
+    loop .vafs_cg_cp
+    jmp .vafs_cg_lp
+.vafs_cg_done:
+
+    ; 4. Zurueck in den Odd/Even Text-Mode bei 0xB8000 schalten
+    mov dx, 0x3C4
+    mov ax, 0x0100
+    out dx, ax
+    mov ax, 0x0302                  ; SR02 = Plane 0 & 1
+    out dx, ax
+    mov ax, 0x0204                  ; SR04 = Odd/Even
+    out dx, ax
+    mov ax, 0x0300
+    out dx, ax
+
+    mov dx, 0x3CE
+    mov ax, 0x0004
+    out dx, ax
+    mov ax, 0x1005
+    out dx, ax
+    mov ax, 0x0E06                  ; GR06 = 0xB8000 Textfenster
+    out dx, ax
+
+    pop es
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; =============================================================================
+; BARE-METAL ATA/IDE PIO PERSISTENCE DRIVER (Ports 0x1F0..0x1F7, LBA 0..31)
+; Speichert & laedt das komplette 16 KB CybFS + CMOS Mirror (0x3000..0x6FFF)
+; dauerhaft in/aus der Datei 'cybfs_nvram.img'!
+; =============================================================================
+ata_init_piix3_ide:
+    ; Bare-Metal Intel PIIX3 IDE Controller (PCI 00:01.1) fuer Ports 0x1F0..0x1F7 freischalten!
+    push eax
+    push dx
+    mov dx, 0x0CF8
+    mov eax, 0x80000940             ; Bus 0, Dev 1, Fn 1, Reg 0x40 (IDETIM Primary/Secondary)
+    out dx, eax
+    mov dx, 0x0CFC
+    mov eax, 0x80008000             ; Bit 15 = Primary IDE Decode Enable (0x1F0..0x1F7)
+    out dx, eax
+
+    mov dx, 0x0CF8
+    mov eax, 0x80000904             ; Bus 0, Dev 1, Fn 1, Reg 0x04 (PCI Command)
+    out dx, eax
+    mov dx, 0x0CFC
+    in ax, dx
+    or ax, 0x0005                   ; Bit 0 = I/O Space Enable, Bit 2 = Bus Master
+    out dx, ax
+    pop dx
+    pop eax
+    ret
+
+ata_load_nvram:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+
+    call ata_init_piix3_ide
+
+    ; Pruefen ob Primary Master IDE Drive angeschlossen ist
+    mov dx, 0x1F6
+    mov al, 0xE0                    ; Master Drive + LBA28 Mode
+    out dx, al
+    mov dx, 0x1F7
+    in al, dx
+    cmp al, 0xFF                    ; 0xFF = Floating Bus (kein Drive)
+    je .aln_done
+    test al, al                     ; 0x00 = Kein Drive
+    jz .aln_done
+
+    mov di, 0x3000                  ; Ziel im RAM: 0x0000:0x3000..0x6FFF (16 KB)
+    xor bl, bl                      ; BL = Sektor-LBA 0..31
+.aln_sec_loop:
+    call ata_wait_not_bsy
+    jc .aln_done
+
+    mov dx, 0x1F6
+    mov al, 0xE0
+    out dx, al
+
+    mov dx, 0x1F2
+    mov al, 1                       ; 1 Sektor pro PIO-Transfer (512 Bytes)
+    out dx, al
+
+    mov dx, 0x1F3
+    mov al, bl                      ; LBA Bits 0..7
+    out dx, al
+
+    mov dx, 0x1F4
+    xor al, al                      ; LBA Bits 8..15 = 0
+    out dx, al
+
+    mov dx, 0x1F5
+    out dx, al                      ; LBA Bits 16..23 = 0
+
+    mov dx, 0x1F7
+    mov al, 0x20                    ; ATA Command 0x20: READ SECTORS
+    out dx, al
+
+    call ata_wait_drq
+    jc .aln_done
+
+    mov dx, 0x1F0
+    mov cx, 256                     ; 256 Worte = 512 Bytes lesen
+.aln_rd_words:
+    in ax, dx
+    mov [ds:di], ax
+    add di, 2
+    loop .aln_rd_words
+
+    inc bl
+    cmp bl, 32
+    jb .aln_sec_loop
+
+.aln_done:
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+ata_sync_nvram:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    ; 1. Aktuelle Hardware-CMOS-Register (0x40..0x5F) nach 0x6FE0..0x6FFF spiegeln
+    mov cl, 0x40
+    mov di, NVRAM_MIRROR
+.asn_mirror_lp:
+    mov al, cl
+    call cmos_read_byte
+    mov [ds:di], al
+    inc di
+    inc cl
+    cmp cl, 0x60
+    jb .asn_mirror_lp
+
+    ; 2. PIIX3 IDE Controller aktivieren & pruefen ob Primary Master IDE Drive angeschlossen ist
+    call ata_init_piix3_ide
+    mov dx, 0x1F6
+    mov al, 0xE0
+    out dx, al
+    mov dx, 0x1F7
+    in al, dx
+    cmp al, 0xFF
+    je .asn_done
+    test al, al
+    jz .asn_done
+
+    ; 3. 32 Sektoren (16,384 Bytes: 0x3000..0x6FFF) auf LBA 0..31 schreiben
+    mov si, 0x3000
+    xor bl, bl                      ; BL = Sektor-LBA 0..31
+.asn_sec_loop:
+    call ata_wait_not_bsy
+    jc .asn_done
+
+    mov dx, 0x1F6
+    mov al, 0xE0
+    out dx, al
+
+    mov dx, 0x1F2
+    mov al, 1
+    out dx, al
+
+    mov dx, 0x1F3
+    mov al, bl
+    out dx, al
+
+    mov dx, 0x1F4
+    xor al, al
+    out dx, al
+
+    mov dx, 0x1F5
+    out dx, al
+
+    mov dx, 0x1F7
+    mov al, 0x30                    ; ATA Command 0x30: WRITE SECTORS
+    out dx, al
+
+    call ata_wait_drq
+    jc .asn_done
+
+    mov dx, 0x1F0
+    mov cx, 256                     ; 256 Worte = 512 Bytes schreiben
+.asn_wr_words:
+    mov ax, [ds:si]
+    out dx, ax
+    add si, 2
+    loop .asn_wr_words
+
+    inc bl
+    cmp bl, 32
+    jb .asn_sec_loop
+
+    ; 4. ATA Cache Flush (0xE7) senden, damit Host-Datei cybfs_nvram.img sofort synchronisiert wird
+    call ata_wait_not_bsy
+    mov dx, 0x1F7
+    mov al, 0xE7                    ; ATA Command 0xE7: FLUSH CACHE
+    out dx, al
+    call ata_wait_not_bsy
+
+.asn_done:
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+ata_wait_not_bsy:
+    push ax
+    push cx
+    push dx
+    mov dx, 0x1F7
+    mov cx, 30000
+.awnb_lp:
+    in al, dx
+    cmp al, 0xFF
+    je .awnb_err
+    test al, 0x80                   ; Bit 7 = BSY
+    jz .awnb_ok
+    loop .awnb_lp
+.awnb_err:
+    pop dx
+    pop cx
+    pop ax
+    stc
+    ret
+.awnb_ok:
+    pop dx
+    pop cx
+    pop ax
+    clc
+    ret
+
+ata_wait_drq:
+    push ax
+    push cx
+    push dx
+    mov dx, 0x1F7
+    mov cx, 30000
+.awd_lp:
+    in al, dx
+    cmp al, 0xFF
+    je .awd_err
+    test al, 0x80                   ; Bit 7 = BSY
+    jnz .awd_next
+    test al, 0x21                   ; Bit 0 = ERR, Bit 5 = DF
+    jnz .awd_err
+    test al, 0x08                   ; Bit 3 = DRQ
+    jnz .awd_ok
+.awd_next:
+    loop .awd_lp
+.awd_err:
+    pop dx
+    pop cx
+    pop ax
+    stc
+    ret
+.awd_ok:
+    pop dx
+    pop cx
+    pop ax
+    clc
+    ret
+
 ; -----------------------------------------------------------------------------
 ; SCANCODE SET 1 -> ASCII LOOKUP TABLES (0x00..0x57)
 ; -----------------------------------------------------------------------------
@@ -8431,12 +8814,15 @@ sh_scancode_shift:
     times 30 db 0
 
 sh_ac_table:
-    db "help", 0, "write ", 0, "nano ", 0, "edit ", 0, "setfont ", 0, "shutdown", 0
-    db "reboot", 0, "append ", 0, "mkdir ", 0, "touch ", 0, "rm ", 0, "run ", 0
-    db "format", 0, "memmap", 0, "memtest", 0, "map", 0, "sysinfo", 0, "pci", 0
-    db "dmem ", 0, "cmos", 0, "cpu", 0, "time", 0, "sound ", 0, "color ", 0
-    db "clear", 0, "snake", 0, "exit", 0, "cat ", 0, "cd ", 0, 0
+    db "help", 0, "factoryreset", 0, "wipe", 0, "resetbios", 0, "write ", 0, "nano ", 0
+    db "edit ", 0, "setfont ", 0, "shutdown", 0, "reboot", 0, "append ", 0, "mkdir ", 0
+    db "touch ", 0, "rm ", 0, "run ", 0, "format", 0, "memmap", 0, "memtest", 0, "map", 0
+    db "sysinfo", 0, "pci", 0, "dmem ", 0, "cmos", 0, "cpu", 0, "time", 0, "sound ", 0
+    db "color ", 0, "clear", 0, "snake", 0, "exit", 0, "cat ", 0, "cd ", 0, 0
 
+cmd_factoryreset: db "factoryreset", 0
+cmd_wipe:       db "wipe", 0
+cmd_resetbios:  db "resetbios", 0
 cmd_nano:       db "nano", 0
 cmd_edit:       db "edit", 0
 cmd_setfont:    db "setfont", 0
@@ -8591,13 +8977,13 @@ str_help_sh6:
 
 ; --- Framed BIOS Shell & Live CybFS Strings ---
 str_sh_topbar:
-    db "CYBFORGE UEFI/BIOS SHELL v2.7 [CybFS + GNU Nano]     ROM: 256KB  RAM: 640KB", 0
+    db "CYBFORGE UEFI/BIOS SHELL v2.8 [Persistent NVRAM]     ROM: 256KB  RAM: 640KB", 0
 str_sh_frame_top:
-    db " Cybforge Interactive UEFI/BIOS Console [CybFS Live R/W] ", 0
+    db " Cybforge Interactive UEFI/BIOS Console [Persistent ATA Disk + CybFS] ", 0
 str_sh_frame_bot:
-    db " [WRITE/NANO] Editor | [SETFONT] Scale | [REBOOT/SHUTDOWN] Power | [EXIT] ", 0
+    db " [WRITE/NANO] Edit | [SETFONT] Scale | [FACTORYRESET] Wipe | [SHUTDOWN] Off ", 0
 str_sh_botbar:
-    db "[HELP] Cmds  [WRITE] Nano  [SETFONT] Scale  [REBOOT] Reset  [SHUTDOWN] Off", 0
+    db "[HELP] Cmds  [WRITE] Nano  [SETFONT] Scale  [FACTORYRESET] Wipe  [SHUTDOWN]", 0
 
 str_pr_fs0_pfx:     db "FS0:\\", 0
 str_pr_gt:          db "> ", 0
@@ -8605,27 +8991,27 @@ str_pr_compact:     db "SHELL> ", 0
 str_pr_root:        db "root@cybforge:# ", 0
 
 str_sh_ban1:
-    db "Cybforge UEFI/BIOS Shell v2.6 [Live CybFS v1.0 Read/Write File System]", 0
+    db "Cybforge UEFI/BIOS Shell v2.8 [Persistent ATA Disk & CybFS v1.0 R/W]", 0
 str_sh_ban2:
-    db "Mounted CybFS from ROM Block 0 (0xFFFC0100) -> RAM 0x3000..0x7FFF (20 KB)", 0
+    db "Mounted Persistent NVRAM Disk (ATA Primary 0x1F0 LBA 0..31 <-> RAM 0x3000)", 0
 str_sh_map_hdr:
     db "Handle  Media Type    Capacity   Hardware Device Path", 0
 str_sh_map_sep:
     db "------  ------------  ---------  -----------------------------------------", 0
 str_sh_map1:
-    db "FS0:    CybFS R/W     20 KB RAM  RamDisk(0x3000)/RomSeed(Bank0,0xFFFC0100)", 0
+    db "FS0:    CybFS NVRAM   16 KB R/W  AtaPrimary(0x1F0,LBA0..31)/RamDisk(0x3000)", 0
 str_sh_map2:
     db "BLK0:   Wave Audio    128 KB     PciRoot(0)/PcmAudio(16-Bit, 0xFFFD0000)", 0
 str_sh_map3:
     db "BLK1:   System RAM    640 KB     SystemMemory(Conventional, 0x00000000)", 0
 str_sh_map4:
-    db "CMOS0:  RTC NVRAM     128 Bytes  IsaBridge(0x70)/MC146818(Chksum: Valid)", 0
+    db "CMOS0:  RTC + Disk    128B+32B   IsaRtc(0x70)+AtaMirror(0x6FE0,Chksum:OK)", 0
 str_sh_map5:
     db "VGA0:   Text Display  128 KB     Pci(0,2)/VgaController(80x25, VRAM:B800h)", 0
 str_sh_map6:
     db "SB16:   Audio DSP     DMA Ch 5   IsaBridge(0x220)/SoundBlaster16(11025 Hz)", 0
 str_sh_ban_hint:
-    db "Try 'ls', 'write test.txt Hallo!', 'cat test.txt', 'rm test.txt', 'exit'.", 0
+    db "Try 'write <file>', 'mkdir <dir>', 'factoryreset', 'setfont', 'shutdown'.", 0
 
 str_sh_err_pfx:
     db "Error: Unknown command '", 0
@@ -8633,7 +9019,7 @@ str_sh_err_sfx:
     db "'. Type 'help' for available commands.", 0
 
 str_sh_hlp_hdr:
-    db "Cybforge UEFI/BIOS Shell v2.7 & Live CybFS - Command Reference:", 0
+    db "Cybforge UEFI/BIOS Shell v2.8 & Persistent CybFS - Command Reference:", 0
 str_sh_hlp1:
     db "write <file> Open GNU Nano Editor!     nano <file>  Open GNU Nano Editor!", 0
 str_sh_hlp2:
@@ -8645,17 +9031,17 @@ str_sh_hlp4:
 str_sh_hlp5:
     db "touch <file> Create empty 0-byte file  run <f.nsh>  Run CybFS script", 0
 str_sh_hlp6:
-    db "setfont [1-4]Scale shell text size!    format       Re-format CybFS from ROM", 0
+    db "setfont [1-4]Scale shell text size!    color [0-3]  Switch shell color theme", 0
 str_sh_hlp7:
-    db "pci / lspci  Live 0xCF8 PCI bus scan   map / memmap Device & E820 RAM map", 0
+    db "factoryreset Wipe disk & reset BIOS!   format/wipe  Alias for factoryreset!", 0
 str_sh_hlp8:
-    db "dmem [hex]   Live 64B Hex/ASCII dump   cmos / nvram Live CMOS NVRAM dump", 0
+    db "pci / lspci  Live 0xCF8 PCI bus scan   map / memmap Device & E820 RAM map", 0
 str_sh_hlp9:
-    db "cpu / regs   Dump live x86 registers   time / date  Read hardware RTC clock", 0
+    db "dmem [hex]   Live 64B Hex/ASCII dump   cmos / nvram Live CMOS & NVRAM dump", 0
 str_sh_hlp10:
-    db "sound [0-7]  Play 16-bit PCM wave      memtest      Verify 64KB RAM (2x pass)", 0
+    db "cpu / regs   Dump live x86 registers   time / date  Read hardware RTC clock", 0
 str_sh_hlp11:
-    db "reboot       Warm BIOS POST reset      shutdown     ACPI S5 system power-off!", 0
+    db "reboot       Real HW reset (0x64=FEh)  shutdown     ACPI S5 system power-off!", 0
 str_sh_hlp12:
     db "snake / boot Launch SNAKE.EFI game     exit / quit  Return to BIOS Setup!", 0
 
@@ -8772,17 +9158,21 @@ str_run_use:
     db "Usage: run <script.nsh>  (Executes commands line-by-line from CybFS file)", 0
 str_run_err:
     db "Error: Target is not an executable script file.", 0
-str_fmt_ok:
-    db "CybFS v1.0 formatted from ROM Block 0 (0xFFFC0100 -> 0x3000..0x7FFF).", 0
+str_fmt_ok1:
+    db "[FACTORY RESET] Wiping persistent ATA NVRAM disk (LBA 0..31) & RAM pool...", 0
+str_fmt_ok2:
+    db "[FACTORY RESET] CybFS v1.0 restored from ROM Block 0 (All files erased).", 0
+str_fmt_ok3:
+    db "[FACTORY RESET] BIOS Setup settings, Font Scale & Highscores reset OK!", 0
 
 str_neo1:
     db "   .==========.     root@cybforge-bios", 0
 str_neo2:
     db "  /  CYBFORGE  \\    ------------------------------------------", 0
 str_neo3:
-    db " |   [x86-32]   |   Shell    : Cybforge UEFI/BIOS Shell v2.6", 0
+    db " |   [x86-32]   |   Shell    : Cybforge UEFI/BIOS Shell v2.8", 0
 str_neo4:
-    db " |  RETRO BIOS  |   FileSys  : CybFS v1.0 Live R/W (0x3000h)", 0
+    db " |  RETRO BIOS  |   FileSys  : Persistent ATA Disk + CybFS v1.0", 0
 str_neo5:
     db "  \\    v2.6    /    Memory   : 640 KB Base RAM / 256 KB ROM", 0
 str_neo6:
@@ -8911,9 +9301,9 @@ str_sf_usage:
     db "  Usage: setfont 1 (Small) | 2 (Medium) | 3 (Large) | 4 (Huge XL)", 0
 
 str_reboot_msg:
-    db "[SYSTEM] Initiating warm BIOS reset -> Jumping to POST (F000:FFF0h)...", 0
+    db "[SYSTEM] Syncing ATA NVRAM disk & triggering hardware reset (Port 0x64=0xFE)...", 0
 str_shut_msg1:
-    db "[ACPI S5] Syncing CybFS RAM Disk & stopping Sound Blaster 16 DMA...", 0
+    db "[ACPI S5] Flushing CybFS & CMOS to ATA disk (cybfs_nvram.img, LBA 0..31)...", 0
 str_shut_msg2:
     db "[ACPI S5] Sending SLP_TYP5 (0x2000) to PM1a_CNT (Port 0x0604) -> Power Off!", 0
 str_shut_halted:
@@ -9114,6 +9504,10 @@ if res.returncode == 0 and block3_bin.exists() and block3_bin.stat().st_size == 
     rom_256k = block0 + block1_2 + block3_bin.read_bytes()
     final_bin = BASE_DIR / "bios.bin"
     final_bin.write_bytes(rom_256k)
+    nvram_img = BASE_DIR / "cybfs_nvram.img"
+    if not nvram_img.exists() or nvram_img.stat().st_size < 65536:
+        nvram_img.write_bytes(b"\x00" * 65536)
+        print(f"     -> Created persistent NVRAM disk: {nvram_img} (65,536 Bytes)")
     print("=" * 60)
     print(f"[OK] 256 KB BIOS ROM successfully generated ({len(rom_256k)} Bytes)!")
     print(f"     -> {final_bin}")

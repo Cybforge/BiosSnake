@@ -1,13 +1,13 @@
-# Cybforge Retro BIOS, UEFI/BIOS Shell & Snake v2.7 (256 KB ROM + CybFS + GNU Nano Edition)
+# Cybforge Retro BIOS, UEFI/BIOS Shell & Snake v2.8 (256 KB ROM + Persistent ATA Disk + GNU Nano Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-x86%2016%2F32--bit%20Unreal%20Mode-lightgrey.svg)](#)
 [![Format](https://img.shields.io/badge/ROM-256KB%20Binary-brightgreen.svg)](#)
 [![Filesystem](https://img.shields.io/badge/Filesystem-CybFS%20v1.0%20Live%20R%2FW-cyan.svg)](#)
 [![Editor](https://img.shields.io/badge/Editor-GNU%20Nano%202.7%20Full--Screen-orange.svg)](#)
-[![Shell](https://img.shields.io/badge/Shell-UEFI%2FBIOS%20Shell%20v2.7-yellow.svg)](#)
+[![Shell](https://img.shields.io/badge/Shell-UEFI%2FBIOS%20Shell%20v2.8-yellow.svg)](#)
 [![Audio](https://img.shields.io/badge/Audio-Sound%20Blaster%2016%2016--Bit%20PCM-blueviolet.svg)](#)
-[![Version](https://img.shields.io/badge/Version-2.7%20GNU%20Nano%20Edition-brightgreen.svg)](#)
+[![Version](https://img.shields.io/badge/Version-2.8%20Persistent%20NVRAM%20Edition-brightgreen.svg)](#)
 
 A custom, bare-metal **x86 16/32-bit PC BIOS** in a full **256 KB (`262,144 Bytes`) ROM image**. It boots an authentic AMIBIOS-style POST diagnostic sequence with Sound Blaster 16 hardware auto-detection, features a **Multi-Tab Cybforge Retro BIOS Setup Utility** (`[ 1: Main & Game ]` and `[ 2: BiosShell ]`) with CMOS NVRAM persistence, includes an interactive **UEFI/EFI-style BIOS Shell (`v2.7`)** backed by a real live read/write filesystem (**CybFS v1.0**), a full-screen **GNU Nano text editor (`write` / `nano`)**, live hardware VGA font scaling (**`setfont 1..4`**), bare-metal PIIX4 ACPI S5 power-off (**`shutdown`**) & warm **`reboot`**, and directly launches an arcade **Snake Game v2.7** with **16-bit Sound Blaster 16 PCM WAV audio** in pure assembly.
 
@@ -70,7 +70,7 @@ Backed by **CybFS v1.0**, a real bare-metal filesystem mounted from ROM Block 0 
 | **`help`** / **`?`** | Displays the formatted 2-column command reference table (including `write`/`nano`, `setfont`, `reboot`, `shutdown`) |
 | **`write <file>`** / **`nano <file>`** / **`edit <file>`** | Opens the **Full-Screen Interactive GNU Nano Editor (`v2.7`)** for multi-line editing (`^O`/`F2` WriteOut, `^S`/`F3` Save & Exit, `^K`/`F4` Cut Line, `^X`/`ESC` Exit) |
 | **`setfont [1-4]`** / **`font`** | Dynamically scales the hardware VGA font in Plane 2 (`0xA0000`) between `1` (`Small 8x8`), `2` (`Medium 8x12`), `3` (`Large 8x16`), and `4` (`Huge 8x16 XL Tall`) |
-| **`reboot`** / **`reset`** | Performs a warm BIOS POST reset (`F000:FFF0h`), re-running the POST screen and RAM counter |
+| **`reboot`** / **`reset`** | Flushes NVRAM to disk and triggers a real x86 hardware CPU reset via 8042 Keyboard Controller (`Port 0x64 = 0xFE`) & PCI Reset Control (`Port 0xCF9 = 0x06`) |
 | **`shutdown`** / **`poweroff`** / **`halt`** | Programs the Intel PIIX4 ACPI PM controller (`PCI 00:01.3`, `PMBA=0x0601`) and sends `SLP_TYP5` (`0x2000`) to `Port 0x0604` to power off the machine |
 | **`exit`** / **`quit`** / **`setup`** | Exits the BIOS Shell and returns directly to the **BIOS Setup Utility** |
 | **`ls`** / **`dir`** | Dynamically scans the 32-entry CybFS Inode table (`0x3020`), displaying real type (`<DIR>`, `[RAM]`, `[ROM]`, `[HW ]`), real byte size, memory address, name, and free byte pool |
@@ -81,7 +81,7 @@ Backed by **CybFS v1.0**, a real bare-metal filesystem mounted from ROM Block 0 
 | **`cat <file>`** / **`type <file>`** | Reads real file bytes from RAM (`[RAM]`), dumps live 32-bit ROM bytes + plays WAV audio via SB16 DMA (`[ROM]`), or dumps live CMOS (`[HW ]`) |
 | **`rm <name>`** / **`del <name>`** | Deletes a file or directory from CybFS by clearing its Inode (`flags = 0`) |
 | **`run <file.nsh>`** / **`sh <file.nsh>`** | Reads a script file's real bytes line-by-line from CybFS and executes each command in the BIOS Shell |
-| **`format`** | Re-initializes the live CybFS RAM volume (`0x3000..0x6FFF`) from the master image in ROM Block 0 (`0xFFFC0100`) |
+| **`factoryreset`** / **`wipe`** / **`format`** | **Smartphone-style Factory Reset:** Wipes the persistent ATA disk (`cybfs_nvram.img`), restores `CybFS v1.0` from ROM Block 0, and resets all BIOS Setup settings, Font Scale, and Highscores to factory defaults |
 | **`pci`** / **`devices`** / **`lspci`** | Live hardware PCI Configuration Mechanism #1 scanner via I/O ports `0xCF8`/`0xCFC` (reads real `Vendor:Device` and `Class/Subclass` registers) |
 | **`memtest`** | Performs a real word-by-word write & read-back verification (`cmp word [es:di], 0x55AA` / `0xAA55`) across 64 KB extended RAM (`0x20000..0x2FFFF`) with live error counter |
 | **`ver`** / **`version`** | Shows Cybforge UEFI/BIOS Shell version, ROM bank layout, CPU mode, and SB16 DSP info |
@@ -184,7 +184,7 @@ run.bat
 ```
 `run.bat` automatically checks screen resolution, builds `bios.bin` (256 KB) if missing, and launches QEMU with Sound Blaster 16 DMA audio, DirectSound low latency, and hardware OpenGL scaling:
 ```cmd
-qemu-system-x86_64 -bios bios.bin -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -device sb16,audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on
+qemu-system-x86_64 -bios bios.bin -drive file=cybfs_nvram.img,format=raw,if=ide -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -device sb16,audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on
 ```
 
 ### 2. Manual Build
@@ -196,6 +196,15 @@ build.bat
 ---
 
 ## Changelog
+
+### v2.8: Persistent ATA/IDE Disk Storage (`cybfs_nvram.img`), Hardware `reboot` & Smartphone-Style `factoryreset`
+- **True Cross-Session Persistent Storage (`cybfs_nvram.img` via Bare-Metal PIIX3 ATA/IDE PIO Driver)**:
+  - Implemented a bare-metal PCI IDE initializer (`PCI 00:01.1`, `IDETIM = 0x80008000`) and 28-bit LBA PIO read/write/flush driver (`Ports 0x1F0..0x1F7`, `LBA 0..31` = 16 KB).
+  - Automatically persists the entire **16 KB `CybFS v1.0` volume (`0x3000..0x6FDF`)** (created files, multi-line Nano edits, directories, deletions) **plus all 32 CMOS/BIOS Setup settings, Font Scale (`CFG_SH_FONT`), and Top-3 Highscores (`0x6FE0..0x6FFF`)** to `cybfs_nvram.img` across full QEMU shutdowns and restarts.
+- **Smartphone-Style Factory Reset (`factoryreset` / `wipe` / `resetbios` / `format`)**:
+  - Added `factoryreset` (prominently listed in `help`), which wipes all custom files/folders in `CybFS`, reloads the clean master image from ROM Block 0 (`0xFFFC0100`), resets all BIOS Setup settings, Font Scale (`8x16`), Shell Theme, and Top-3 Highscores to factory defaults, and overwrites `cybfs_nvram.img` on disk.
+- **True Hardware Reset (`reboot`)**:
+  - Upgraded `reboot` to flush the NVRAM disk and trigger a real hardware reset via the 8042 Keyboard Controller (`out 0x64, 0xFE`) and PCI Reset Control Register (`out 0xCF9, 0x06`).
 
 ### v2.7: Full-Screen GNU Nano Editor, Live VGA Font Scaler (`setfont`) & ACPI S5 Power-Off (`shutdown`)
 - **Full-Screen Interactive GNU Nano Editor (`write <file>`, `nano <file>`, `edit <file>`)**:
