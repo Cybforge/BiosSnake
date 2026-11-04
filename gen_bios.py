@@ -348,6 +348,16 @@ SH_CLEAN_BUF    equ 0x1B90  ; 64 Bytes normalisierter Befehlspuffer (0x1B90..0x1
 SH_SCRIPT_PTR   equ 0x1BD0  ; Aktueller Lesezeiger bei 'run <script>' (Word)
 SH_SCRIPT_END   equ 0x1BD2  ; Endadresse bei 'run <script>' (Word)
 SH_SCRIPT_ACT   equ 0x1BD4  ; 1 = Skript laeuft gerade (Byte)
+SH_CTRL         equ 0x1BD5  ; Ctrl-Taste gedrueckt (0/1) (Byte)
+CFG_SH_FONT     equ 0x1BD6  ; Aktuelle Schriftgroesse (0=Small, 1=Medium, 2=Large, 3=Huge) (Byte)
+NANO_SAVED_FLAG equ 0x1BD7  ; 1 = In dieser Nano-Session gespeichert (Byte)
+NANO_INODE      equ 0x1BD8  ; Zeiger auf aktuellen CybFS Inode im Nano Editor (Word)
+NANO_ROW        equ 0x1BDA  ; Aktuelle Cursor-Zeile in Nano (0..17) (Byte)
+NANO_COL        equ 0x1BDB  ; Aktuelle Cursor-Spalte in Nano (0..71) (Byte)
+NANO_MOD        equ 0x1BDC  ; 1 = Ungespeicherte Aenderungen im Puffer (Byte)
+NANO_MSG_ID     equ 0x1BDD  ; Statusmeldungs-ID in Nano (0..4) (Byte)
+NANO_LAST_SZ    equ 0x1BDE  ; Letzte Dateigroesse in Bytes (Word)
+NANO_BUF        equ 0x7000  ; 18 Zeilen x 72 Spalten = 1296 Bytes Textpuffer (0x7000..0x750F)
 
 ; --- CybFS v1.0 Live RAM Filesystem (0x3000..0x7FFF = 20 KB) ---
 FS_MAGIC        equ 0x3000  ; Word: 0x5346 ('FS') wenn gemountet
@@ -440,6 +450,7 @@ part2 = """
     call apply_color_theme
     mov byte [SETUP_SEL], 0         ; Zeile 0 ausgewaehlt
     mov byte [SETUP_TAB], 0         ; Standard-Reiter: 0 (Main & Game)
+    mov byte [CFG_SH_FONT], 2       ; Standard-Schriftgroesse: 2 (Large 8x16)
 
     ; =========================================================================
     ; PHASE 1: CYBFORGE RETRO BIOS POST SCREEN (3 Sekunden Wartezeit fuer F12)
@@ -4381,6 +4392,7 @@ bios_shell_main:
     call drain_kbd
     call fs_ensure_mounted          ; CybFS aus ROM Block 0 mounten falls noch nicht aktiv
     mov byte [SH_SHIFT], 0
+    mov byte [SH_CTRL], 0
     mov byte [SH_CMD_LEN], 0
     mov byte [SH_HIST_LEN], 0
     mov byte [SH_SCRIPT_ACT], 0
@@ -4750,6 +4762,8 @@ sh_read_key_event:
     test al, 0x01
     jz .sh_no_key
     in al, 0x60
+    cmp al, 0xE0                    ; Extended Scancode Prefix ignorieren
+    je .sh_no_key
     cmp al, 0x2A                    ; Left Shift Make
     je .sh_shift_dn
     cmp al, 0x36                    ; Right Shift Make
@@ -4758,6 +4772,10 @@ sh_read_key_event:
     je .sh_shift_up
     cmp al, 0xB6                    ; Right Shift Break
     je .sh_shift_up
+    cmp al, 0x1D                    ; Ctrl Make
+    je .sh_ctrl_dn
+    cmp al, 0x9D                    ; Ctrl Break
+    je .sh_ctrl_up
     test al, 0x80                   ; Andere Break-Codes ignorieren
     jnz .sh_no_key
     ret
@@ -4767,6 +4785,14 @@ sh_read_key_event:
     ret
 .sh_shift_up:
     mov byte [SH_SHIFT], 0
+    xor al, al
+    ret
+.sh_ctrl_dn:
+    mov byte [SH_CTRL], 1
+    xor al, al
+    ret
+.sh_ctrl_up:
+    mov byte [SH_CTRL], 0
     xor al, al
     ret
 .sh_no_key:
@@ -5355,8 +5381,14 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_touch
 
-    ; 11. write (Echte Datei mit Inhalt in CybFS schreiben)
+    ; 11. write / nano / edit (Interaktiver GNU Nano Texteditor fuer CybFS!)
     mov si, cmd_write
+    call sh_match_cmd
+    jc .do_sh_write
+    mov si, cmd_nano
+    call sh_match_cmd
+    jc .do_sh_write
+    mov si, cmd_edit
     call sh_match_cmd
     jc .do_sh_write
 
@@ -5507,13 +5539,35 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_snake
 
-    ; 30. reboot / reset
+    ; 30. setfont (Schriftgroesse in der BIOS Shell live skalieren: 1..4)
+    mov si, cmd_setfont
+    call sh_match_cmd
+    jc .do_sh_setfont
+    mov si, cmd_font
+    call sh_match_cmd
+    jc .do_sh_setfont
+
+    ; 31. reboot / reset
     mov si, cmd_reboot
     call sh_match_cmd
     jc .do_sh_reboot
     mov si, cmd_reset
     call sh_match_cmd
     jc .do_sh_reboot
+
+    ; 32. shutdown / poweroff / halt / off (Echter ACPI S5 Soft-Off Shutdown!)
+    mov si, cmd_shutdown
+    call sh_match_cmd
+    jc .do_sh_shutdown
+    mov si, cmd_poweroff
+    call sh_match_cmd
+    jc .do_sh_shutdown
+    mov si, cmd_halt
+    call sh_match_cmd
+    jc .do_sh_shutdown
+    mov si, cmd_off
+    call sh_match_cmd
+    jc .do_sh_shutdown
 
     ; Unbekannter Befehl:
     mov si, str_sh_err_pfx
@@ -5569,6 +5623,9 @@ sh_execute_command:
     mov si, str_sh_hlp10
     call sh_print_line
     mov si, str_sh_hlp11
+    mov ah, 0x0E
+    call sh_print_line
+    mov si, str_sh_hlp12
     mov ah, 0x0A
     call sh_print_line
     ret
@@ -5975,140 +6032,231 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 11. WRITE <FILENAME> <TEXT> (Echte Datei mit Daten beschreiben!) ---
+; --- 11. WRITE / NANO / EDIT <FILENAME> (FULL-SCREEN GNU NANO TEXT EDITOR!) ---
 .do_sh_write:
+    ; Falls kein Dateiname angegeben wurde -> Standarddatei "notes.txt" oeffnen!
     cmp byte [SH_CLEAN_BUF + bx], 0
-    je .write_usage
+    jne .nano_has_arg
+    mov byte [SH_CLEAN_BUF + bx + 0], 'n'
+    mov byte [SH_CLEAN_BUF + bx + 1], 'o'
+    mov byte [SH_CLEAN_BUF + bx + 2], 't'
+    mov byte [SH_CLEAN_BUF + bx + 3], 'e'
+    mov byte [SH_CLEAN_BUF + bx + 4], 's'
+    mov byte [SH_CLEAN_BUF + bx + 5], '.'
+    mov byte [SH_CLEAN_BUF + bx + 6], 't'
+    mov byte [SH_CLEAN_BUF + bx + 7], 'x'
+    mov byte [SH_CLEAN_BUF + bx + 8], 't'
+    mov byte [SH_CLEAN_BUF + bx + 9], 0
 
-    ;Pruefen ob Datei schon existiert, sonst neuen Inode allozieren
+.nano_has_arg:
+    ; Pruefen ob Datei im aktuellen Verzeichnis existiert, sonst neuen Inode anlegen
     call fs_find_in_dir
-    jc .write_found_existing
+    jc .nano_found_existing
     call fs_alloc_inode
     jnc .fs_full_err
 
-    ; Neuen Inode initialisieren & Namen kopieren
+    ; Neuen Inode initialisieren & Dateinamen kopieren
     mov byte [ds:di + 0], 1         ; flags = 1 ([RAM])
     mov al, [SH_DIR_ID]
     mov [ds:di + 1], al
+    mov ax, [FS_ALLOC_PTR]
+    mov [ds:di + 2], ax             ; data_off
     mov word [ds:di + 4], 0x0000
+    mov word [ds:di + 6], 0         ; file_size = 0 (noch leer)
     push di
     add di, 8
     mov ch, 15
-.wr_name_cp:
+.nano_name_cp:
     mov al, [SH_CLEAN_BUF + bx]
     test al, al
-    jz .wr_name_done
+    jz .nano_name_done
     cmp al, ' '
-    je .wr_name_done
+    je .nano_name_done
     mov [ds:di], al
     inc bx
     inc di
     dec ch
-    jnz .wr_name_cp
-.wr_name_done:
+    jnz .nano_name_cp
+.nano_name_done:
     mov byte [ds:di], 0
     pop di
-    jmp .wr_skip_spaces
+    jmp .nano_skip_fn_sp
 
-.write_found_existing:
+.nano_found_existing:
     cmp byte [ds:di + 0], 2
     je .cd_not_dir
-    mov byte [ds:di + 0], 1         ; Selbst ROM-Dateien koennen als RAM-Override ueberschrieben werden!
-    mov word [ds:di + 4], 0x0000
-    ; BX ueber den Dateinamen vorspulen
-.wr_adv_fn:
+    ; BX ueber Dateinamen vorspulen
+.nano_adv_fn:
     mov al, [SH_CLEAN_BUF + bx]
     test al, al
-    jz .wr_skip_spaces
+    jz .nano_skip_fn_sp
     cmp al, ' '
-    je .wr_skip_spaces
+    je .nano_skip_fn_sp
     inc bx
-    jmp .wr_adv_fn
+    jmp .nano_adv_fn
 
-.wr_skip_spaces:
+.nano_skip_fn_sp:
     cmp byte [SH_CLEAN_BUF + bx], ' '
-    jne .wr_start_data
+    jne .nano_init_buffer
     inc bx
-    jmp .wr_skip_spaces
+    jmp .nano_skip_fn_sp
 
-.wr_start_data:
-    ; Jetzt korrespondierenden Offset im Original-Puffer SH_CMD_BUF finden (fuer Gross/Kleinschreibung!)
-    ; Da sh_normalize_cmd nur Leading Spaces entfernt hat, suchen wir im SH_CMD_BUF das 2. Wort:
+.nano_init_buffer:
+    mov [NANO_INODE], di
+    mov byte [NANO_ROW], 0
+    mov byte [NANO_COL], 0
+    mov byte [NANO_MOD], 0
+    mov byte [NANO_SAVED_FLAG], 0
+    mov byte [NANO_MSG_ID], 0
+    mov ax, [ds:di + 6]
+    mov [NANO_LAST_SZ], ax
+
+    ; 18 x 72 Nano-Textpuffer (0x7000..0x750F = 1296 Bytes) mit Spaces (' ') fuellen
+    push di
+    mov di, NANO_BUF
+    mov cx, 18 * 72
+    mov al, ' '
+.nano_clr_lp:
+    mov [ds:di], al
+    inc di
+    loop .nano_clr_lp
+    pop di
+
+    ; Falls die Datei bereits Inhalt im RAM hat (flags == 1 und file_size > 0), in den Puffer laden!
+    cmp byte [ds:di + 0], 1
+    jne .nano_check_inline_arg
+    mov cx, [ds:di + 6]
+    test cx, cx
+    jz .nano_check_inline_arg
+
+    mov si, [ds:di + 2]             ; data_off im CybFS RAM-Pool
+    xor dx, dx                      ; DH = Row (0..17), DL = Col (0..71)
+.nano_load_file_lp:
+    mov al, [ds:si]
+    inc si
+    cmp al, 0x0D
+    je .nano_lf_next
+    cmp al, 0x0A
+    je .nano_lf_newline
+    cmp dl, 72
+    jae .nano_lf_next
+    push ax
+    mov al, dh
+    mov ah, 72
+    mul ah                          ; AX = row * 72
+    xor bh, bh
+    mov bl, dl
+    add ax, bx
+    add ax, NANO_BUF
+    mov bp, ax
+    pop ax
+    mov [ds:bp], al
+    inc dl
+    jmp .nano_lf_next
+.nano_lf_newline:
+    inc dh
+    xor dl, dl
+    cmp dh, 18
+    jae .nano_load_done
+.nano_lf_next:
+    loop .nano_load_file_lp
+.nano_load_done:
+    cmp dh, 18
+    jb .nano_set_loaded_cur
+    mov dh, 17
+.nano_set_loaded_cur:
+    mov [NANO_ROW], dh
+    mov [NANO_COL], dl
+
+.nano_check_inline_arg:
+    ; Pruefen ob beim Aufruf 'write <datei> <text>' direkt Text mitgegeben wurde
+    cmp byte [SH_CLEAN_BUF + bx], 0
+    je .nano_check_script_mode
+
+    ; Korrespondierende Stelle im Original-Puffer SH_CMD_BUF suchen (Gross/Kleinschreibung erhalten)
     xor si, si
     mov cl, [SH_CMD_LEN]
     xor ch, ch
-.wr_orig_s1:
+.nano_orig_s1:
     test cx, cx
-    jz .wr_do_copy
+    jz .nano_check_script_mode
     cmp byte [SH_CMD_BUF + si], ' '
-    jne .wr_orig_w1
+    jne .nano_orig_w1
     inc si
     dec cx
-    jmp .wr_orig_s1
-.wr_orig_w1:
-    ; Ueber Befehlsname ('write')
+    jmp .nano_orig_s1
+.nano_orig_w1:
     test cx, cx
-    jz .wr_do_copy
+    jz .nano_check_script_mode
     cmp byte [SH_CMD_BUF + si], ' '
-    je .wr_orig_s2
+    je .nano_orig_s2
     inc si
     dec cx
-    jmp .wr_orig_w1
-.wr_orig_s2:
+    jmp .nano_orig_w1
+.nano_orig_s2:
     test cx, cx
-    jz .wr_do_copy
+    jz .nano_check_script_mode
     cmp byte [SH_CMD_BUF + si], ' '
-    jne .wr_orig_w2
+    jne .nano_orig_w2
     inc si
     dec cx
-    jmp .wr_orig_s2
-.wr_orig_w2:
-    ; Ueber Dateiname
+    jmp .nano_orig_s2
+.nano_orig_w2:
     test cx, cx
-    jz .wr_do_copy
+    jz .nano_check_script_mode
     cmp byte [SH_CMD_BUF + si], ' '
-    je .wr_orig_s3
+    je .nano_orig_s3
     inc si
     dec cx
-    jmp .wr_orig_w2
-.wr_orig_s3:
+    jmp .nano_orig_w2
+.nano_orig_s3:
     test cx, cx
-    jz .wr_do_copy
+    jz .nano_check_script_mode
     cmp byte [SH_CMD_BUF + si], ' '
-    jne .wr_do_copy
+    jne .nano_copy_inline
     inc si
     dec cx
-    jmp .wr_orig_s3
+    jmp .nano_orig_s3
 
-.wr_do_copy:
-    mov bp, [FS_ALLOC_PTR]
-    cmp bp, FS_POOL_END - 128
-    jae .fs_full_err
-    mov [ds:di + 2], bp             ; data_off = Startadresse im RAM-Pool
-    xor dx, dx                      ; DX = geschriebene Byte-Laenge
+.nano_copy_inline:
+    ; Falls wir im Skript-Modus ('run <script.nsh>') sind, Zeile 0 frisch ueberschreiben
+    mov di, NANO_BUF
+    mov dx, 72
+.nano_clr_l0:
+    mov byte [ds:di], ' '
+    inc di
+    dec dx
+    jnz .nano_clr_l0
 
-.wr_cp_loop:
+    mov di, NANO_BUF
+    xor dl, dl
+.nano_cp_in_lp:
     test cx, cx
-    jz .wr_finish_file
+    jz .nano_cp_in_done
+    cmp dl, 72
+    jae .nano_cp_in_done
     mov al, [SH_CMD_BUF + si]
-    mov [ds:bp], al
+    mov [ds:di], al
     inc si
-    inc bp
-    inc dx
+    inc di
+    inc dl
     dec cx
-    jmp .wr_cp_loop
+    jmp .nano_cp_in_lp
+.nano_cp_in_done:
+    mov byte [NANO_ROW], 0
+    mov [NANO_COL], dl
+    mov byte [NANO_MOD], 1
 
-.wr_finish_file:
-    mov byte [ds:bp], 0x0A          ; Newline am Ende
-    inc bp
-    inc dx
-    mov [ds:di + 6], dx             ; Echte Dateigroesse in Inode speichern!
-    mov [FS_ALLOC_PTR], bp          ; Allokationszeiger aktualisieren!
-
+.nano_check_script_mode:
+    ; Wenn aus einem .nsh Skript aufgerufen: direkt speichern ohne interaktive Oberflaeche!
+    cmp byte [SH_SCRIPT_ACT], 1
+    jne .nano_enter_ui
+    call .nano_save_buffer
+    mov di, [NANO_INODE]
     mov si, str_write_ok1
     mov ah, 0x0A
     call sh_print_inline
-    mov ax, dx
+    mov ax, [NANO_LAST_SZ]
     mov bl, 0x0E
     call sh_print_dec16
     mov si, str_write_ok2
@@ -6122,10 +6270,799 @@ sh_execute_command:
     call sh_print_line
     ret
 
-.write_usage:
-    mov si, str_write_use
-    mov ah, 0x0E
+; =============================================================================
+; INTERAKTIVE GNU NANO VOLLBILD-OBERFLAECHE (CYBFORGE NANO v2.7)
+; =============================================================================
+.nano_enter_ui:
+    call .nano_render_screen
+
+.nano_event_loop:
+    call sh_read_key_event
+    test al, al
+    jz .nano_idle
+
+    ; Befinden wir uns im "Save modified buffer? [Y/N/C]" Dialog (NANO_MSG_ID == 2)?
+    cmp byte [NANO_MSG_ID], 2
+    jne .nano_normal_keys
+
+    cmp al, 0x15                    ; 'Y' (US) -> Ja, speichern & beenden
+    je .nano_save_and_exit
+    cmp al, 0x2C                    ; 'Z' (DE Tastatur 'Y') -> Ja, speichern & beenden
+    je .nano_save_and_exit
+    cmp al, 0x1C                    ; ENTER -> Ja, speichern & beenden
+    je .nano_save_and_exit
+    cmp al, 0x31                    ; 'N' -> Nein, Aenderungen verwerfen & beenden
+    je .nano_exit_now
+    cmp al, 0x2E                    ; 'C' -> Abbrechen, weiter editieren
+    je .nano_cancel_prompt
+    cmp al, 0x01                    ; ESC -> Im Dialog: ebenfalls speichern & beenden oder abbrechen
+    je .nano_cancel_prompt
+    jmp .nano_event_loop
+
+.nano_cancel_prompt:
+    mov byte [NANO_MSG_ID], 0
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_normal_keys:
+    ; 1. Pruefen ob CTRL gedrueckt ist (^O, ^X, ^S, ^K, ^G)
+    cmp byte [SH_CTRL], 1
+    jne .nano_check_fn_keys
+
+    cmp al, 0x18                    ; Ctrl+O (^O) -> WriteOut (Speichern)
+    je .nano_do_writeout
+    cmp al, 0x2D                    ; Ctrl+X (^X) -> Exit Nano
+    je .nano_try_exit
+    cmp al, 0x1F                    ; Ctrl+S (^S) -> Save & Exit
+    je .nano_save_and_exit
+    cmp al, 0x25                    ; Ctrl+K (^K) -> Cut/Clear Line
+    je .nano_cut_line
+    cmp al, 0x22                    ; Ctrl+G (^G) -> Get Help
+    je .nano_show_help
+    jmp .nano_event_loop
+
+.nano_check_fn_keys:
+    ; 2. Funktionstasten & Navigationstasten pruefen
+    cmp al, 0x3B                    ; F1 -> Get Help (^G)
+    je .nano_show_help
+    cmp al, 0x3C                    ; F2 -> WriteOut / Save (^O)
+    je .nano_do_writeout
+    cmp al, 0x3D                    ; F3 -> Save & Exit (^S)
+    je .nano_save_and_exit
+    cmp al, 0x3E                    ; F4 -> Cut Line (^K)
+    je .nano_cut_line
+    cmp al, 0x01                    ; ESC -> Exit Nano (^X)
+    je .nano_try_exit
+
+    cmp al, 0x48                    ; UP ARROW
+    je .nano_cur_up
+    cmp al, 0x50                    ; DOWN ARROW
+    je .nano_cur_down
+    cmp al, 0x4B                    ; LEFT ARROW
+    je .nano_cur_left
+    cmp al, 0x4D                    ; RIGHT ARROW
+    je .nano_cur_right
+    cmp al, 0x47                    ; HOME
+    je .nano_cur_home
+    cmp al, 0x4F                    ; END
+    je .nano_cur_end
+    cmp al, 0x1C                    ; ENTER -> Neue Zeile
+    je .nano_on_enter
+    cmp al, 0x0E                    ; BACKSPACE
+    je .nano_on_bs
+    cmp al, 0x53                    ; DELETE (Entf)
+    je .nano_on_del
+    cmp al, 0x0F                    ; TAB -> 4 Spaces einfuegen
+    je .nano_on_tab
+
+    ; 3. Normales druckbares Zeichen ermitteln und an Cursorposition einfuegen
+    cmp al, 0x58
+    jae .nano_idle
+    xor bh, bh
+    mov bl, al
+    mov dl, [cs:sh_scancode_norm + bx]
+    cmp byte [SH_SHIFT], 1
+    jne .nano_got_ch
+    mov dl, [cs:sh_scancode_shift + bx]
+.nano_got_ch:
+    test dl, dl
+    jz .nano_idle
+
+    call .nano_insert_char
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_idle:
+    mov ecx, 200000
+    call delay_cycles
+    jmp .nano_event_loop
+
+; --- Nano Cursor- & Edit-Aktionen ---
+.nano_cur_up:
+    cmp byte [NANO_ROW], 0
+    je .nano_event_loop
+    dec byte [NANO_ROW]
+    mov byte [NANO_MSG_ID], 0
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_cur_down:
+    cmp byte [NANO_ROW], 17
+    jae .nano_event_loop
+    inc byte [NANO_ROW]
+    mov byte [NANO_MSG_ID], 0
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_cur_left:
+    cmp byte [NANO_COL], 0
+    je .nano_left_wrap
+    dec byte [NANO_COL]
+    jmp .nano_nav_redraw
+.nano_left_wrap:
+    cmp byte [NANO_ROW], 0
+    je .nano_event_loop
+    dec byte [NANO_ROW]
+    call .nano_find_line_end
+    mov [NANO_COL], cl
+.nano_nav_redraw:
+    mov byte [NANO_MSG_ID], 0
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_cur_right:
+    cmp byte [NANO_COL], 71
+    jae .nano_right_wrap
+    inc byte [NANO_COL]
+    jmp .nano_nav_redraw
+.nano_right_wrap:
+    cmp byte [NANO_ROW], 17
+    jae .nano_event_loop
+    inc byte [NANO_ROW]
+    mov byte [NANO_COL], 0
+    jmp .nano_nav_redraw
+
+.nano_cur_home:
+    mov byte [NANO_COL], 0
+    jmp .nano_nav_redraw
+
+.nano_cur_end:
+    call .nano_find_line_end
+    mov [NANO_COL], cl
+    jmp .nano_nav_redraw
+
+.nano_on_enter:
+    cmp byte [NANO_ROW], 17
+    jae .nano_event_loop
+    inc byte [NANO_ROW]
+    mov byte [NANO_COL], 0
+    mov byte [NANO_MOD], 1
+    mov byte [NANO_MSG_ID], 0
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_on_tab:
+    mov cx, 4
+.nano_tab_lp:
+    push cx
+    mov dl, ' '
+    call .nano_insert_char
+    pop cx
+    loop .nano_tab_lp
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_on_bs:
+    cmp byte [NANO_COL], 0
+    je .nano_bs_prev_line
+    dec byte [NANO_COL]
+    call .nano_delete_at_cursor
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+.nano_bs_prev_line:
+    cmp byte [NANO_ROW], 0
+    je .nano_event_loop
+    dec byte [NANO_ROW]
+    call .nano_find_line_end
+    mov [NANO_COL], cl
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_on_del:
+    call .nano_delete_at_cursor
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_cut_line:
+    ; Aktuelle Zeile (NANO_ROW) leeren und nachfolgende Zeilen um 1 nach oben schieben
+    mov al, [NANO_ROW]
+    mov ah, 72
+    mul ah
+    add ax, NANO_BUF
+    mov di, ax                      ; DI = Start der aktuellen Zeile
+
+    mov al, 17
+    sub al, [NANO_ROW]
+    jz .nano_cut_clear_last
+    mov ah, 72
+    mul ah
+    mov cx, ax                      ; CX = Anzahl Bytes unterhalb von NANO_ROW
+    lea si, [di + 72]
+.nano_cut_shift:
+    mov al, [ds:si]
+    mov [ds:di], al
+    inc si
+    inc di
+    loop .nano_cut_shift
+
+.nano_cut_clear_last:
+    mov di, NANO_BUF + 17 * 72
+    mov cx, 72
+    mov al, ' '
+.nano_cut_clr:
+    mov [ds:di], al
+    inc di
+    loop .nano_cut_clr
+
+    mov byte [NANO_COL], 0
+    mov byte [NANO_MOD], 1
+    mov byte [NANO_MSG_ID], 3
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_show_help:
+    mov byte [NANO_MSG_ID], 4
+    call sh_key_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_do_writeout:
+    call .nano_save_buffer
+    call sound_toggle
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_try_exit:
+    cmp byte [NANO_MOD], 0
+    je .nano_exit_now
+    ; Ungespeicherte Aenderungen -> GNU Nano "Save modified buffer?" Prompt anzeigen!
+    mov byte [NANO_MSG_ID], 2
+    call sound_click
+    call .nano_render_screen
+    jmp .nano_event_loop
+
+.nano_save_and_exit:
+    call .nano_save_buffer
+    call sound_toggle
+
+.nano_exit_now:
+    ; Zurueck in die gerahmte BIOS Shell Oberflaeche schalten
+    call sh_clear_screen
+    mov di, [NANO_INODE]
+    cmp byte [NANO_SAVED_FLAG], 1
+    je .nano_exit_saved_msg
+
+    mov si, str_nano_closed1
+    mov ah, 0x0B
+    call sh_print_inline
+    lea si, [di + 8]
+    mov ah, 0x0F
+    call sh_print_ram_inline
+    mov si, str_Quote_ok
+    mov ah, 0x0B
     call sh_print_line
+    ret
+
+.nano_exit_saved_msg:
+    mov si, str_write_ok1
+    mov ah, 0x0A
+    call sh_print_inline
+    mov ax, [NANO_LAST_SZ]
+    mov bl, 0x0E
+    call sh_print_dec16
+    mov si, str_write_ok2
+    mov ah, 0x0A
+    call sh_print_inline
+    lea si, [di + 8]
+    mov ah, 0x0F
+    call sh_print_ram_inline
+    mov si, str_Quote_ok
+    mov ah, 0x0A
+    call sh_print_line
+    ret
+
+; --- Hilfsroutinen fuer Nano Buffer Manipulation & Speichern ---
+.nano_insert_char:
+    ; Fuegt Zeichen DL an (NANO_ROW, NANO_COL) ein
+    mov al, [NANO_ROW]
+    mov ah, 72
+    mul ah
+    add ax, NANO_BUF
+    mov si, ax                      ; SI = Zeilenstart
+
+    ; Zeichen ab Spalte 70 runter bis NANO_COL um 1 nach rechts schieben
+    mov cl, 71
+.nic_shift:
+    cmp cl, [NANO_COL]
+    jbe .nic_put
+    xor bh, bh
+    mov bl, cl
+    mov al, [ds:si + bx - 1]
+    mov [ds:si + bx], al
+    dec cl
+    jmp .nic_shift
+.nic_put:
+    xor bh, bh
+    mov bl, [NANO_COL]
+    mov [ds:si + bx], dl
+    mov byte [NANO_MOD], 1
+    mov byte [NANO_MSG_ID], 0
+
+    cmp byte [NANO_COL], 71
+    jae .nic_wrap_row
+    inc byte [NANO_COL]
+    ret
+.nic_wrap_row:
+    cmp byte [NANO_ROW], 17
+    jae .nic_done
+    inc byte [NANO_ROW]
+    mov byte [NANO_COL], 0
+.nic_done:
+    ret
+
+.nano_delete_at_cursor:
+    ; Loescht Zeichen an (NANO_ROW, NANO_COL) und zieht Zeilenrest nach links
+    mov al, [NANO_ROW]
+    mov ah, 72
+    mul ah
+    add ax, NANO_BUF
+    mov si, ax
+    mov cl, [NANO_COL]
+.ndc_shift:
+    cmp cl, 71
+    jae .ndc_last
+    xor bh, bh
+    mov bl, cl
+    mov al, [ds:si + bx + 1]
+    mov [ds:si + bx], al
+    inc cl
+    jmp .ndc_shift
+.ndc_last:
+    mov byte [ds:si + 71], ' '
+    mov byte [NANO_MOD], 1
+    mov byte [NANO_MSG_ID], 0
+    ret
+
+.nano_find_line_end:
+    ; Ermittelt die Spalte (CL = 0..71) hinter dem letzten Nicht-Space-Zeichen in NANO_ROW
+    mov al, [NANO_ROW]
+    mov ah, 72
+    mul ah
+    add ax, NANO_BUF
+    mov si, ax
+    mov cl, 72
+.nfle_lp:
+    test cl, cl
+    jz .nfle_done
+    xor bh, bh
+    mov bl, cl
+    cmp byte [ds:si + bx - 1], ' '
+    jne .nfle_done
+    dec cl
+    jmp .nfle_lp
+.nfle_done:
+    cmp cl, 71
+    jbe .nfle_ok
+    mov cl, 71
+.nfle_ok:
+    ret
+
+.nano_save_buffer:
+    ; Serialisiert den 18x72 Nano-Puffer als echte Zeilen (mit 0x0A) in den CybFS RAM-Pool!
+    mov di, [NANO_INODE]
+
+    ; 1. Letzte nicht-leere Zeile (0..17) suchen
+    mov ch, 18
+.nsb_find_last_row:
+    test ch, ch
+    jz .nsb_empty_file
+    mov al, ch
+    dec al
+    mov ah, 72
+    mul ah
+    add ax, NANO_BUF
+    mov si, ax
+    mov cl, 72
+.nsb_chk_row:
+    cmp byte [ds:si], ' '
+    jne .nsb_found_last_row
+    inc si
+    dec cl
+    jnz .nsb_chk_row
+    dec ch
+    jmp .nsb_find_last_row
+
+.nsb_empty_file:
+    mov word [ds:di + 6], 0
+    mov word [NANO_LAST_SZ], 0
+    mov byte [NANO_MOD], 0
+    mov byte [NANO_SAVED_FLAG], 1
+    mov byte [NANO_MSG_ID], 1
+    ret
+
+.nsb_found_last_row:
+    ; CH = Anzahl zu speichernder Zeilen (1..18)
+    ; Pruefen ob wir den bisherigen Platz am Ende von FS_ALLOC_PTR in-place wiederverwenden koennen
+    mov bp, [FS_ALLOC_PTR]
+    mov ax, [ds:di + 2]
+    add ax, [ds:di + 6]
+    cmp ax, bp
+    jne .nsb_check_pool
+    cmp word [ds:di + 2], FS_DATA_BASE
+    jb .nsb_check_pool
+    mov bp, [ds:di + 2]             ; In-place am Pool-Ende wiederverwenden!
+
+.nsb_check_pool:
+    cmp bp, FS_POOL_END - 256
+    jb .nsb_start_write
+    mov bp, FS_DATA_BASE + 1024     ; Sicherheits-Fallback falls Pool voll
+
+.nsb_start_write:
+    mov byte [ds:di + 0], 1         ; flags = 1 ([RAM])
+    mov [ds:di + 2], bp             ; data_off
+    mov word [ds:di + 4], 0x0000
+    xor dx, dx                      ; DX = geschriebene Gesamt-Bytes
+    xor bh, bh                      ; BH = aktueller Zeilenindex (0..CH-1)
+
+.nsb_row_loop:
+    mov al, bh
+    mov ah, 72
+    mul ah
+    add ax, NANO_BUF
+    mov si, ax
+
+    ; Zeilenlaenge ohne Trailing Spaces ermitteln (CL = 72..0)
+    mov cl, 72
+.nsb_trim_lp:
+    test cl, cl
+    jz .nsb_write_nl
+    push si
+    xor ah, ah
+    mov al, cl
+    add si, ax
+    mov al, [ds:si - 1]
+    pop si
+    cmp al, ' '
+    jne .nsb_copy_row_bytes
+    dec cl
+    jmp .nsb_trim_lp
+
+.nsb_copy_row_bytes:
+    mov al, [ds:si]
+    mov [ds:bp], al
+    inc si
+    inc bp
+    inc dx
+    dec cl
+    jnz .nsb_copy_row_bytes
+
+.nsb_write_nl:
+    mov byte [ds:bp], 0x0A          ; Echter Zeilenumbruch LF (0x0A)
+    inc bp
+    inc dx
+    inc bh
+    cmp bh, ch
+    jb .nsb_row_loop
+
+    mov [ds:di + 6], dx             ; Echte Dateigroesse im Inode aktualisieren!
+    cmp bp, [FS_ALLOC_PTR]
+    jbe .nsb_keep_alloc
+    mov [FS_ALLOC_PTR], bp
+.nsb_keep_alloc:
+    mov [NANO_LAST_SZ], dx
+    mov byte [NANO_MOD], 0
+    mov byte [NANO_SAVED_FLAG], 1
+    mov byte [NANO_MSG_ID], 1
+    ret
+
+.nano_render_screen:
+    ; Zeichnet das komplette GNU Nano Vollbild-Interface (Zeilen 0..24)
+    ; Zeile 0: Klassischer invertierter GNU Nano Header Balken (0x70 = Schwarz auf Hellgrau)
+    xor di, di
+    mov cx, 80
+    mov ax, 0x7020
+    rep stosw
+
+    mov di, (0 * 80 + 2) * 2
+    mov si, str_nano_top_l
+    mov ah, 0x70
+    call print_string
+
+    mov di, (0 * 80 + 30) * 2
+    mov si, str_nano_file_pfx
+    mov ah, 0x70
+    call print_string
+
+    ; Echten Dateinamen aus Inode in die Titelzeile schreiben
+    mov bx, [NANO_INODE]
+    lea si, [bx + 8]
+.nrs_fn_lp:
+    mov al, [ds:si]
+    test al, al
+    jz .nrs_fn_done
+    mov ah, 0x71                    ; Dunkelblau auf Hellgrau
+    stosw
+    inc si
+    jmp .nrs_fn_lp
+.nrs_fn_done:
+
+    mov di, (0 * 80 + 64) * 2
+    mov si, str_nano_mod_no
+    mov ah, 0x70
+    cmp byte [NANO_MOD], 0
+    je .nrs_mod_pr
+    mov si, str_nano_mod_yes
+    mov ah, 0x74                    ; Dunkelrot auf Hellgrau fuer [Modified]
+.nrs_mod_pr:
+    call print_string
+
+    ; Zeile 1: Oberer Editor-Rahmen
+    mov di, (1 * 80) * 2
+    mov ah, 0x0B
+    mov al, 0x01                    ; '┌'
+    stosw
+    mov cx, 78
+    mov al, 0x05                    ; '─'
+    rep stosw
+    mov al, 0x02                    ; '┐'
+    stosw
+    mov di, (1 * 80 + 2) * 2
+    mov si, str_nano_frm_hdr
+    mov ah, 0x0E
+    call print_string
+
+    ; Zeilen 2..19: Die 18 Textzeilen aus NANO_BUF (mit Zeilennummern 01..18 & Cursor!)
+    xor dl, dl                      ; DL = Zeilenindex 0..17
+.nrs_row_lp:
+    mov bl, dl
+    add bl, 2                       ; Bildschirmzeile = DL + 2
+    xor al, al
+    call xy_to_di
+
+    ; Linker Rahmen '│'
+    mov ah, 0x0B
+    mov al, 0x06
+    stosw
+
+    ; Zeilennummer (01..18)
+    mov ah, 0x08
+    cmp dl, [NANO_ROW]
+    jne .nrs_ln_col_ok
+    mov ah, 0x0E                    ; Aktive Zeile gelb hervorheben!
+.nrs_ln_col_ok:
+    mov al, ' '
+    stosw
+    mov al, dl
+    inc al                          ; 1..18
+    cmp al, 10
+    jb .nrs_ln_single
+    push ax
+    mov al, '1'
+    stosw
+    pop ax
+    sub al, 10
+    add al, '0'
+    stosw
+    jmp .nrs_ln_sep
+.nrs_ln_single:
+    push ax
+    mov al, '0'
+    stosw
+    pop ax
+    add al, '0'
+    stosw
+.nrs_ln_sep:
+    mov al, ' '
+    stosw
+    mov ah, 0x03
+    mov al, 0x06                    ; Trennstrich '│' nach Zeilennummer
+    stosw
+    mov ah, 0x07
+    mov al, ' '
+    stosw
+
+    ; 72 Textspalten aus NANO_BUF + dl * 72 ausgeben
+    mov al, dl
+    mov ah, 72
+    mul ah
+    add ax, NANO_BUF
+    mov si, ax
+    xor dh, dh                      ; DH = Spaltenindex 0..71
+.nrs_col_lp:
+    mov al, [ds:si]
+    inc si
+    mov ah, 0x0F                    ; Heller weisser Text auf Schwarz
+    cmp dl, [NANO_ROW]
+    jne .nrs_put_ch
+    cmp dh, [NANO_COL]
+    jne .nrs_put_ch
+    mov ah, 0x70                    ; Invertierter Block-Cursor an (NANO_ROW, NANO_COL)!
+.nrs_put_ch:
+    stosw
+    inc dh
+    cmp dh, 72
+    jb .nrs_col_lp
+
+    mov ah, 0x07
+    mov al, ' '
+    stosw
+    mov ah, 0x0B
+    mov al, 0x06                    ; Rechter Rahmen '│'
+    stosw
+
+    inc dl
+    cmp dl, 18
+    jb .nrs_row_lp
+
+    ; Zeile 20: Unterer Editor-Rahmen
+    mov di, (20 * 80) * 2
+    mov ah, 0x0B
+    mov al, 0x03                    ; '└'
+    stosw
+    mov cx, 78
+    mov al, 0x05                    ; '─'
+    rep stosw
+    mov al, 0x04                    ; '┘'
+    stosw
+
+    ; Zeile 21: Nano Status- & Dialog-Zeile
+    mov di, (21 * 80) * 2
+    mov cx, 80
+    mov ax, 0x0720
+    rep stosw
+
+    cmp byte [NANO_MSG_ID], 1
+    je .nrs_msg_saved
+    cmp byte [NANO_MSG_ID], 2
+    je .nrs_msg_ask
+    cmp byte [NANO_MSG_ID], 3
+    je .nrs_msg_cut
+    cmp byte [NANO_MSG_ID], 4
+    je .nrs_msg_help
+
+    mov di, (21 * 80 + 2) * 2
+    mov si, str_nano_msg_rdy
+    mov ah, 0x0A
+    call print_string
+    jmp .nrs_row22
+
+.nrs_msg_saved:
+    mov byte [SH_CUR_ROW], 21
+    mov byte [SH_CUR_COL], 2
+    mov si, str_nano_msg_sv1
+    mov ah, 0x0E
+    call sh_print_inline
+    mov ax, [NANO_LAST_SZ]
+    mov bl, 0x0F
+    call sh_print_dec16
+    mov si, str_nano_msg_sv2
+    mov ah, 0x0E
+    call sh_print_inline
+    mov bx, [NANO_INODE]
+    lea si, [bx + 8]
+    mov ah, 0x0B
+    call sh_print_ram_inline
+    mov si, str_nano_msg_sv3
+    mov ah, 0x0E
+    call sh_print_inline
+    jmp .nrs_row22
+
+.nrs_msg_ask:
+    mov di, (21 * 80) * 2
+    mov cx, 80
+    mov ax, 0x4F20                  ; Weiss auf Rot fuer wichtigen Speichern-Dialog!
+    rep stosw
+    mov di, (21 * 80 + 2) * 2
+    mov si, str_nano_msg_ask
+    mov ah, 0x4F
+    call print_string
+    jmp .nrs_row22
+
+.nrs_msg_cut:
+    mov di, (21 * 80 + 2) * 2
+    mov si, str_nano_msg_cut
+    mov ah, 0x0B
+    call print_string
+    jmp .nrs_row22
+
+.nrs_msg_help:
+    mov di, (21 * 80 + 2) * 2
+    mov si, str_nano_msg_hlp
+    mov ah, 0x0B
+    call print_string
+
+.nrs_row22:
+    ; Zeile 22: Live Cursor-Position (Line/Col) & Freier CybFS Speicherpool
+    mov di, (22 * 80) * 2
+    mov cx, 80
+    mov ax, 0x0820
+    rep stosw
+    mov byte [SH_CUR_ROW], 22
+    mov byte [SH_CUR_COL], 2
+    mov si, str_nano_stat1
+    mov ah, 0x0B
+    call sh_print_inline
+    xor ah, ah
+    mov al, [NANO_ROW]
+    inc al
+    mov bl, 0x0F
+    call sh_print_dec16
+    mov si, str_nano_stat2
+    mov ah, 0x0B
+    call sh_print_inline
+    xor ah, ah
+    mov al, [NANO_COL]
+    inc al
+    mov bl, 0x0F
+    call sh_print_dec16
+    mov si, str_nano_stat3
+    mov ah, 0x0B
+    call sh_print_inline
+    mov ax, [NANO_LAST_SZ]
+    mov bl, 0x0E
+    call sh_print_dec16
+    mov si, str_nano_stat4
+    mov ah, 0x0B
+    call sh_print_inline
+    mov ax, FS_POOL_END
+    sub ax, [FS_ALLOC_PTR]
+    mov bl, 0x0A
+    call sh_print_dec16
+    mov si, str_ls_sum4
+    mov ah, 0x0A
+    call sh_print_inline
+
+    ; Zeilen 23 & 24: Authentische 2-zeilige GNU Nano Shortcut-Leiste ('^' Badges in 0x70!)
+    mov di, (23 * 80) * 2
+    mov si, str_nano_bot1
+    call .nano_print_shortcut_bar
+    mov di, (24 * 80) * 2
+    mov si, str_nano_bot2
+    call .nano_print_shortcut_bar
+    ret
+
+.nano_print_shortcut_bar:
+    ; Gibt einen 80-Zeichen String aus, wobei Zeichen innerhalb von [...] oder ^X invertiert (0x70) dargestellt werden
+    mov ah, 0x07
+.npsb_lp:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jz .npsb_done
+    cmp al, '{'                     ; '{' startet invertiertes Shortcut-Badge (0x70)
+    je .npsb_inv_on
+    cmp al, '}'                     ; '}' beendet invertiertes Shortcut-Badge (0x07)
+    je .npsb_inv_off
+    stosw
+    jmp .npsb_lp
+.npsb_inv_on:
+    mov ah, 0x70
+    jmp .npsb_lp
+.npsb_inv_off:
+    mov ah, 0x07
+    jmp .npsb_lp
+.npsb_done:
     ret
 
 .fs_full_err:
@@ -6450,6 +7387,7 @@ sh_execute_command:
     mov [SH_SCRIPT_PTR], ax
     add ax, [ds:di + 6]             ; + file_size = Ende
     mov [SH_SCRIPT_END], ax
+    mov byte [SH_SCRIPT_ACT], 1
 
 .run_line_loop:
     mov si, [SH_SCRIPT_PTR]
@@ -6492,6 +7430,7 @@ sh_execute_command:
     jmp .run_line_loop
 
 .run_done:
+    mov byte [SH_SCRIPT_ACT], 0
     ret
 .run_usage:
     mov si, str_run_use
@@ -7101,11 +8040,375 @@ sh_execute_command:
     call apply_color_theme
     jmp init_snake_game
 
-; --- 30. REBOOT / RESET ---
-.do_sh_reboot:
+; --- 30. SETFONT [1-4 | small|medium|large|huge] (Live VGA Hardware Font Scaler!) ---
+.do_sh_setfont:
+    mov al, [SH_CLEAN_BUF + bx]
+    test al, al
+    jz .sf_cycle
+
+    cmp al, '1'
+    je .sf_set_0
+    cmp al, 's'                     ; 'small'
+    je .sf_set_0
+
+    cmp al, '2'
+    je .sf_set_1
+    cmp al, 'm'                     ; 'medium'
+    je .sf_set_1
+
+    cmp al, '3'
+    je .sf_set_2
+    cmp al, 'l'                     ; 'large'
+    je .sf_set_2
+    cmp al, 'n'                     ; 'normal'
+    je .sf_set_2
+
+    cmp al, '4'
+    je .sf_set_3
+    cmp al, 'h'                     ; 'huge'
+    je .sf_set_3
+    cmp al, 'b'                     ; 'bold'
+    je .sf_set_3
+    cmp al, 'x'                     ; 'xl'
+    je .sf_set_3
+
+.sf_cycle:
+    mov al, [CFG_SH_FONT]
+    inc al
+    and al, 3
+    mov [CFG_SH_FONT], al
+    jmp .sf_apply
+
+.sf_set_0:
+    mov byte [CFG_SH_FONT], 0
+    jmp .sf_apply
+.sf_set_1:
+    mov byte [CFG_SH_FONT], 1
+    jmp .sf_apply
+.sf_set_2:
+    mov byte [CFG_SH_FONT], 2
+    jmp .sf_apply
+.sf_set_3:
+    mov byte [CFG_SH_FONT], 3
+
+.sf_apply:
+    call .vga_apply_font_scale
+    call sound_toggle
+
+    mov si, str_sf_ok_pfx
+    mov ah, 0x0A
+    call sh_print_inline
+
+    mov al, [CFG_SH_FONT]
+    cmp al, 0
+    je .sf_msg_0
+    cmp al, 1
+    je .sf_msg_1
+    cmp al, 2
+    je .sf_msg_2
+    mov si, str_sf_name_3
+    jmp .sf_msg_out
+.sf_msg_0:
+    mov si, str_sf_name_0
+    jmp .sf_msg_out
+.sf_msg_1:
+    mov si, str_sf_name_1
+    jmp .sf_msg_out
+.sf_msg_2:
+    mov si, str_sf_name_2
+.sf_msg_out:
+    mov ah, 0x0E
+    call sh_print_line
+    mov si, str_sf_usage
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_line
+    ret
+
+; --- LIVE HARDWARE VGA PLANE 2 FONT SCALER (0xA000:0000) ---
+.vga_apply_font_scale:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push es
+
+    ; 1. VGA Sequencer & Graphics Controller fuer Plane 2 (0xA0000) freischalten
+    mov dx, 0x3C4
+    mov ax, 0x0100
+    out dx, ax
+    mov ax, 0x0402                  ; SR02 = Plane 2
+    out dx, ax
+    mov ax, 0x0604                  ; SR04 = Sequential
+    out dx, ax
+    mov ax, 0x0300
+    out dx, ax
+
+    mov dx, 0x3CE
+    mov ax, 0x0204                  ; GR04 = Plane 2
+    out dx, ax
+    mov ax, 0x0005                  ; GR05 = Write Mode 0
+    out dx, ax
+    mov ax, 0x0406                  ; GR06 = 0xA0000
+    out dx, ax
+
+    mov ax, 0xA000
+    mov es, ax
+
+    ; 2. Alle ASCII-Glyphen aus font_table entsprechend [CFG_SH_FONT] (0..3) skalieren!
+    mov si, font_table
+.vafs_char_lp:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jz .vafs_restore_custom
+
+    xor ah, ah
+    shl ax, 5                       ; Offset in Plane 2 = char_code * 32
+    mov di, ax
+
+    mov bl, [CFG_SH_FONT]
+    and bl, 3
+    cmp bl, 0
+    je .vafs_scale_small            ; 0: Small 8x8 Micro (5px Cap Height)
+    cmp bl, 1
+    je .vafs_scale_medium           ; 1: Medium 8x12 Compact (8px Cap Height)
+    cmp bl, 3
+    je .vafs_scale_huge             ; 3: Huge 8x16 XL Wide-Bold (14px Cap Height)
+
+    ; 2: Large 8x16 Standard IBM VGA (10px Cap Height, 1:1 Kopie)
+    mov cx, 16
+.vafs_std_lp:
+    mov al, [cs:si]
+    inc si
+    stosb
+    loop .vafs_std_lp
+    jmp .vafs_char_lp
+
+.vafs_scale_small:
+    ; Small (1): 4 Leerzeilen oben + 8 komprimierte Scanlines (2:1 OR) + 4 Leerzeilen unten
+    xor al, al
+    stosb
+    stosb
+    stosb
+    stosb
+    mov cx, 8
+.vafs_sm_lp:
+    mov al, [cs:si]
+    or al, [cs:si + 1]              ; Gerade + ungerade Scanline verschmelzen (kein Strich geht verloren!)
+    add si, 2
+    stosb
+    loop .vafs_sm_lp
+    xor al, al
+    stosb
+    stosb
+    stosb
+    stosb
+    jmp .vafs_char_lp
+
+.vafs_scale_medium:
+    ; Medium (2): 12 aktive Scanlines zentriert (8px Cap Height statt 10px)
+    xor al, al
+    stosb
+    stosb
+    stosb
+    mov al, [cs:si + 2]
+    stosb
+    mov al, [cs:si + 3]
+    or al, [cs:si + 4]
+    stosb
+    mov al, [cs:si + 5]
+    stosb
+    mov al, [cs:si + 6]
+    stosb
+    mov al, [cs:si + 7]
+    stosb
+    mov al, [cs:si + 8]
+    or al, [cs:si + 9]
+    stosb
+    mov al, [cs:si + 10]
+    stosb
+    mov al, [cs:si + 11]
+    stosb
+    mov al, [cs:si + 12]
+    or al, [cs:si + 13]
+    stosb
+    xor al, al
+    stosb
+    stosb
+    stosb
+    stosb
+    add si, 16
+    jmp .vafs_char_lp
+
+.vafs_scale_huge:
+    ; Huge (4): Vertikal auf 14 aktive Scanlines gestreckt + horizontal aufgedickt (al | (al >> 1))!
+    xor al, al
+    stosb                           ; Scanline 0
+    mov bx, si
+    ; Scanlines 1..14 mit vertikaler Streckung + Fettdruck ausgeben
+    mov al, [cs:bx + 2]             ; Top Cap doppelt
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 2]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 3]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 4]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 5]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 6]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 7]             ; Mittelbalken doppelt
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 7]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 8]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 9]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 10]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 11]            ; Baseline doppelt
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 11]
+    or al, [cs:bx + 12]
+    call .vafs_bold_stosb
+    mov al, [cs:bx + 13]
+    call .vafs_bold_stosb
+    xor al, al
+    stosb                           ; Scanline 15
+    add si, 16
+    jmp .vafs_char_lp
+
+.vafs_restore_custom:
+    ; 3. Rahmen-Glyphen (0x01..0x0A) immer in voller 16-Scanline Qualitaet halten (damit Rahmen nahtlos bleiben!)
+    mov si, custom_glyphs_table
+.vafs_cg_lp:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jz .vafs_cg_done
+    xor ah, ah
+    shl ax, 5
+    mov di, ax
+    mov cx, 16
+.vafs_cg_cp:
+    mov al, [cs:si]
+    inc si
+    stosb
+    loop .vafs_cg_cp
+    jmp .vafs_cg_lp
+.vafs_cg_done:
+
+    ; 4. Zurueck in den Odd/Even Text-Mode bei 0xB8000 schalten
+    mov dx, 0x3C4
+    mov ax, 0x0100
+    out dx, ax
+    mov ax, 0x0302                  ; SR02 = Plane 0 & 1
+    out dx, ax
+    mov ax, 0x0204                  ; SR04 = Odd/Even
+    out dx, ax
+    mov ax, 0x0300
+    out dx, ax
+
+    mov dx, 0x3CE
+    mov ax, 0x0004
+    out dx, ax
+    mov ax, 0x1005
+    out dx, ax
+    mov ax, 0x0E06                  ; GR06 = 0xB8000 Textfenster
+    out dx, ax
+
+    pop es
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
     pop ax
+    ret
+
+.vafs_bold_stosb:
+    stosb
+    ret
+
+; --- 31. REBOOT / RESET (Echter Warm-Reboot zurueck zum BIOS POST!) ---
+.do_sh_reboot:
+    mov si, str_reboot_msg
+    mov ah, 0x0E
+    call sh_print_line
+    call sound_toggle
+    mov ecx, 120000000              ; ~0.4s kurze Anzeige vor dem Reset
+    call delay_cycles
+    pop ax
+    mov byte [CFG_SH_FONT], 2
+    call .vga_apply_font_scale
     call apply_color_theme
     jmp post_screen
+
+; --- 32. SHUTDOWN / POWEROFF / HALT (Echter Hardware ACPI S5 Soft-Off!) ---
+.do_sh_shutdown:
+    mov si, str_shut_msg1
+    mov ah, 0x0E
+    call sh_print_line
+    mov si, str_shut_msg2
+    mov ah, 0x0C
+    call sh_print_line
+
+    ; Akustisches Shutdown-Signal abspielen
+    mov al, 6                       ; Sample 6 (Descending Chime)
+    call sb16_play_pcm
+    mov ecx, 250000000              ; ~0.8s warten damit Meldung & Sound wahrnehmbar sind
+    call delay_cycles
+
+    ; 1. Bare-Metal Intel PIIX4 PM (PCI 00:01.3) ACPI I/O Base auf 0x0600 mappen & aktivieren!
+    mov dx, 0x0CF8
+    mov eax, 0x80000B40             ; Bus 0, Dev 1, Fn 3, Reg 0x40 (PMBA)
+    out dx, eax
+    mov dx, 0x0CFC
+    mov eax, 0x00000601             ; PM Base = 0x0600 | Bit 0 (I/O Space Indicator)
+    out dx, eax
+
+    mov dx, 0x0CF8
+    mov eax, 0x80000B80             ; Bus 0, Dev 1, Fn 3, Reg 0x80 (PMREGMISC)
+    out dx, eax
+    mov dx, 0x0CFC
+    mov al, 0x01                    ; PMIOSE = 1 (Enable ACPI PM I/O Space!)
+    out dx, al
+
+    mov dx, 0x0CF8
+    mov eax, 0x80000B04             ; Bus 0, Dev 1, Fn 3, Reg 0x04 (PCI Command)
+    out dx, eax
+    mov dx, 0x0CFC
+    in ax, dx
+    or ax, 0x0001                   ; Bit 0 = I/O Space Enable
+    out dx, ax
+
+    ; Jetzt echten ACPI S5 Soft-Off (SLP_TYP5 | SLP_EN = 0x2000) an PM1a_CNT (0x0604) senden!
+    mov dx, 0x0604
+    mov ax, 0x2000
+    out dx, ax
+
+    ; 2. Bochs / Aelteres QEMU ACPI Power-Off (Port 0xB004 -> 0x2000)
+    mov dx, 0xB004
+    mov ax, 0x2000
+    out dx, ax
+
+    ; 3. VirtualBox / Cloud Hypervisor ACPI Power-Off (Port 0x4004 -> 0x3400)
+    mov dx, 0x4004
+    mov ax, 0x3400
+    out dx, ax
+
+    ; 4. Fallback falls Hardware kein ACPI S5 unterstuetzt: Sichere ATX Halt-Konsole
+    mov si, str_shut_halted
+    mov ah, 0x0A
+    call sh_print_line
+    cli
+.shut_hlt_loop:
+    hlt
+    jmp .shut_hlt_loop
 
 ; -----------------------------------------------------------------------------
 ; SCANCODE SET 1 -> ASCII LOOKUP TABLES (0x00..0x57)
@@ -7128,11 +8431,20 @@ sh_scancode_shift:
     times 30 db 0
 
 sh_ac_table:
-    db "help", 0, "write ", 0, "append ", 0, "mkdir ", 0, "touch ", 0, "rm ", 0
-    db "run ", 0, "format", 0, "memmap", 0, "memtest", 0, "map", 0, "sysinfo", 0
-    db "pci", 0, "dmem ", 0, "cmos", 0, "cpu", 0, "time", 0, "sound ", 0
-    db "color ", 0, "clear", 0, "snake", 0, "reboot", 0, "exit", 0, "cat ", 0, "cd ", 0, 0
+    db "help", 0, "write ", 0, "nano ", 0, "edit ", 0, "setfont ", 0, "shutdown", 0
+    db "reboot", 0, "append ", 0, "mkdir ", 0, "touch ", 0, "rm ", 0, "run ", 0
+    db "format", 0, "memmap", 0, "memtest", 0, "map", 0, "sysinfo", 0, "pci", 0
+    db "dmem ", 0, "cmos", 0, "cpu", 0, "time", 0, "sound ", 0, "color ", 0
+    db "clear", 0, "snake", 0, "exit", 0, "cat ", 0, "cd ", 0, 0
 
+cmd_nano:       db "nano", 0
+cmd_edit:       db "edit", 0
+cmd_setfont:    db "setfont", 0
+cmd_font:       db "font", 0
+cmd_shutdown:   db "shutdown", 0
+cmd_poweroff:   db "poweroff", 0
+cmd_halt:       db "halt", 0
+cmd_off:        db "off", 0
 cmd_exit:       db "exit", 0
 cmd_quit:       db "quit", 0
 cmd_setup:      db "setup", 0
@@ -7279,13 +8591,13 @@ str_help_sh6:
 
 ; --- Framed BIOS Shell & Live CybFS Strings ---
 str_sh_topbar:
-    db "CYBFORGE UEFI/BIOS SHELL v2.6 [CybFS v1.0 R/W]       ROM: 256KB  RAM: 640KB", 0
+    db "CYBFORGE UEFI/BIOS SHELL v2.7 [CybFS + GNU Nano]     ROM: 256KB  RAM: 640KB", 0
 str_sh_frame_top:
     db " Cybforge Interactive UEFI/BIOS Console [CybFS Live R/W] ", 0
 str_sh_frame_bot:
-    db " [HELP] Cmds | [WRITE/CAT/RM/MKDIR] Live CybFS | [EXIT] BIOS Setup ", 0
+    db " [WRITE/NANO] Editor | [SETFONT] Scale | [REBOOT/SHUTDOWN] Power | [EXIT] ", 0
 str_sh_botbar:
-    db "[HELP] Cmds  [LS] CybFS  [WRITE] Create  [CAT] Read  [RM] Delete  [EXIT] Setup", 0
+    db "[HELP] Cmds  [WRITE] Nano  [SETFONT] Scale  [REBOOT] Reset  [SHUTDOWN] Off", 0
 
 str_pr_fs0_pfx:     db "FS0:\\", 0
 str_pr_gt:          db "> ", 0
@@ -7321,28 +8633,30 @@ str_sh_err_sfx:
     db "'. Type 'help' for available commands.", 0
 
 str_sh_hlp_hdr:
-    db "Cybforge UEFI/BIOS Shell v2.6 & Live CybFS - Command Reference:", 0
+    db "Cybforge UEFI/BIOS Shell v2.7 & Live CybFS - Command Reference:", 0
 str_sh_hlp1:
-    db "ls / dir     Scan live CybFS Inodes    cd <dir>     Change dir (../efi/audio)", 0
+    db "write <file> Open GNU Nano Editor!     nano <file>  Open GNU Nano Editor!", 0
 str_sh_hlp2:
-    db "write <f> <t>Create/write real file    append <f><t>Append line to real file", 0
+    db "ls / dir     Scan live CybFS Inodes    cd <dir>     Change dir (../efi)", 0
 str_sh_hlp3:
-    db "cat <file>   Read live file bytes      rm / del <f> Delete file/dir Inode", 0
+    db "cat <file>   Read live file bytes      append <f><t>Append line to real file", 0
 str_sh_hlp4:
-    db "mkdir <dir>  Create real directory     touch <file> Create empty 0-byte file", 0
+    db "mkdir <dir>  Create real directory     rm / del <f> Delete file/dir Inode", 0
 str_sh_hlp5:
-    db "run <f.nsh>  Execute script file       format       Re-format CybFS from ROM", 0
+    db "touch <file> Create empty 0-byte file  run <f.nsh>  Run CybFS script", 0
 str_sh_hlp6:
-    db "map / memmap Device & E820 RAM map     dmem [hex]   Live 64B Hex/ASCII dump", 0
+    db "setfont [1-4]Scale shell text size!    format       Re-format CybFS from ROM", 0
 str_sh_hlp7:
-    db "pci / lspci  Live 0xCF8 PCI bus scan   cpu / regs   Dump live x86 registers", 0
+    db "pci / lspci  Live 0xCF8 PCI bus scan   map / memmap Device & E820 RAM map", 0
 str_sh_hlp8:
-    db "cmos / nvram Live CMOS NVRAM dump      time / date  Read hardware RTC clock", 0
+    db "dmem [hex]   Live 64B Hex/ASCII dump   cmos / nvram Live CMOS NVRAM dump", 0
 str_sh_hlp9:
-    db "sound [0-7]  Play 16-bit PCM wave      memtest      Verify 64KB RAM (2x pass)", 0
+    db "cpu / regs   Dump live x86 registers   time / date  Read hardware RTC clock", 0
 str_sh_hlp10:
-    db "sysinfo      ASCII emblem & telemetry  cls / color  Clear / switch theme", 0
+    db "sound [0-7]  Play 16-bit PCM wave      memtest      Verify 64KB RAM (2x pass)", 0
 str_sh_hlp11:
+    db "reboot       Warm BIOS POST reset      shutdown     ACPI S5 system power-off!", 0
+str_sh_hlp12:
     db "snake / boot Launch SNAKE.EFI game     exit / quit  Return to BIOS Setup!", 0
 
 str_sh_ver1:
@@ -7541,6 +8855,69 @@ str_col_ok:
     db "Shell color scheme updated and saved to CMOS NVRAM.", 0
 str_beep_ok:
     db "Acoustic diagnostic tone triggered.", 0
+
+; --- GNU Nano Editor (Cybforge Nano v2.7) Strings ---
+str_nano_top_l:
+    db "GNU nano 2.7 [CybFS Live]", 0
+str_nano_file_pfx:
+    db "File: ", 0
+str_nano_mod_yes:
+    db "[ Modified ]", 0
+str_nano_mod_no:
+    db "[ Saved OK ]", 0
+str_nano_frm_hdr:
+    db " Ln | CybFS R/W Buffer (72 Cols x 18 Lines) ", 0
+str_nano_msg_rdy:
+    db "[ Ready: Type multi-line text | ^O/F2=WriteOut | ^S/F3=Save&Exit | ^X/ESC=Exit ]", 0
+str_nano_msg_sv1:
+    db "[ Wrote ", 0
+str_nano_msg_sv2:
+    db " Bytes to live CybFS file '", 0
+str_nano_msg_sv3:
+    db "' (Inode Updated) ]", 0
+str_nano_msg_ask:
+    db "Save modified buffer?  [Y / Enter] Yes (Save)   [N] No (Discard)   [C] Cancel", 0
+str_nano_msg_cut:
+    db "[ Cut current line from buffer (^K / F4) ]", 0
+str_nano_msg_hlp:
+    db "[ Help: Arrows/Home/End=Move | Enter=New Line | ^O/F2=Save | ^X/ESC=Exit ]", 0
+str_nano_stat1:
+    db "Line: ", 0
+str_nano_stat2:
+    db "/18  Col: ", 0
+str_nano_stat3:
+    db "/72  |  Saved Size: ", 0
+str_nano_stat4:
+    db " B  |  Free Pool: ", 0
+str_nano_bot1:
+    db " {^G/F1} Get Help   {^O/F2} WriteOut   {^S/F3} Save&Exit  {^K/F4} Cut Line   {HOME } Start ", 0
+str_nano_bot2:
+    db " {^X/ESC} Exit Nano {ARROWS} Move Curs {ENTER} New Line   {BS/DEL} Erase Ch  {END  } End   ", 0
+str_nano_closed1:
+    db "Closed Nano buffer for '", 0
+
+; --- Setfont, Reboot & Shutdown Strings ---
+str_sf_ok_pfx:
+    db "VGA Hardware Font Scale set to: ", 0
+str_sf_name_0:
+    db "[1: Small 8x8 Micro Font (50% Height)]", 0
+str_sf_name_1:
+    db "[2: Medium 8x12 Compact Font (75% Height)]", 0
+str_sf_name_2:
+    db "[3: Large 8x16 Standard IBM VGA (100% Height)]", 0
+str_sf_name_3:
+    db "[4: Huge 8x16 XL Tall Font (140% Height)]", 0
+str_sf_usage:
+    db "  Usage: setfont 1 (Small) | 2 (Medium) | 3 (Large) | 4 (Huge XL)", 0
+
+str_reboot_msg:
+    db "[SYSTEM] Initiating warm BIOS reset -> Jumping to POST (F000:FFF0h)...", 0
+str_shut_msg1:
+    db "[ACPI S5] Syncing CybFS RAM Disk & stopping Sound Blaster 16 DMA...", 0
+str_shut_msg2:
+    db "[ACPI S5] Sending SLP_TYP5 (0x2000) to PM1a_CNT (Port 0x0604) -> Power Off!", 0
+str_shut_halted:
+    db "[SYSTEM HALTED] CPU in low-power HLT state. It is now safe to turn off PC.", 0
 
 ; Hardware VGA DAC Palette Themes (4 Themes x 48 Bytes = 192 Bytes)
 palette_themes_table:

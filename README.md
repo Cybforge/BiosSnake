@@ -1,15 +1,15 @@
-# Cybforge Retro BIOS, UEFI/BIOS Shell & Snake v2.6 (256 KB ROM + CybFS v1.0 Edition)
+# Cybforge Retro BIOS, UEFI/BIOS Shell & Snake v2.7 (256 KB ROM + CybFS + GNU Nano Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-x86%2016%2F32--bit%20Unreal%20Mode-lightgrey.svg)](#)
 [![Format](https://img.shields.io/badge/ROM-256KB%20Binary-brightgreen.svg)](#)
 [![Filesystem](https://img.shields.io/badge/Filesystem-CybFS%20v1.0%20Live%20R%2FW-cyan.svg)](#)
-[![Shell](https://img.shields.io/badge/Shell-UEFI%2FBIOS%20Shell%20v2.6-yellow.svg)](#)
+[![Editor](https://img.shields.io/badge/Editor-GNU%20Nano%202.7%20Full--Screen-orange.svg)](#)
+[![Shell](https://img.shields.io/badge/Shell-UEFI%2FBIOS%20Shell%20v2.7-yellow.svg)](#)
 [![Audio](https://img.shields.io/badge/Audio-Sound%20Blaster%2016%2016--Bit%20PCM-blueviolet.svg)](#)
-[![Emulator](https://img.shields.io/badge/Emulator-QEMU%20x86__64-orange.svg)](#)
-[![Version](https://img.shields.io/badge/Version-2.6%20CybFS%20Edition-brightgreen.svg)](#)
+[![Version](https://img.shields.io/badge/Version-2.7%20GNU%20Nano%20Edition-brightgreen.svg)](#)
 
-A custom, bare-metal **x86 16/32-bit PC BIOS** in a full **256 KB (`262,144 Bytes`) ROM image**. It boots an authentic AMIBIOS-style POST diagnostic sequence with Sound Blaster 16 hardware auto-detection, features a **Multi-Tab Cybforge Retro BIOS Setup Utility** (`[ 1: Main & Game ]` and `[ 2: BiosShell ]`) with CMOS NVRAM persistence, includes an interactive **UEFI/EFI-style BIOS Shell (`v2.6`)** backed by a real live read/write filesystem (**CybFS v1.0**) and a real hardware PCI Bus Configuration scanner (`0xCF8`/`0xCFC`), and directly launches an arcade **Snake Game v2.6** with **16-bit Sound Blaster 16 PCM WAV audio** in pure assembly.
+A custom, bare-metal **x86 16/32-bit PC BIOS** in a full **256 KB (`262,144 Bytes`) ROM image**. It boots an authentic AMIBIOS-style POST diagnostic sequence with Sound Blaster 16 hardware auto-detection, features a **Multi-Tab Cybforge Retro BIOS Setup Utility** (`[ 1: Main & Game ]` and `[ 2: BiosShell ]`) with CMOS NVRAM persistence, includes an interactive **UEFI/EFI-style BIOS Shell (`v2.7`)** backed by a real live read/write filesystem (**CybFS v1.0**), a full-screen **GNU Nano text editor (`write` / `nano`)**, live hardware VGA font scaling (**`setfont 1..4`**), bare-metal PIIX4 ACPI S5 power-off (**`shutdown`**) & warm **`reboot`**, and directly launches an arcade **Snake Game v2.7** with **16-bit Sound Blaster 16 PCM WAV audio** in pure assembly.
 
 ![Cybforge Snake Matrix Green Gameplay](assets/screenshot_gameplay.png)
 
@@ -21,9 +21,13 @@ A custom, bare-metal **x86 16/32-bit PC BIOS** in a full **256 KB (`262,144 Byte
 | :---: | :---: |
 | ![POST Screen](assets/screenshot_post.png) | ![BIOS Setup Main Tab](assets/screenshot_setup.png) |
 
-| BIOS Setup Tab 2: `[ 2: BiosShell ]` | CybFS v1.0 Live Filesystem (`write`, `append`, `cat`, `ls`) |
+| BIOS Setup Tab 2: `[ 2: BiosShell ]` | Full-Screen GNU Nano Editor (`write <file>` / `nano <file>`) |
 | :---: | :---: |
-| ![BIOS Setup BiosShell Tab](assets/screenshot_setup_biosshell.png) | ![CybFS Write Cat LS](assets/bios_shell_console.png) |
+| ![BIOS Setup BiosShell Tab](assets/screenshot_setup_biosshell.png) | ![Cybforge GNU Nano Editor](assets/bios_shell_nano.png) |
+
+| BIOS Shell v2.7 (`cat`, `help`, `reboot`, `shutdown`) | Live Hardware VGA Font Scaling (`setfont 1..4`) |
+| :---: | :---: |
+| ![BIOS Shell Help & Cat](assets/bios_shell_console.png) | ![BIOS Shell Setfont Scaling](assets/bios_shell_setfont.png) |
 
 | CybFS Script Execution (`run`) & Live Hardware `pci` Scan | ROM-Mapped WAV Directory (`FS0:\AUDIO`) & Live 32-Bit Dump |
 | :---: | :---: |
@@ -58,18 +62,21 @@ Press **`[F12]`** or **`[DEL]`** during POST (or **`[ESC]`** from the game) to o
   * **`Default POST Boot`** — Configure whether the 3-second POST countdown boots `< Snake Game (3s) >` or directly into `< BiosShell (3s) >`.
   * **`Reset Shell Cfg`** — Restores all BiosShell settings to factory defaults and saves to CMOS NVRAM.
 
-### 2. Cybforge Interactive UEFI/BIOS Shell (`v2.6`) & CybFS v1.0 Filesystem
-Backed by **CybFS v1.0**, a real bare-metal filesystem mounted from ROM Block 0 (`0xFFFC0100`) into a 16 KB live read/write RAM volume (`0x3000..0x6FFF`), with a 32-entry binary Inode table (`0x3020..0x341F`). You can create, overwrite, append to, read, execute, and delete real files and subdirectories in live memory, or inspect/play ROM-mapped files (`0xFFFD0000`–`0xFFFF0000`).
+### 2. Cybforge Interactive UEFI/BIOS Shell (`v2.7`), GNU Nano Editor & CybFS v1.0 Filesystem
+Backed by **CybFS v1.0**, a real bare-metal filesystem mounted from ROM Block 0 (`0xFFFC0100`) into a 16 KB live read/write RAM volume (`0x3000..0x6FFF`), with a 32-entry binary Inode table (`0x3020..0x341F`). You can edit files in the full-screen **GNU Nano Editor (`write <file>` / `nano <file>`)**, dynamically scale the VGA hardware font (**`setfont 1..4`**), or trigger warm BIOS reboots (**`reboot`**) and bare-metal ACPI S5 power-off (**`shutdown`**).
 
 | Command / Alias | Description |
 | :--- | :--- |
-| **`help`** / **`?`** | Displays the formatted 2-column command reference table |
+| **`help`** / **`?`** | Displays the formatted 2-column command reference table (including `write`/`nano`, `setfont`, `reboot`, `shutdown`) |
+| **`write <file>`** / **`nano <file>`** / **`edit <file>`** | Opens the **Full-Screen Interactive GNU Nano Editor (`v2.7`)** for multi-line editing (`^O`/`F2` WriteOut, `^S`/`F3` Save & Exit, `^K`/`F4` Cut Line, `^X`/`ESC` Exit) |
+| **`setfont [1-4]`** / **`font`** | Dynamically scales the hardware VGA font in Plane 2 (`0xA0000`) between `1` (`Small 8x8`), `2` (`Medium 8x12`), `3` (`Large 8x16`), and `4` (`Huge 8x16 XL Tall`) |
+| **`reboot`** / **`reset`** | Performs a warm BIOS POST reset (`F000:FFF0h`), re-running the POST screen and RAM counter |
+| **`shutdown`** / **`poweroff`** / **`halt`** | Programs the Intel PIIX4 ACPI PM controller (`PCI 00:01.3`, `PMBA=0x0601`) and sends `SLP_TYP5` (`0x2000`) to `Port 0x0604` to power off the machine |
 | **`exit`** / **`quit`** / **`setup`** | Exits the BIOS Shell and returns directly to the **BIOS Setup Utility** |
 | **`ls`** / **`dir`** | Dynamically scans the 32-entry CybFS Inode table (`0x3020`), displaying real type (`<DIR>`, `[RAM]`, `[ROM]`, `[HW ]`), real byte size, memory address, name, and free byte pool |
 | **`cd <dir>`** / **`cd ..`** / **`cd \`** | Traverses real directory Inodes (`flags == 2`, `parent_id`) and updates the prompt (`FS0:\<DIR>>`) directly from the Inode name |
 | **`mkdir <dir>`** / **`md <dir>`** | Allocates a new real directory Inode (`flags = 2`) inside the current directory |
 | **`touch <file>`** | Allocates a new real 0-byte file Inode (`flags = 1`) in the current directory |
-| **`write <file> <text>`** | Creates or overwrites a real file in the CybFS RAM pool (`0x3420..0x6FFF`), storing exact bytes and updating `file_size` & `FS_ALLOC_PTR` |
 | **`append <file> <text>`** | Appends a new text line (`\n`) to an existing RAM file in CybFS and updates its byte size |
 | **`cat <file>`** / **`type <file>`** | Reads real file bytes from RAM (`[RAM]`), dumps live 32-bit ROM bytes + plays WAV audio via SB16 DMA (`[ROM]`), or dumps live CMOS (`[HW ]`) |
 | **`rm <name>`** / **`del <name>`** | Deletes a file or directory from CybFS by clearing its Inode (`flags = 0`) |
@@ -92,7 +99,6 @@ Backed by **CybFS v1.0**, a real bare-metal filesystem mounted from ROM Block 0 
 | **`beep`** | Triggers an acoustic diagnostic tone via the active sound engine |
 | **`cls`** / **`clear`** | Clears the terminal viewport and redraws the status bars |
 | **`snake`** / **`boot`** | Launches `FS0:\EFI\SNAKE.EFI` directly from the shell |
-| **`reboot`** / **`reset`** | Performs a warm reset back to the animated BIOS POST screen |
 
 ---
 
@@ -190,6 +196,15 @@ build.bat
 ---
 
 ## Changelog
+
+### v2.7: Full-Screen GNU Nano Editor, Live VGA Font Scaler (`setfont`) & ACPI S5 Power-Off (`shutdown`)
+- **Full-Screen Interactive GNU Nano Editor (`write <file>`, `nano <file>`, `edit <file>`)**:
+  - Upgraded `write` (and aliases `nano` / `edit`) into a full-screen 72x18 **GNU Nano 2.7 text editor** with line numbers (`01..18`), 2D arrow/Home/End/Backspace/Delete/Tab/Enter navigation, and an inverted 2-row shortcut bar.
+  - Supports `Ctrl+O` / `[F2]` (`WriteOut` directly to CybFS RAM), `Ctrl+S` / `[F3]` (`Save & Exit`), `Ctrl+K` / `[F4]` (`Cut Line`), `Ctrl+G` / `[F1]` (`Help`), and `Ctrl+X` / `[ESC]` (`Exit`, with `Save modified buffer? [Y/N/C]` prompt when unsaved changes exist).
+- **Live Hardware VGA Font Scaling (`setfont [1-4 | small|medium|large|huge]`)**:
+  - Dynamically reprograms VGA Sequencer Plane 2 (`0xA0000`) to scale terminal text height across 4 levels (`1: Small 8x8 Micro`, `2: Medium 8x12 Compact`, `3: Large 8x16 Standard`, `4: Huge 8x16 XL Tall`) while keeping box-drawing borders (`0x01..0x0A`) seamless.
+- **Bare-Metal `reboot` & PIIX4 ACPI S5 `shutdown`**:
+  - Added `shutdown` (`poweroff` / `halt` / `off`), which programs the Intel PIIX4 Power Management PCI registers (`Bus 0, Dev 1, Fn 3`: `PMBA = 0x0601`, `PMREGMISC = 0x01`) and sends `SLP_TYP5 | SLP_EN` (`0x2000`) to `PM1a_CNT` (`Port 0x0604`) for a real hardware power-off, and listed both `reboot` and `shutdown` in `help`.
 
 ### v2.6: CybFS v1.0 Live Read/Write Filesystem & Hardware PCI Scanner
 - **CybFS v1.0 Bare-Metal Filesystem**:
