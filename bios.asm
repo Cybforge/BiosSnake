@@ -1,29 +1,29 @@
 ; =============================================================================
-; Bare-Metal x86 BIOS ROM (64 KB) für QEMU – BLUE BOX EDITION
-; Startet bei 0xFFFFFFF0 (0xF000:0xFFF0), initialisiert CAR/MTRR, i440FX PAM/DRB,
-; PCI-VGA, Real-Mode-IVT, PIC, A20, 16550 UART, VGA-Font & zeichnet die Box!
+; Bare-Metal x86 BIOS ROM (64 KB) for QEMU - BLUE BOX EDITION
+; Starts at 0xFFFFFFF0 (0xF000:0xFFF0), initializes CAR/MTRR, i440FX PAM/DRB,
+; PCI-VGA, Real-Mode IVT, PIC, A20, 16550 UART, VGA Font & draws the box!
 ; =============================================================================
 
 [BITS 16]
-[ORG 0x0000]                ; Gemappt auf Physisch 0xF0000 - 0xFFFFF (CS = 0xF000)
+[ORG 0x0000]                ; Mapped to Physical 0xF0000 - 0xFFFFF (CS = 0xF000)
 
-; --- RAM-Variablen im freien Basisspeicher (DS = 0x0000, Adressen 0x1000..0x1B00) ---
-SNAKE_X     equ 0x1000      ; X-Koordinaten (1200 Bytes: 0x1000..0x14AF)
-SNAKE_Y     equ 0x1500      ; Y-Koordinaten (1200 Bytes: 0x1500..0x19AF)
-SNAKE_LEN   equ 0x1A00      ; Aktuelle Laenge (Word)
-SNAKE_DIR   equ 0x1A02      ; Richtung: 0=Up, 1=Right, 2=Down, 3=Left (Byte)
-NEXT_DIR    equ 0x1A03      ; Gepufferte naechste Richtung (Byte)
-FOOD_X      equ 0x1A04      ; X-Position der Frucht (Byte)
-FOOD_Y      equ 0x1A05      ; Y-Position der Frucht (Byte)
-SCORE       equ 0x1A06      ; Aktuelle Punktzahl (Word)
-RND_SEED    equ 0x1A08      ; Zufalls-Seed (Word)
-DIR_LOCKED  equ 0x1A0A      ; Sperre fuer Richtungswechsel (Byte)
-NEW_HEAD_X  equ 0x1A0B      ; Neuer Kopf X (Byte)
-NEW_HEAD_Y  equ 0x1A0C      ; Neuer Kopf Y (Byte)
-QUEUED_DIR  equ 0x1A0D      ; Puffer fuer schnellen 2. Tastendruck (Byte)
-HIGH_SCORE  equ 0x1A0E      ; Session High Score (Word, im CMOS NVRAM persistiert)
+; --- RAM Variables in Free Base Memory (DS = 0x0000, Addresses 0x1000..0x1B00) ---
+SNAKE_X     equ 0x1000      ; X coordinates (1200 Bytes: 0x1000..0x14AF)
+SNAKE_Y     equ 0x1500      ; Y coordinates (1200 Bytes: 0x1500..0x19AF)
+SNAKE_LEN   equ 0x1A00      ; Current length (Word)
+SNAKE_DIR   equ 0x1A02      ; Direction: 0=Up, 1=Right, 2=Down, 3=Left (Byte)
+NEXT_DIR    equ 0x1A03      ; Buffered next direction (Byte)
+FOOD_X      equ 0x1A04      ; Apple X position (Byte)
+FOOD_Y      equ 0x1A05      ; Apple Y position (Byte)
+SCORE       equ 0x1A06      ; Current score (Word)
+RND_SEED    equ 0x1A08      ; Random seed (Word)
+DIR_LOCKED  equ 0x1A0A      ; Direction change lock (Byte)
+NEW_HEAD_X  equ 0x1A0B      ; New head X (Byte)
+NEW_HEAD_Y  equ 0x1A0C      ; New head Y (Byte)
+QUEUED_DIR  equ 0x1A0D      ; Buffer for rapid 2nd keystroke (Byte)
+HIGH_SCORE  equ 0x1A0E      ; Session High Score (Word, persisted in CMOS NVRAM)
 
-; Cybforge Retro BIOS Setup Konfigurationsoptionen (0x1A10..0x1A19)
+; Cybforge Retro BIOS Setup Configuration Options (0x1A10..0x1A19)
 CFG_SPEED   equ 0x1A10      ; 0=Normal, 1=Fast, 2=Slow (Byte)
 CFG_WALLS   equ 0x1A11      ; 0=Solid, 1=Wrap-Around (Byte)
 CFG_SOUND   equ 0x1A12      ; 0=SB16 16-Bit, 1=PC Speaker, 2=Dual Audio, 3=Muted (Byte)
@@ -31,102 +31,102 @@ CFG_FACE    equ 0x1A13      ; 0=Classic Smile, 1=Cool Shades (Byte)
 CFG_LEN     equ 0x1A14      ; 0=4 Segments, 1=3 Segments, 2=6 Segments (Byte)
 CFG_WIN     equ 0x1A15      ; 0=Full Board (1044), 1=25, 2=50, 3=100 (Byte)
 CFG_DISP    equ 0x1A16      ; Auto 1080p (Byte)
-SETUP_SEL   equ 0x1A17      ; Ausgewaehlte Menue-Zeile im Cybforge Setup (0..9) (Byte)
+SETUP_SEL   equ 0x1A17      ; Selected menu row in Cybforge Setup (0..9) (Byte)
 CFG_THEME   equ 0x1A18      ; 0=Cyberpunk Neon, 1=Matrix Green, 2=Amber CRT, 3=CGA Retro (Byte)
 CFG_ARENA   equ 0x1A19      ; 0=Classic Open, 1=Four Pillars, 2=The Maze (Byte)
 
-; Gameplay Erweiterungen (0x1A1A..0x1A35)
-GOLD_FOOD_X equ 0x1A1A      ; X-Position des Gold-Apfels (Byte, 0xFF wenn inaktiv)
-GOLD_FOOD_Y equ 0x1A1B      ; Y-Position des Gold-Apfels (Byte)
-GOLD_TIMER  equ 0x1A1C      ; Ticks verbleibend fuer Gold-Apfel (Word)
-APPLE_COUNT equ 0x1A1E      ; Zaehler normal gefressener Aepfel (Byte)
+; Gameplay Extensions (0x1A1A..0x1A35)
+GOLD_FOOD_X equ 0x1A1A      ; Golden apple X position (Byte, 0xFF when inactive)
+GOLD_FOOD_Y equ 0x1A1B      ; Golden apple Y position (Byte)
+GOLD_TIMER  equ 0x1A1C      ; Remaining ticks for golden apple (Word)
+APPLE_COUNT equ 0x1A1E      ; Counter for regular apples eaten (Byte)
 TOP3_TABLE  equ 0x1A20      ; Top 3 Leaderboard: 3x (3 Bytes Name, 2 Bytes Score) = 15 Bytes (0x1A20..0x1A2E)
-CURRENT_NAME equ 0x1A30     ; 3 Bytes Puffer fuer Namenseingabe (0x1A30..0x1A32)
-CUR_CHAR_IDX equ 0x1A33     ; Aktiver Buchstabe (0..2) (Byte)
+CURRENT_NAME equ 0x1A30     ; 3-byte buffer for initials entry (0x1A30..0x1A32)
+CUR_CHAR_IDX equ 0x1A33     ; Active character index (0..2) (Byte)
 sb16_detected equ 0x1A34    ; 1=Sound Blaster 16 Detected, 0=None (Byte)
 
-; --- Multi-Tab BIOS Setup & BiosShell Konfiguration (0x1A35..0x1A3F) ---
-SETUP_TAB       equ 0x1A35  ; Aktiver Reiter im Setup: 0 = Main & Game, 1 = BiosShell (Byte)
+; --- Multi-Tab BIOS Setup & BiosShell Configuration (0x1A35..0x1A3F) ---
+SETUP_TAB       equ 0x1A35  ; Active tab in Setup: 0 = Main & Game, 1 = BiosShell (Byte)
 CFG_SH_THEME    equ 0x1A36  ; 0=Classic EFI, 1=Matrix Green, 2=Cyber Cyan, 3=BIOS Blue (Byte)
 CFG_SH_PROMPT   equ 0x1A37  ; 0="FS0:\> ", 1="SHELL> ", 2="root@bios:# " (Byte)
 CFG_SH_BANNER   equ 0x1A38  ; 0=Full EFI Map, 1=Compact, 2=Quiet Mode (Byte)
 CFG_SH_BEEP     equ 0x1A39  ; 0=Enabled, 1=Muted (Byte)
 CFG_BOOT_MODE   equ 0x1A3A  ; 0=Snake Game, 1=BiosShell (Byte)
 
-; --- Cybforge BIOS Shell Laufzeit-Speicher (0x1B00..0x1CFF) ---
-SH_CUR_ROW      equ 0x1B00  ; Aktuelle Terminal-Zeile (1..23) (Byte)
-SH_CUR_COL      equ 0x1B01  ; Aktuelle Terminal-Spalte (0..79) (Byte)
-SH_DIR_ID       equ 0x1B02  ; Aktuelles Verzeichnis: 0=Root, 1=EFI, 2=AUDIO, 3=DIAG (Byte)
-SH_SHIFT        equ 0x1B03  ; Shift-Taste gedrueckt (0/1) (Byte)
-SH_CMD_LEN      equ 0x1B04  ; Laenge der aktuellen Eingabe (0..58) (Byte)
-SH_HIST_LEN     equ 0x1B05  ; Laenge des letzten Befehls in History (Byte)
-SH_DUMP_ADDR    equ 0x1B06  ; Aktuelle Adresse fuer dmem Hex-Dump (Word)
-SH_TEXT_ATTR    equ 0x1B08  ; Standard-Textattribut der Shell (Byte)
-SH_HIGH_ATTR    equ 0x1B09  ; Highlight-Attribut der Shell (Byte)
-SH_PROMPT_ATTR  equ 0x1B0A  ; Prompt-Farbattribut (Byte)
-SH_BAR_ATTR     equ 0x1B0B  ; Statusleisten-Attribut (Byte)
+; --- Cybforge BIOS Shell Runtime Memory (0x1B00..0x1CFF) ---
+SH_CUR_ROW      equ 0x1B00  ; Current terminal row (1..23) (Byte)
+SH_CUR_COL      equ 0x1B01  ; Current terminal column (0..79) (Byte)
+SH_DIR_ID       equ 0x1B02  ; Current directory: 0=Root, 1=EFI, 2=AUDIO, 3=DIAG (Byte)
+SH_SHIFT        equ 0x1B03  ; Shift key pressed (0/1) (Byte)
+SH_CMD_LEN      equ 0x1B04  ; Length of current input (0..58) (Byte)
+SH_HIST_LEN     equ 0x1B05  ; Length of last command in history (Byte)
+SH_DUMP_ADDR    equ 0x1B06  ; Current address for dmem hex dump (Word)
+SH_TEXT_ATTR    equ 0x1B08  ; Default shell text attribute (Byte)
+SH_HIGH_ATTR    equ 0x1B09  ; Shell highlight attribute (Byte)
+SH_PROMPT_ATTR  equ 0x1B0A  ; Prompt color attribute (Byte)
+SH_BAR_ATTR     equ 0x1B0B  ; Status bar attribute (Byte)
 
-SH_CMD_BUF      equ 0x1B10  ; 64 Bytes Eingabepuffer (0x1B10..0x1B4F)
-SH_HIST_BUF     equ 0x1B50  ; 64 Bytes History-Puffer (0x1B50..0x1B8F)
-SH_CLEAN_BUF    equ 0x1B90  ; 64 Bytes normalisierter Befehlspuffer (0x1B90..0x1BCF)
-SH_SCRIPT_PTR   equ 0x1BD0  ; Aktueller Lesezeiger bei 'run <script>' (Word)
-SH_SCRIPT_END   equ 0x1BD2  ; Endadresse bei 'run <script>' (Word)
-SH_SCRIPT_ACT   equ 0x1BD4  ; 1 = Skript laeuft gerade (Byte)
-SH_CTRL         equ 0x1BD5  ; Ctrl-Taste gedrueckt (0/1) (Byte)
-CFG_SH_FONT     equ 0x1BD6  ; Aktuelle Schriftgroesse (0=Small, 1=Medium, 2=Large, 3=Huge) (Byte)
-NANO_SAVED_FLAG equ 0x1BD7  ; 1 = In dieser Nano-Session gespeichert (Byte)
-NANO_INODE      equ 0x1BD8  ; Zeiger auf aktuellen CybFS Inode im Nano Editor (Word)
-NANO_ROW        equ 0x1BDA  ; Aktuelle Cursor-Zeile in Nano (0..17) (Byte)
-NANO_COL        equ 0x1BDB  ; Aktuelle Cursor-Spalte in Nano (0..71) (Byte)
-NANO_MOD        equ 0x1BDC  ; 1 = Ungespeicherte Aenderungen im Puffer (Byte)
-NANO_MSG_ID     equ 0x1BDD  ; Statusmeldungs-ID in Nano (0..4) (Byte)
-NANO_LAST_SZ    equ 0x1BDE  ; Letzte Dateigroesse in Bytes (Word)
-NANO_BUF        equ 0x7000  ; 18 Zeilen x 72 Spalten = 1296 Bytes Textpuffer (0x7000..0x750F)
+SH_CMD_BUF      equ 0x1B10  ; 64-byte input buffer (0x1B10..0x1B4F)
+SH_HIST_BUF     equ 0x1B50  ; 64-byte history buffer (0x1B50..0x1B8F)
+SH_CLEAN_BUF    equ 0x1B90  ; 64-byte normalized command buffer (0x1B90..0x1BCF)
+SH_SCRIPT_PTR   equ 0x1BD0  ; Current read pointer for 'run <script>' (Word)
+SH_SCRIPT_END   equ 0x1BD2  ; End address for 'run <script>' (Word)
+SH_SCRIPT_ACT   equ 0x1BD4  ; 1 = Script currently running (Byte)
+SH_CTRL         equ 0x1BD5  ; Ctrl key pressed (0/1) (Byte)
+CFG_SH_FONT     equ 0x1BD6  ; Current font scale (0=Small, 1=Medium, 2=Large, 3=Huge) (Byte)
+NANO_SAVED_FLAG equ 0x1BD7  ; 1 = Saved during this Nano session (Byte)
+NANO_INODE      equ 0x1BD8  ; Pointer to current CybFS Inode in Nano editor (Word)
+NANO_ROW        equ 0x1BDA  ; Current cursor row in Nano (0..17) (Byte)
+NANO_COL        equ 0x1BDB  ; Current cursor column in Nano (0..71) (Byte)
+NANO_MOD        equ 0x1BDC  ; 1 = Unsaved changes in buffer (Byte)
+NANO_MSG_ID     equ 0x1BDD  ; Status message ID in Nano (0..4) (Byte)
+NANO_LAST_SZ    equ 0x1BDE  ; Last file size in bytes (Word)
+NANO_BUF        equ 0x7000  ; 18 rows x 72 cols = 1296-byte text buffer (0x7000..0x750F)
 
 ; --- CybFS v1.0 Live RAM Filesystem (0x3000..0x7FFF = 20 KB) ---
-FS_MAGIC        equ 0x3000  ; Word: 0x5346 ('FS') wenn gemountet
+FS_MAGIC        equ 0x3000  ; Word: 0x5346 ('FS') when mounted
 FS_VERSION      equ 0x3002  ; Word: 0x0100
 FS_MAX_INODES   equ 0x3004  ; Word: 32
-FS_ALLOC_PTR    equ 0x3006  ; Word: Naechste freie Datenadresse (0x3420..0x7FFF)
+FS_ALLOC_PTR    equ 0x3006  ; Word: Next free data address (0x3420..0x7FFF)
 FS_INODE_BASE   equ 0x3020  ; 32 Inodes x 32 Bytes (0x3020..0x341F)
-FS_DATA_BASE    equ 0x3420  ; Datei-Datenpool (0x3420..0x6FDF = 15,296 Bytes)
-FS_POOL_END     equ 0x6FE0  ; Obergrenze des CybFS Datenpools (0x6FE0..0x6FFF = 32B NVRAM Settings Mirror)
-NVRAM_MIRROR    equ 0x6FE0  ; 32-Byte Persistenter CMOS/Setup/Highscore-Spiegel auf ATA LBA 31
+FS_DATA_BASE    equ 0x3420  ; File data pool (0x3420..0x6FDF = 15,296 Bytes)
+FS_POOL_END     equ 0x6FE0  ; Upper bound of CybFS data pool (0x6FE0..0x6FFF = 32B NVRAM Settings Mirror)
+NVRAM_MIRROR    equ 0x6FE0  ; 32-byte persistent CMOS/Setup/Highscore mirror on ATA LBA 31
 
-; --- RAM-Adressen fuer DVD-Logo Animation (im freien RAM bei 0x0000) ---
-CLEAN_BUF equ 0x1000        ; 4000 Bytes Puffer (0x1000..0x1FA0) fuer Original-Screen
-POS_X1    equ 0x2000        ; Position & Richtung Ausrufezeichen 1
+; --- RAM Addresses for DVD-Logo Animation (in free RAM at 0x0000) ---
+CLEAN_BUF equ 0x1000        ; 4000-byte buffer (0x1000..0x1FA0) for original screen
+POS_X1    equ 0x2000        ; Position & direction of exclamation mark 1
 POS_Y1    equ 0x2002
 DIR_X1    equ 0x2004
 DIR_Y1    equ 0x2006
-POS_X2    equ 0x2008        ; Position & Richtung Ausrufezeichen 2
+POS_X2    equ 0x2008        ; Position & direction of exclamation mark 2
 POS_Y2    equ 0x200A
 DIR_X2    equ 0x200C
 DIR_Y2    equ 0x200E
-SOUND_TIMER equ 0x2010     ; Timer fuer PC-Speaker Tonlaenge
+SOUND_TIMER equ 0x2010     ; Timer for PC Speaker tone duration
 
 bios_start:
-    cli                     ; 1. Maskierbare Interrupts sofort sperren
-    cld                     ; Direction-Flag löschen
+    cli                     ; 1. Disable maskable interrupts immediately
+    cld                     ; Clear direction flag
 
-    ; --- NMI (Non-Maskable Interrupt) über CMOS-Port 0x70 deaktivieren ---
+    ; --- Disable NMI (Non-Maskable Interrupt) via CMOS Port 0x70 ---
     mov al, 0x80
     out 0x70, al
     in  al, 0x71
 
     ; =========================================================================
-    ; SCHRITT 1: CPU Cache & Cache-as-RAM (CAR) sauber initialisieren
+    ; STEP 1: Initialize CPU Cache & Cache-as-RAM (CAR) cleanly
     ; =========================================================================
     mov eax, 1
     cpuid
-    bt  edx, 12             ; MTRR Feature-Bit prüfen
+    bt  edx, 12             ; Check MTRR feature bit
     jnc .skip_mtrr
 
     mov eax, cr0
     or  eax, 0x40000000     ; CR0.CD = 1 (Cache Disable)
     and eax, 0xDFFFFFFF     ; CR0.NW = 0
     mov cr0, eax
-    invd                    ; Internen Cache invalidieren
+    invd                    ; Invalidate internal cache
 
     mov ecx, 0x0250         ; IA32_MTRR_FIX64K_00000
     mov eax, 0x06060606     ; Write-Back (0x06)
@@ -140,22 +140,22 @@ bios_start:
 
 .skip_mtrr:
     mov eax, cr0
-    and eax, 0x9FFFFFFF     ; L1/L2 Cache aktivieren (CD=0, NW=0)
+    and eax, 0x9FFFFFFF     ; Enable L1/L2 cache (CD=0, NW=0)
     mov cr0, eax
 
     ; =========================================================================
-    ; SCHRITT 2: Northbridge (i440FX 00:00.0) & PCI-VGA (00:02.0) aufwecken
+    ; STEP 2: Wake up Northbridge (i440FX 00:00.0) & PCI-VGA (00:02.0)
     ; =========================================================================
     mov eax, 0x80000058     ; Bus 0, Dev 0, Func 0, Offset 0x58 (DRAMC & PAM0..2)
     mov dx, 0x0CF8
     out dx, eax
     mov dx, 0x0CFC
     in  eax, dx
-    and eax, 0x000000FF     ; PAM0 (AH) = 0x00 (BIOS-ROM bleibt lesbar)
+    and eax, 0x000000FF     ; PAM0 (AH) = 0x00 (BIOS ROM remains readable)
     or  eax, 0x33330000     ; PAM1 & PAM2 = R/W RAM
     out dx, eax
 
-    mov eax, 0x8000005C     ; PAM3..PAM6 (Offset 0x5C..0x5F) auf R/W RAM
+    mov eax, 0x8000005C     ; Set PAM3..PAM6 (Offset 0x5C..0x5F) to R/W RAM
     mov dx, 0x0CF8
     out dx, eax
     mov dx, 0x0CFC
@@ -173,17 +173,17 @@ bios_start:
     out dx, eax
 .ram_ready:
 
-    ; PCI-VGA-Grafikkarte (Bus 0, Dev 2, Func 0, Offset 0x04 Command Reg)
+    ; PCI-VGA graphics card (Bus 0, Dev 2, Func 0, Offset 0x04 Command Reg)
     mov eax, 0x80001004
     mov dx, 0x0CF8
     out dx, eax
     mov dx, 0x0CFC
     in  eax, dx
-    or  eax, 0x00000007     ; I/O + Memory + Bus Master aktivieren
+    or  eax, 0x00000007     ; Enable I/O + Memory + Bus Master
     out dx, eax
 
     ; =========================================================================
-    ; SCHRITT 3: Stack, Segmente & Real-Mode-IVT (Interrupt Vector Table)
+    ; STEP 3: Stack, Segments & Real-Mode IVT (Interrupt Vector Table)
     ; =========================================================================
     xor ax, ax
     mov ss, ax
@@ -203,7 +203,7 @@ bios_start:
     loop .ivt_init_loop
 
     ; =========================================================================
-    ; SCHRITT 4: Fast-A20, 8259 PIC & 16550 UART (inkl. FIFO)
+    ; STEP 4: Fast-A20, 8259 PIC & 16550 UART (incl. FIFO)
     ; =========================================================================
     in  al, 0x92
     or  al, 0x02
@@ -224,7 +224,7 @@ bios_start:
     mov al, 0x01
     out 0x21, al
     out 0xA1, al
-    mov al, 0xFF            ; Alle IRQs maskieren
+    mov al, 0xFF            ; Mask all IRQs
     out 0x21, al
     out 0xA1, al
 
@@ -252,7 +252,7 @@ bios_start:
     mov al, 0x40            ; Bit 6 = 1 (Translation to Set 1), Bit 4 = 0 (Kbd Clock enable)
     out 0x60, al
 
-    ; COM1 (0x3F8) auf 115200 Baud, 8N1
+    ; COM1 (0x3F8) at 115200 Baud, 8N1
     xor al, al
     mov dx, 0x3F9
     out dx, al
@@ -276,14 +276,14 @@ bios_start:
     out dx, al
 
     ; =========================================================================
-    ; SCHRITT 5: Kompletter Bare-Metal VGA-Bringup (80x25 Text Mode)
+    ; STEP 5: Complete Bare-Metal VGA Bringup (80x25 Text Mode)
     ; =========================================================================
     mov dx, 0x3C2
     mov al, 0x67
     out dx, al
 
     mov dx, 0x3C4
-    mov ax, 0x0100          ; Sequencer Sync-Reset
+    mov ax, 0x0100          ; Sequencer Sync Reset
     out dx, ax
 
     mov si, vga_seq_table
@@ -300,11 +300,11 @@ bios_start:
     loop .seq_loop
 
     mov dx, 0x3C4
-    mov ax, 0x0300          ; Sync-Reset beenden
+    mov ax, 0x0300          ; End Sync Reset
     out dx, ax
 
     mov dx, 0x3D4
-    mov ax, 0x0011          ; CRTC Schreibschutz aufheben
+    mov ax, 0x0011          ; Unlock CRTC write protection
     out dx, ax
 
     mov si, vga_crtc_table
@@ -334,13 +334,13 @@ bios_start:
     loop .gc_loop
 
     mov dx, 0x3DA
-    in  al, dx              ; Flip-Flop zurücksetzen
+    in  al, dx              ; Reset flip-flop
     mov dx, 0x3C0
     xor ah, ah
 .ac_pal_loop:
     mov al, ah
     out dx, al
-    out dx, al              ; Identitäts-Mapping 0..15 -> DAC 0..15
+    out dx, al              ; Identity mapping 0..15 -> DAC 0..15
     inc ah
     cmp ah, 16
     jb  .ac_pal_loop
@@ -358,30 +358,30 @@ bios_start:
     mov dx, 0x3DA
     in  al, dx
     mov dx, 0x3C0
-    mov al, 0x20            ; Video-Output freigeben (PAS=1)
+    mov al, 0x20            ; Enable video output (PAS=1)
     out dx, al
 
-    ; PEL Mask Register (0x3C6) auf 0xFF
+    ; Set PEL Mask Register (0x3C6) to 0xFF
     mov dx, 0x3C6
     mov al, 0xFF
     out dx, al
 
     ; =========================================================================
-    ; SCHRITT 5.8: VGA DAC Palette für Schwarz, Blau, Grün & Weiß laden
+    ; STEP 5.8: Load VGA DAC Palette for Black, Blue, Green & White
     ; =========================================================================
     mov dx, 0x3C8
     xor al, al
-    out dx, al              ; Start bei DAC-Index 0
+    out dx, al              ; Start at DAC index 0
     mov dx, 0x3C9
     mov si, vga_dac_table
-    mov cx, 16 * 3          ; 16 Farben * 3 Bytes (R, G, B)
+    mov cx, 16 * 3          ; 16 colors * 3 bytes (R, G, B)
 .dac_load_loop:
     lodsb
     out dx, al
     loop .dac_load_loop
 
     ; =========================================================================
-    ; SCHRITT 6: Bitmap-Font sauber in VGA Plane 2 (0xA0000) laden
+    ; STEP 6: Load bitmap font cleanly into VGA Plane 2 (0xA0000)
     ; =========================================================================
     mov dx, 0x3C4
     mov ax, 0x0100
@@ -423,7 +423,7 @@ bios_start:
 
 .font_done:
 
-    ; --- Custom 16-Scanline Game Glyphen (0x01..0x0A) direkt in Plane 2 kopieren ---
+    ; --- Copy custom 16-scanline game glyphs (0x01..0x0A) directly into Plane 2 ---
     push ds
     push cs
     pop ds
@@ -435,12 +435,12 @@ bios_start:
     xor ah, ah
     shl ax, 5               ; Offset in Plane 2 = char_code * 32
     mov di, ax
-    mov cx, 16              ; Alle 16 echten Scanlines
+    mov cx, 16              ; All 16 real scanlines
     rep movsb
     jmp .custom_glyph_loop
 .custom_glyphs_done:
 
-    ; --- Cybforge Logo 16-Scanline Glyphen (0x80..0xBB) direkt in Plane 2 kopieren ---
+    ; --- Copy Cybforge logo 16-scanline glyphs (0x80..0xBB) directly into Plane 2 ---
     mov si, logo_font_table
 .logo_char_loop:
     lodsb
@@ -449,18 +449,18 @@ bios_start:
     xor ah, ah
     shl ax, 5               ; Offset in Plane 2 = char_code * 32
     mov di, ax
-    mov cx, 16              ; Alle 16 echten Zeilen
+    mov cx, 16              ; All 16 real scanlines
     rep movsb
     jmp .logo_char_loop
 .logo_done:
     pop ds
 
-    ; Hardware Text-Cursor (CRTC 0x0A) deaktivieren (verhindert '_' Artefakt bei 0,0)
+    ; Disable hardware text cursor (CRTC 0x0A) (prevents '_' artifact at 0,0)
     mov dx, 0x3D4
     mov ax, 0x200A
     out dx, ax
 
-    ; Zurück in den Odd/Even Text-Mode bei 0xB8000 schalten
+    ; Switch back to Odd/Even Text Mode at 0xB8000
     mov dx, 0x3C4
     mov ax, 0x0100
     out dx, ax
@@ -476,7 +476,7 @@ bios_start:
     out dx, ax
     mov ax, 0x1005
     out dx, ax
-    mov ax, 0x0E06          ; GR06 = 0xB8000 Textfenster
+    mov ax, 0x0E06          ; GR06 = 0xB8000 text window
     out dx, ax
 
     ; =========================================================================
@@ -486,38 +486,38 @@ bios_start:
     ; SEGMENT-SETUP: DS = 0x0000 (RAM) & ES = 0xB800 (TEXT-VRAM)
     ; =========================================================================
     mov ax, 0x0000
-    mov ds, ax              ; DS zeigt fest auf den Basisspeicher!
+    mov ds, ax              ; DS points permanently to base memory!
     mov ax, 0xB800
-    mov es, ax              ; ES zeigt fest auf den VGA-Textspeicher!
+    mov es, ax              ; ES points permanently to VGA text memory!
 
-    ; Flat Real Mode (Unreal Mode) initialisieren fuer 256KB ROM Audio
+    ; Initialize Flat Real Mode (Unreal Mode) for 256KB ROM audio
     call enter_unreal_mode
 
-    ; Sound Blaster 16 Hardware initialisieren (DSP Reset, Mixer, Volumes)
+    ; Initialize Sound Blaster 16 hardware (DSP Reset, Mixer, Volumes)
     call sb16_init
     call sound_boot
 
-    ; Gespeicherte Einstellungen, CybFS & Top 3 Highscore von ATA-Disk / CMOS laden
-    mov byte [CFG_SH_FONT], 2       ; Default vor dem Laden: 2 (Large 8x16)
+    ; Load saved settings, CybFS & Top 3 highscores from ATA disk / CMOS
+    mov byte [CFG_SH_FONT], 2       ; Default before loading: 2 (Large 8x16)
     call load_cmos_settings
     call apply_color_theme
     call vga_apply_font_scale
-    mov byte [SETUP_SEL], 0         ; Zeile 0 ausgewaehlt
-    mov byte [SETUP_TAB], 0         ; Standard-Reiter: 0 (Main & Game)
+    mov byte [SETUP_SEL], 0         ; Row 0 selected
+    mov byte [SETUP_TAB], 0         ; Default tab: 0 (Main & Game)
 
     ; =========================================================================
-    ; PHASE 1: CYBFORGE RETRO BIOS POST SCREEN (3 Sekunden Wartezeit fuer F12)
+    ; PHASE 1: CYBFORGE RETRO BIOS POST SCREEN (3 seconds wait time for F12)
     ; =========================================================================
 post_screen:
     call clear_screen_black
 
-    ; Zeile 2: BIOS Date & Version (Obere Zeile entfernt wie gewuenscht)
+    ; Row 2: BIOS Date & Version (top line removed as requested)
     mov di, (2 * 80 + 2) * 2
     mov si, str_post_hdr2
     mov ah, 0x07                    ; Light Gray
     call print_string
 
-    ; Zeile 4 & 5: CPU & Co-Processor
+    ; Rows 4 & 5: CPU & Co-Processor
     mov di, (4 * 80 + 2) * 2
     mov si, str_post_cpu
     mov ah, 0x07
@@ -528,7 +528,7 @@ post_screen:
     mov ah, 0x07
     call print_string
 
-    ; Zeile 7..9: VGA Display, Keyboard, Timer
+    ; Rows 7..9: VGA Display, Keyboard, Timer
     mov di, (7 * 80 + 2) * 2
     mov si, str_post_vga
     mov ah, 0x07
@@ -544,10 +544,10 @@ post_screen:
     mov ah, 0x07
     call print_string
 
-    ; Zeile 11 & 12: Monitor Detection & Scaler
+    ; Rows 11 & 12: Monitor Detection & Scaler
     mov di, (11 * 80 + 2) * 2
     mov si, str_post_disp_mon
-    mov ah, 0x0B                    ; Bright Cyan fuer Screen-Check!
+    mov ah, 0x0B                    ; Bright Cyan for screen check!
     call print_string
 
     mov di, (12 * 80 + 2) * 2
@@ -555,7 +555,7 @@ post_screen:
     mov ah, 0x07                    ; Light Gray
     call print_string
 
-    ; Zeile 14: Animierter RAM-Zaehler mit PC-Speaker-Ticks (0..640 KB)
+    ; Row 14: Animated RAM counter with PC Speaker ticks (0..640 KB)
     call post_ram_counter
 
     mov di, (15 * 80 + 2) * 2
@@ -563,16 +563,16 @@ post_screen:
     mov ah, 0x07
     call print_string
 
-    ; Zeile 17: Disks
+    ; Row 17: Disks
     mov di, (17 * 80 + 2) * 2
     mov si, str_post_drives
     mov ah, 0x07
     call print_string
 
-    ; Cybforge Logo an der rechten Seite zeichnen (Zeilen 2 bis 9, Spalten 64 bis 73)
+    ; Draw Cybforge logo on the right side (Rows 2 to 9, Cols 64 to 73)
     call draw_cybforge_logo
 
-    ; Zeile 20 & 21: F12 Hinweis & Countdown
+    ; Rows 20 & 21: F12 prompt & countdown
     mov di, (20 * 80 + 2) * 2
     mov si, str_post_f12
     mov ah, 0x0E                    ; Bright Yellow!
@@ -583,7 +583,7 @@ post_screen:
     mov ah, 0x07                    ; Light Gray
     call print_string
 
-    ; Genau 3.0 Sekunden warten auf Tastendruck (F12/DEL fuer Setup oder ENTER fuer Direktboot)
+    ; Wait exactly 3.0 seconds for keystroke (F12/DEL for Setup or ENTER for direct boot)
     call drain_kbd
     mov bp, 60
 .post_wait_loop:
@@ -592,26 +592,26 @@ post_screen:
     je core_bios_setup
     cmp al, 0x53                    ; DEL -> Setup
     je core_bios_setup
-    cmp al, 0x1C                    ; ENTER -> Sofort booten
+    cmp al, 0x1C                    ; ENTER -> Boot immediately
     je boot_direct_snake
 
-    mov ecx, 12500000               ; ~50 ms Mini-Tick (60 * 12.5M = 750M Zyklen = exakt 3.0s)
+    mov ecx, 12500000               ; ~50 ms Mini-Tick (60 * 12.5M = 750M cycles = exactly 3.0s)
     call delay_cycles
     dec bp
     jnz .post_wait_loop
 
-    ; 3 Sekunden abgelaufen ohne F12 -> Gem. CFG_BOOT_MODE in Snake oder BiosShell booten
+    ; 3 seconds elapsed without F12 -> Boot into Snake or BiosShell per CFG_BOOT_MODE
 boot_direct_snake:
     cmp byte [CFG_BOOT_MODE], 1
     je bios_shell_main
     jmp init_snake_game
 
     ; =========================================================================
-    ; CYBFORGE LOGO ZEICHEN-ROUTINE (Rechte Seite des POST-Screens)
+    ; CYBFORGE LOGO DRAWING ROUTINE (Right side of POST screen)
     ; =========================================================================
 draw_cybforge_logo:
-    mov bl, 0x80                    ; Erster Zeichencode fuer Logo (0x80 bis 0xBB)
-    mov dh, 2                       ; Startzeile 2 (Zeilen 2 bis 7 = 6 Zeilen)
+    mov bl, 0x80                    ; First character code for logo (0x80 to 0xBB)
+    mov dh, 2                       ; Start row 2 (Rows 2 to 7 = 6 rows)
 .row_loop:
     cmp dh, 8
     je .done_logo_tiles
@@ -624,10 +624,10 @@ draw_cybforge_logo:
     shl ax, 1
     mov di, ax
 
-    mov cx, 10                      ; 10 Spalten
+    mov cx, 10                      ; 10 columns
 .col_loop:
     mov al, bl
-    mov ah, 0x0B                    ; Attribut: Bright Cyan (0x0B)
+    mov ah, 0x0B                    ; Attribute: Bright Cyan (0x0B)
     stosw
     inc bl
     loop .col_loop
@@ -636,14 +636,14 @@ draw_cybforge_logo:
     jmp .row_loop
 
 .done_logo_tiles:
-    ; Text unter dem Logo:
-    ; Zeile 8, Spalte 64: "   CYBFORGE   " (Cyan 0x0B)
+    ; Text below logo:
+    ; Row 8, Col 64: "   CYBFORGE   " (Cyan 0x0B)
     mov di, (8 * 80 + 64) * 2
     mov si, str_logo_lbl1
     mov ah, 0x0B
     call print_string
 
-    ; Zeile 9, Spalte 64: "  RETRO BIOS  " (Yellow 0x0E)
+    ; Row 9, Col 64: "  RETRO BIOS  " (Yellow 0x0E)
     mov di, (9 * 80 + 64) * 2
     mov si, str_logo_lbl2
     mov ah, 0x0E
@@ -651,7 +651,7 @@ draw_cybforge_logo:
     ret
 
     ; =========================================================================
-    ; PHASE 2: CYBFORGE RETRO BIOS SETUP UTILITY (Retro CMOS Setup Menue)
+    ; PHASE 2: CYBFORGE RETRO BIOS SETUP UTILITY (Retro CMOS Setup Menu)
     ; =========================================================================
 core_bios_setup:
     call apply_color_theme
@@ -666,15 +666,15 @@ core_bios_setup:
     test al, al
     jz .setup_wait_tick
 
-    ; Schnellwechsel zwischen Reitern via [TAB] (0x0F), [1] (0x02), [2] (0x03)
-    cmp al, 0x0F                    ; TAB -> Reiter wechseln!
+    ; Quick tab switching via [TAB] (0x0F), [1] (0x02), [2] (0x03)
+    cmp al, 0x0F                    ; TAB -> Switch tab!
     je .toggle_tab
-    cmp al, 0x02                    ; Taste '1' -> Reiter 0 (Main & Game)
+    cmp al, 0x02                    ; Key '1' -> Tab 0 (Main & Game)
     je .switch_tab_0
-    cmp al, 0x03                    ; Taste '2' -> Reiter 1 (BiosShell)
+    cmp al, 0x03                    ; Key '2' -> Tab 1 (BiosShell)
     je .switch_tab_1
 
-    ; Navigation: W/S oder Pfeiltasten Oben/Unten
+    ; Navigation: W/S or Up/Down arrow keys
     cmp al, 0x11                    ; 'W'
     je .sel_up
     cmp al, 0x48                    ; Up Arrow
@@ -685,7 +685,7 @@ core_bios_setup:
     cmp al, 0x50                    ; Down Arrow
     je .sel_down
 
-    ; Wert aendern / Reiter wechseln: A/D, Pfeiltasten Links/Rechts, ENTER, SPACE
+    ; Change value / switch tab: A/D, Left/Right arrow keys, ENTER, SPACE
     cmp al, 0x1E                    ; 'A'
     je .val_prev
     cmp al, 0x4B                    ; Left Arrow
@@ -705,7 +705,7 @@ core_bios_setup:
     je .exit_setup
 
 .setup_wait_tick:
-    mov ecx, 1500000                ; ~5 ms fuer ultra-direkte Menue-Reaktion
+    mov ecx, 1500000                ; ~5 ms for ultra-responsive menu reaction
     call delay_cycles
     jmp .setup_input_loop
 
@@ -717,7 +717,7 @@ core_bios_setup:
     call sound_toggle
     jmp .redraw_setup
 .land_tab1:
-    mov byte [SETUP_SEL], 1         ; Direkt auf "BiosShell starten [Press ENTER]" setzen!
+    mov byte [SETUP_SEL], 1         ; Select "Launch BiosShell [Press ENTER]" directly!
     call sound_toggle
     jmp .redraw_setup
 
@@ -741,10 +741,10 @@ core_bios_setup:
     dec byte [SETUP_SEL]
     jmp .redraw_setup
 .wrap_up:
-    mov byte [SETUP_SEL], 10        ; Tab 0 hat Indizes 0..10
+    mov byte [SETUP_SEL], 10        ; Tab 0 has indices 0..10
     cmp byte [SETUP_TAB], 0
     je .redraw_setup
-    mov byte [SETUP_SEL], 8         ; Tab 1 hat Indizes 0..8
+    mov byte [SETUP_SEL], 8         ; Tab 1 has indices 0..8
     jmp .redraw_setup
 
 .sel_down:
@@ -763,16 +763,16 @@ core_bios_setup:
     mov byte [SETUP_SEL], 0
     jmp .redraw_setup
 
-; --- LINKS / VORHERIGER WERT ---
+; --- LEFT / PREVIOUS VALUE ---
 .val_prev:
     mov al, [SETUP_SEL]
-    cmp al, 0                       ; Zeile 0 ist auf beiden Reitern die Reiter-Auswahl!
+    cmp al, 0                       ; Row 0 is the tab selector on both tabs!
     je .toggle_tab
 
     cmp byte [SETUP_TAB], 1
     je .tab1_prev
 
-    ; Tab 0 (Main & Game): Indizes 1..8
+    ; Tab 0 (Main & Game): Indices 1..8
     call sound_toggle
     cmp al, 1
     jne .p2
@@ -830,7 +830,7 @@ core_bios_setup:
 
 .tab1_prev:
     ; Tab 1 (BiosShell):
-    cmp al, 1                       ; Auf "BiosShell starten" wechselt Links zurueck zu Tab 0
+    cmp al, 1                       ; On "Launch BiosShell", Left switches back to Tab 0
     je .switch_tab_0
     call sound_toggle
     cmp al, 2
@@ -863,16 +863,16 @@ core_bios_setup:
     xor byte [CFG_BOOT_MODE], 1
     jmp .redraw_setup
 
-; --- RECHTS / NAECHSTER WERT ---
+; --- RIGHT / NEXT VALUE ---
 .val_next:
     mov al, [SETUP_SEL]
-    cmp al, 0                       ; Zeile 0: Reiter wechseln
+    cmp al, 0                       ; Row 0: Switch tab
     je .toggle_tab
 
     cmp byte [SETUP_TAB], 1
     je .tab1_next
 
-    ; Tab 0 (Main & Game): Indizes 1..8
+    ; Tab 0 (Main & Game): Indices 1..8
     call sound_toggle
     cmp al, 1
     jne .n2
@@ -934,7 +934,7 @@ core_bios_setup:
     jmp .redraw_setup
 
 .tab1_next:
-    cmp al, 1                       ; SPACE auf "BiosShell" startet ebenfalls die Shell
+    cmp al, 1                       ; SPACE on "BiosShell" also launches the shell
     je .launch_bios_shell
     call sound_toggle
     cmp al, 2
@@ -969,7 +969,7 @@ core_bios_setup:
     xor byte [CFG_BOOT_MODE], 1
     jmp .redraw_setup
 
-; --- ENTER AKTION ---
+; --- ENTER ACTION ---
 .val_enter:
     mov al, [SETUP_SEL]
     cmp al, 0
@@ -1032,13 +1032,13 @@ core_bios_setup:
     ; SETUP SCREEN RENDERER (Multi-Tab Cybforge Retro Style)
     ; =========================================================================
 draw_setup_screen:
-    ; 1. Hintergrund mit BIOS-Blau (0x1F) fuellen
+    ; 1. Fill background with BIOS Blue (0x1F)
     xor di, di
     mov cx, 80 * 25
     mov ax, 0x1F20
     rep stosw
 
-    ; 2. Titelzeile (Zeile 0)
+    ; 2. Title bar (Row 0)
     mov di, (0 * 80 + 6) * 2
     mov si, str_setup_title
     mov ah, 0x1F
@@ -1049,32 +1049,32 @@ draw_setup_screen:
     mov ah, 0x1E
     call print_string
 
-    ; Trennlinie (Zeile 1)
+    ; Divider line (Row 1)
     mov di, (1 * 80 + 0) * 2
     mov cx, 80
     mov ax, 0x1F05
     rep stosw
 
-    ; 3. Reiter-Leiste (Tab Bar auf Zeile 2)
+    ; 3. Tab Bar (on Row 2)
     mov di, (2 * 80 + 6) * 2
     mov si, str_tab0_label
-    mov ah, 0x70                    ; Aktiv: Schwarz auf Hellgrau (Inverted)
+    mov ah, 0x70                    ; Active: Black on Light Gray (Inverted)
     cmp byte [SETUP_TAB], 0
     je .draw_t0_hdr
-    mov ah, 0x17                    ; Inaktiv: Grau auf Blau
+    mov ah, 0x17                    ; Inactive: Gray on Blue
 .draw_t0_hdr:
     call print_string
 
     mov di, (2 * 80 + 30) * 2
     mov si, str_tab1_label
-    mov ah, 0x70                    ; Aktiv: Schwarz auf Hellgrau (Inverted)
+    mov ah, 0x70                    ; Active: Black on Light Gray (Inverted)
     cmp byte [SETUP_TAB], 1
     je .draw_t1_hdr
-    mov ah, 0x17                    ; Inaktiv: Grau auf Blau
+    mov ah, 0x17                    ; Inactive: Gray on Blue
 .draw_t1_hdr:
     call print_string
 
-    ; 4. Haupt-Optionskasten (Zeile 3 bis 17, Spalte 6 bis 73)
+    ; 4. Main options box (Rows 3 to 17, Cols 6 to 73)
     mov di, (3 * 80 + 6) * 2
     mov ax, 0x1F01                  ; '┌'
     stosw
@@ -1110,7 +1110,7 @@ draw_setup_screen:
     mov ax, 0x1F04                  ; '┘'
     stosw
 
-    ; 5. Hilfe-Kasten (Zeile 18 bis 23, Spalte 6 bis 73)
+    ; 5. Help box (Rows 18 to 23, Cols 6 to 73)
     mov di, (18 * 80 + 6) * 2
     mov ax, 0x1F01                  ; '┌'
     stosw
@@ -1142,20 +1142,20 @@ draw_setup_screen:
     mov ax, 0x1F04                  ; '┘'
     stosw
 
-    ; 6. Fusszeile / Tastaturbedienung (Zeile 24)
+    ; 6. Footer / Keyboard controls (Row 24)
     mov di, (24 * 80 + 4) * 2
     mov si, str_setup_footer
     mov ah, 0x1F
     call print_string
 
-    ; Pruefen welcher Reiter aktiv ist
+    ; Check which tab is active
     cmp byte [SETUP_TAB], 1
     je .draw_tab1_items
 
     ; =========================================================================
-    ; REITER 0: MAIN & GAME ITEMS (Indizes 0..10)
+    ; TAB 0: MAIN & GAME ITEMS (Indices 0..10)
     ; =========================================================================
-    ; Index 0 (Row 4): Setup Reiter
+    ; Index 0 (Row 4): Setup Menu Tab
     mov bl, 0
     mov dh, 4
     mov si, str_opt_tab
@@ -1319,7 +1319,7 @@ draw_setup_screen:
     mov si, str_opt_boot
     call draw_menu_row
 
-    ; Info: Session High Score anzeigen bei Row 16
+    ; Info: Display Session High Score at Row 16
     mov di, (16 * 80 + 10) * 2
     mov si, str_hi_score_lbl
     mov ah, 0x1E                    ; Yellow
@@ -1327,7 +1327,7 @@ draw_setup_screen:
     mov ax, [HIGH_SCORE]
     call render_3digits_yellow
 
-    ; Dynamischer Hilfetext fuer Tab 0
+    ; Dynamic help text for Tab 0
     mov di, (20 * 80 + 9) * 2
     mov al, [SETUP_SEL]
     mov si, str_help_tab
@@ -1364,10 +1364,10 @@ draw_setup_screen:
     jmp .do_print_help
 
     ; =========================================================================
-    ; REITER 1: BIOSSHELL ITEMS (Indizes 0..8)
+    ; TAB 1: BIOSSHELL ITEMS (Indices 0..8)
     ; =========================================================================
 .draw_tab1_items:
-    ; Index 0 (Row 4): Setup Reiter
+    ; Index 0 (Row 4): Setup Menu Tab
     mov bl, 0
     mov dh, 4
     mov si, str_opt_tab
@@ -1375,7 +1375,7 @@ draw_setup_screen:
     mov si, str_val_tab_shell
     call draw_val_str
 
-    ; Index 1 (Row 6): BiosShell starten (Haupt-Aktionspunkt!)
+    ; Index 1 (Row 6): Launch BiosShell (primary action item!)
     mov bl, 1
     mov dh, 6
     mov si, str_opt_sh_launch
@@ -1478,13 +1478,13 @@ draw_setup_screen:
     mov si, str_opt_boot
     call draw_menu_row
 
-    ; Statuszeile auf Row 16 im BiosShell-Reiter
+    ; Status line at Row 16 in BiosShell tab
     mov di, (16 * 80 + 10) * 2
     mov si, str_sh_tab_status
     mov ah, 0x1B                    ; Bright Cyan on Blue
     call print_string
 
-    ; Dynamischer Hilfetext fuer Tab 1 (BiosShell)
+    ; Dynamic help text for Tab 1 (BiosShell)
     mov di, (20 * 80 + 9) * 2
     mov al, [SETUP_SEL]
     mov si, str_help_tab
@@ -1529,7 +1529,7 @@ draw_menu_row:
     call xy_to_di
     pop bx
 
-    ; Pfeil anzeigen wenn ausgewaehlt
+    ; Display arrow when selected
     mov ah, 0x1F                    ; Standard: White on Blue
     cmp [SETUP_SEL], bl
     jne .dm_no_arrow
@@ -1552,8 +1552,8 @@ draw_menu_row:
 draw_val_str:
     push ax
     push di
-    mov al, 38                      ; Spalte 38 fuer Wertanzeige
-    mov bl, dh                      ; Zeile dh
+    mov al, 38                      ; Column 38 for value display
+    mov bl, dh                      ; Row dh
     call xy_to_di
     mov ah, 0x1A                    ; Bright Green
     call print_string
@@ -1565,7 +1565,7 @@ init_snake_game:
     call clear_screen_black
     call draw_game_board
 
-    ; Snake-Laenge gemaess CFG_LEN setzen
+    ; Set snake length according to CFG_LEN
     mov word [SNAKE_LEN], 4
     cmp byte [CFG_LEN], 1
     jne .chk_cfg_len6
@@ -1577,7 +1577,7 @@ init_snake_game:
     mov word [SNAKE_LEN], 6
 
 .set_snake_body:
-    ; Schlange mittig platzieren (Kopf bei X=40, Y=12)
+    ; Place snake in center (Head at X=40, Y=12)
     mov byte [SNAKE_X + 0], 40
     mov byte [SNAKE_Y + 0], 12
     mov byte [SNAKE_X + 1], 39
@@ -1591,14 +1591,14 @@ init_snake_game:
     mov byte [SNAKE_X + 5], 35
     mov byte [SNAKE_Y + 5], 12
 
-    mov byte [SNAKE_DIR], 1         ; Start-Richtung: Rechts
+    mov byte [SNAKE_DIR], 1         ; Initial direction: Right
     mov byte [NEXT_DIR], 1
     mov byte [QUEUED_DIR], 0xFF
     mov byte [DIR_LOCKED], 0
     mov word [SCORE], 0
     mov word [RND_SEED], 0x1337
 
-    ; Gold-Apfel & Zaehler initialisieren
+    ; Initialize golden apple & counters
     mov byte [GOLD_FOOD_X], 0xFF
     mov word [GOLD_TIMER], 0
     mov byte [APPLE_COUNT], 0
@@ -1609,7 +1609,7 @@ init_snake_game:
     call draw_snake
     call draw_fruit
 
-    ; Start-Hinweis anzeigen
+    ; Display start prompt
     call draw_start_prompt
     call drain_kbd
 
@@ -1618,25 +1618,25 @@ init_snake_game:
     test al, al
     jz .wait_idle
 
-    cmp al, 0x01                    ; ESC -> Ins BIOS Setup
+    cmp al, 0x01                    ; ESC -> Enter BIOS Setup
     je core_bios_setup
 
-    ; Starten mit ENTER oder LEERTASTE (behaelt Standardrichtung Rechts)
+    ; Start with ENTER or SPACE (keeps default direction Right)
     cmp al, 0x1C                    ; ENTER
     je .game_started
     cmp al, 0x39                    ; SPACE
     je .game_started
 
-    ; Sofortstart mit Steuerkreuz / WASD!
-    cmp al, 0x11                    ; W (Oben)
+    ; Instant start with arrow keys / WASD!
+    cmp al, 0x11                    ; W (Up)
     je .start_up
     cmp al, 0x48                    ; UP Arrow
     je .start_up
-    cmp al, 0x1F                    ; S (Unten)
+    cmp al, 0x1F                    ; S (Down)
     je .start_down
     cmp al, 0x50                    ; DOWN Arrow
     je .start_down
-    cmp al, 0x20                    ; D (Rechts)
+    cmp al, 0x20                    ; D (Right)
     je .start_right
     cmp al, 0x4D                    ; RIGHT Arrow
     je .start_right
@@ -1658,7 +1658,7 @@ init_snake_game:
     jmp .game_started
 
 .wait_idle:
-    mov ecx, 200000                 ; ~1ms Polling fuer sofortiges Ansprechverhalten
+    mov ecx, 200000                 ; ~1ms polling for instant response
     call delay_cycles
     jmp .wait_start
 
@@ -1667,10 +1667,10 @@ init_snake_game:
     call erase_start_prompt
 
     ; =========================================================================
-    ; PHASE 4: HAUPTSPIEL-SCHLEIFE
+    ; PHASE 4: MAIN GAME LOOP
     ; =========================================================================
 game_loop:
-    ; 1. Mini-Ticks Schleife gemaess CFG_SPEED
+    ; 1. Mini-ticks loop according to CFG_SPEED
     ; Normal: 10 Ticks (~150ms), Fast: 7 Ticks (~105ms), Slow: 14 Ticks (~210ms)
     mov bp, 10
     cmp byte [CFG_SPEED], 1
@@ -1689,7 +1689,7 @@ game_loop:
     dec bp
     jnz .tick_loop
 
-    ; 2. Richtung uebernehmen & gepufferten Tastendruck aktivieren
+    ; 2. Apply direction & activate buffered keystroke
     mov al, [NEXT_DIR]
     mov [SNAKE_DIR], al
     mov byte [DIR_LOCKED], 0
@@ -1702,7 +1702,7 @@ game_loop:
     mov byte [DIR_LOCKED], 1
 .no_queued_dir:
 
-    ; 3. Neuen Kopf berechnen
+    ; 3. Calculate new head position
     mov al, [SNAKE_X]
     mov bl, [SNAKE_Y]
     mov cl, [SNAKE_DIR]
@@ -1725,11 +1725,11 @@ game_loop:
     dec al
 
 .move_calc_done:
-    ; Pruefen ob Wrap-Around aktiv ist (CFG_WALLS == 1)
+    ; Check if Wrap-Around is active (CFG_WALLS == 1)
     cmp byte [CFG_WALLS], 1
     jne .store_new_head
 
-    ; Wrap-Around Logik (Cols 11..68, Rows 4..21)
+    ; Wrap-Around logic (Cols 11..68, Rows 4..21)
     cmp al, 11
     jge .chk_wrap_r
     mov al, 68
@@ -1753,7 +1753,7 @@ game_loop:
     mov [NEW_HEAD_X], al
     mov [NEW_HEAD_Y], bl
 
-    ; 4. Kollision mit Waenden pruefen (wenn Solid)
+    ; 4. Check wall collision (when Solid)
     cmp byte [CFG_WALLS], 1
     je .no_wall_collision
 
@@ -1767,13 +1767,13 @@ game_loop:
     jge .do_crash
 
 .no_wall_collision:
-    ; Kollision mit Arena-Hindernissen pruefen (Saeulen oder Labyrinth)
+    ; Check collision with arena obstacles (Pillars or Maze)
     mov al, [NEW_HEAD_X]
     mov bl, [NEW_HEAD_Y]
     call is_arena_wall
     jz .do_crash
 
-    ; 5. Kollision mit eigenem Koerper pruefen (Schwanzspitze zieht weg)
+    ; 5. Check self-collision with body (tail tip moves away)
     mov cx, [SNAKE_LEN]
     dec cx
     jz .no_body_collision
@@ -1788,17 +1788,17 @@ game_loop:
     loop .self_chk_loop
 
 .no_body_collision:
-    ; 6. Gold-Apfel Timer aktualisieren & Pruefen ob Gold-Apfel gefressen
+    ; 6. Update golden apple timer & check if golden apple eaten
     cmp byte [GOLD_FOOD_X], 0xFF
     je .chk_eat_regular
 
     dec word [GOLD_TIMER]
     jz .gold_expired
 
-    ; Countdown-Anzeige auf HUD bei (34, 1): "GOLD: 0Xs"
+    ; Countdown display on HUD at (34, 1): "GOLD: 0Xs"
     call update_gold_hud
 
-    ; Pruefen ob Gold-Apfel gefressen wurde
+    ; Check if golden apple was eaten
     mov al, [NEW_HEAD_X]
     mov bl, [NEW_HEAD_Y]
     cmp al, [GOLD_FOOD_X]
@@ -1806,7 +1806,7 @@ game_loop:
     cmp bl, [GOLD_FOOD_Y]
     jne .chk_eat_regular
 
-    ; --- GOLD-APFEL GEFRESSEN! (+50 Punkte) ---
+    ; --- GOLDEN APPLE EATEN! (+50 Points) ---
     add word [SCORE], 50
     call sound_golden_apple
     call erase_gold_apple
@@ -1817,7 +1817,7 @@ game_loop:
     call erase_gold_apple
 
 .chk_eat_regular:
-    ; 7. Pruefen ob regulaere Frucht gefressen wurde
+    ; 7. Check if regular apple was eaten
     mov al, [NEW_HEAD_X]
     mov bl, [NEW_HEAD_Y]
     cmp al, [FOOD_X]
@@ -1825,13 +1825,13 @@ game_loop:
     cmp bl, [FOOD_Y]
     jne .normal_move
 
-    ; --- REGULAERE FRUCHT GEFRESSEN! ---
+    ; --- REGULAR APPLE EATEN! ---
     inc word [SCORE]
     inc byte [APPLE_COUNT]
     call update_score_display
     call sound_eat_fruit
 
-    ; Alle 5 Aepfel einen Gold-Apfel spawnen (falls nicht schon einer aktiv)
+    ; Spawn a golden apple every 5 apples (if not already active)
     cmp byte [GOLD_FOOD_X], 0xFF
     jne .no_new_gold
     mov al, [APPLE_COUNT]
@@ -1843,7 +1843,7 @@ game_loop:
     call spawn_golden_apple
 .no_new_gold:
 
-    ; Schlange verlaengern
+    ; Grow snake
     mov ax, [SNAKE_LEN]
     cmp ax, 1044
     jae .grow_len_done
@@ -1851,7 +1851,7 @@ game_loop:
     mov [SNAKE_LEN], ax
 .grow_len_done:
 
-    ; Siegbedingung pruefen
+    ; Check victory condition
     mov cx, 1044
     cmp byte [CFG_WIN], 1
     jne .chk_win_g50
@@ -1870,7 +1870,7 @@ game_loop:
     cmp ax, cx
     jae victory_screen
 
-    ; Koerper nach hinten schieben
+    ; Shift body segments backward
     mov cx, [SNAKE_LEN]
     dec cx
     jz .shift_grow_head
@@ -1895,15 +1895,15 @@ game_loop:
     jmp game_loop
 
 .normal_move:
-    ; Schwanz-Spitze loeschen
+    ; Erase tail tip
     mov si, [SNAKE_LEN]
     dec si
     mov al, [SNAKE_X + si]
     mov bl, [SNAKE_Y + si]
     call xy_to_di
-    mov word [es:di], 0x0720         ; Leerzeichen
+    mov word [es:di], 0x0720         ; Blank space
 
-    ; Segmente weiterschieben
+    ; Shift segments
     mov cx, [SNAKE_LEN]
     dec cx
 .shift_loop:
@@ -1914,7 +1914,7 @@ game_loop:
     mov [SNAKE_Y + si], al
     loop .shift_loop
 
-    ; Neuen Kopf setzen
+    ; Place new head
     mov al, [NEW_HEAD_X]
     mov [SNAKE_X], al
     mov al, [NEW_HEAD_Y]
@@ -1928,12 +1928,12 @@ game_loop:
     jmp game_over
 
     ; =========================================================================
-    ; PHASE 5A: VICTORY SCREEN (Trophäe & Sieges-Fanfare)
+    ; PHASE 5A: VICTORY SCREEN (Trophy & Victory Fanfare)
     ; =========================================================================
 victory_screen:
     call sound_victory
 
-    ; Spielfeld-Innenbereich loeschen
+    ; Clear playfield interior
     mov dh, 4
 .clr_win_rows:
     mov al, 11
@@ -1946,7 +1946,7 @@ victory_screen:
     cmp dh, 22
     jb .clr_win_rows
 
-    ; Header & Titel
+    ; Header & Title
     mov al, 20
     mov bl, 4
     call xy_to_di
@@ -1961,7 +1961,7 @@ victory_screen:
     mov ah, 0x0A
     call print_string
 
-    ; Gold-Trophäe
+    ; Gold Trophy
     mov al, 32
     mov bl, 7
     call xy_to_di
@@ -2080,10 +2080,10 @@ victory_screen:
 game_over:
     call sound_game_over
 
-    ; Pruefen ob Score fuer Top 3 qualifiziert ist -> Namenseingabe!
+    ; Check if score qualifies for Top 3 -> Initials entry!
     call check_top3_qualification
 
-    ; Red Modal Box fuer GAME OVER (Cols 21..59, Rows 7..19)
+    ; Red Modal Box for GAME OVER (Cols 21..59, Rows 7..19)
     mov al, 21
     mov bl, 7
     call xy_to_di
@@ -2156,7 +2156,7 @@ game_over:
     mov ah, 0x0B
     call print_string
 
-    ; Row 13..15: Top 1, Top 2, Top 3 anzeigen
+    ; Rows 13..15: Display Top 1, Top 2, Top 3
     call draw_top3_rows
 
     ; Row 16: Divider
@@ -2204,7 +2204,7 @@ handle_input:
 
     cmp al, 0x01                    ; ESC -> Setup
     jne .chk_pause
-    pop ax                          ; Stack bereinigen
+    pop ax                          ; Clean up stack
     call sound_click
     jmp core_bios_setup
 
@@ -2286,12 +2286,12 @@ handle_input:
 
 .pause_to_setup:
     call sound_click
-    pop ax                          ; Stack bereinigen
+    pop ax                          ; Clean up stack
     jmp core_bios_setup
 
 .resume_game:
     call sound_pause
-    ; Box loeschen & Untergrund wiederherstellen
+    ; Clear modal box & restore background
     mov dh, 10
 .p_clr:
     mov al, 28
@@ -2375,10 +2375,10 @@ handle_input:
     ret
 
     ; =========================================================================
-    ; PHASE 7: GRAFIK & ZEICHENFUNKTIONEN
+    ; PHASE 7: GRAPHICS & DRAWING FUNCTIONS
     ; =========================================================================
 draw_game_board:
-    ; Titel links: "CYBFORGE SNAKE" + "v2.2"
+    ; Left title: "CYBFORGE SNAKE" + "v2.8"
     mov al, 10
     mov bl, 1
     call xy_to_di
@@ -2409,7 +2409,7 @@ draw_game_board:
     mov ah, 0x0F
     call print_string
 
-    ; Steuerungsanzeige unten at Y=24
+    ; Controls bar at bottom Y=24
     mov al, 8
     mov bl, 24
     call xy_to_di
@@ -2417,7 +2417,7 @@ draw_game_board:
     mov ah, 0x07
     call print_string
 
-    ; Spielfeldrahmen (X: 10..69, Y: 3..22)
+    ; Playfield border (X: 10..69, Y: 3..22)
     mov al, 10
     mov bl, 3
     call xy_to_di
@@ -2455,7 +2455,7 @@ draw_game_board:
     mov ax, 0x0B04
     stosw
 
-    ; Spielfeld-Innenbereich loeschen
+    ; Clear playfield interior
     mov dh, 4
 .clr_inner:
     mov al, 11
@@ -2468,7 +2468,7 @@ draw_game_board:
     cmp dh, 22
     jb .clr_inner
 
-    ; Arena-Hindernisse zeichnen
+    ; Draw arena obstacles
     call draw_arena_obstacles
     ret
 
@@ -2671,13 +2671,13 @@ spawn_fruit:
     add dl, 4
     mov [FOOD_Y], dl
 
-    ; Nicht auf Arena-Hindernis
+    ; Not on arena obstacle
     mov al, [FOOD_X]
     mov bl, [FOOD_Y]
     call is_arena_wall
     jz .retry_food
 
-    ; Nicht auf Schlange
+    ; Not on snake body
     mov cx, [SNAKE_LEN]
     xor si, si
     mov al, [FOOD_X]
@@ -2718,7 +2718,7 @@ spawn_golden_apple:
     add dl, 4
     mov [GOLD_FOOD_Y], dl
 
-    ; Nicht auf regulärem Apfel
+    ; Not on regular apple
     mov al, [GOLD_FOOD_X]
     cmp al, [FOOD_X]
     jne .g_chk_wall
@@ -2731,7 +2731,7 @@ spawn_golden_apple:
     call is_arena_wall
     jz .retry_gold
 
-    ; Nicht auf Schlange
+    ; Not on snake body
     mov cx, [SNAKE_LEN]
     xor si, si
     mov al, [GOLD_FOOD_X]
@@ -2745,7 +2745,7 @@ spawn_golden_apple:
     inc si
     loop .chk_gold_body
 
-    ; Gold-Apfel zeichnen & Timer setzen (~8s = 55 Ticks)
+    ; Draw golden apple & set timer (~8s = 55 Ticks)
     mov word [GOLD_TIMER], 55
     mov al, [GOLD_FOOD_X]
     mov bl, [GOLD_FOOD_Y]
@@ -2772,7 +2772,7 @@ erase_gold_apple:
     call xy_to_di
     mov word [es:di], 0x0720
     mov byte [GOLD_FOOD_X], 0xFF
-    ; Countdown-Text auf HUD loeschen
+    ; Clear countdown text on HUD
     mov al, 34
     mov bl, 1
     call xy_to_di
@@ -2790,12 +2790,12 @@ update_gold_hud:
     mov ah, 0x0E
     call print_string
 
-    ; Sekunden = GOLD_TIMER / 7
+    ; Seconds = GOLD_TIMER / 7
     mov ax, [GOLD_TIMER]
     xor dx, dx
     mov cx, 7
     div cx
-    ; Zeige Sekunde 1-stellig + 's'
+    ; Display 1-digit seconds + 's'
     add al, '0'
     mov ah, 0x0E
     stosw
@@ -2888,7 +2888,7 @@ crash_dissolve_animation:
     ; 1. Sound Blaster 16 Sub-Bass Crash & Metal Shatter
     call sound_crash
 
-    ; Tiefer PC Speaker Buzz wenn Speaker aktiv
+    ; Low PC Speaker buzz when speaker active
     cmp byte [CFG_SOUND], 1
     je .buzz_spk
     cmp byte [CFG_SOUND], 2
@@ -2902,7 +2902,7 @@ crash_dissolve_animation:
     call stop_tone
 .buzz_done:
 
-    ; 2. 2x Rot/Weiss blinken
+    ; 2. Flash Red/White twice
     mov cx, 2
 .flash_loop:
     push cx
@@ -2932,7 +2932,7 @@ crash_dissolve_animation:
     pop cx
     loop .flash_loop
 
-    ; 3. Zerfall von Schwanz zu Kopf mit Pop-Sounds
+    ; 3. Dissolve from tail to head with pop sounds
     mov si, [SNAKE_LEN]
     dec si
 .dissolve_loop:
@@ -2954,25 +2954,25 @@ crash_dissolve_animation:
 
 check_top3_qualification:
     mov ax, [SCORE]
-    cmp ax, [TOP3_TABLE + 13]       ; Vergleiche mit Platz 3
+    cmp ax, [TOP3_TABLE + 13]       ; Compare with Rank 3
     jbe .no_qualification
 
-    ; Neuer Rekord! Initialen-Eingabedialog anzeigen
+    ; New record! Display initials entry dialog
     call enter_initials_dialog
 
-    ; In TOP3_TABLE an der passenden Stelle einfuegen
+    ; Insert into TOP3_TABLE at the appropriate rank
     push es
     push ds
     pop es
 
     mov ax, [SCORE]
-    cmp ax, [TOP3_TABLE + 3]        ; Besser als Platz 1?
+    cmp ax, [TOP3_TABLE + 3]        ; Better than Rank 1?
     ja .insert_pos1
 
-    cmp ax, [TOP3_TABLE + 8]        ; Besser als Platz 2?
+    cmp ax, [TOP3_TABLE + 8]        ; Better than Rank 2?
     ja .insert_pos2
 
-    ; Platz 3 ersetzen
+    ; Replace Rank 3
     mov si, CURRENT_NAME
     mov di, TOP3_TABLE + 10
     mov cx, 3
@@ -2982,12 +2982,12 @@ check_top3_qualification:
     jmp .save_top3_done
 
 .insert_pos2:
-    ; Platz 2 -> Platz 3 verschieben
+    ; Shift Rank 2 -> Rank 3
     mov si, TOP3_TABLE + 5
     mov di, TOP3_TABLE + 10
     mov cx, 5
     rep movsb
-    ; Neuen auf Platz 2 setzen
+    ; Place new entry at Rank 2
     mov si, CURRENT_NAME
     mov di, TOP3_TABLE + 5
     mov cx, 3
@@ -2997,17 +2997,17 @@ check_top3_qualification:
     jmp .save_top3_done
 
 .insert_pos1:
-    ; Platz 2 -> Platz 3
+    ; Rank 2 -> Rank 3
     mov si, TOP3_TABLE + 5
     mov di, TOP3_TABLE + 10
     mov cx, 5
     rep movsb
-    ; Platz 1 -> Platz 2
+    ; Rank 1 -> Rank 2
     mov si, TOP3_TABLE + 0
     mov di, TOP3_TABLE + 5
     mov cx, 5
     rep movsb
-    ; Neuen auf Platz 1
+    ; Place new entry at Rank 1
     mov si, CURRENT_NAME
     mov di, TOP3_TABLE + 0
     mov cx, 3
@@ -3029,7 +3029,7 @@ enter_initials_dialog:
     mov byte [CURRENT_NAME + 2], 'A'
     mov byte [CUR_CHAR_IDX], 0
 
-    ; Dialog-Box zentriert (Cols 25..55, Rows 9..16)
+    ; Centered dialog box (Cols 25..55, Rows 9..16)
     mov al, 25
     mov bl, 9
     call xy_to_di
@@ -3198,7 +3198,7 @@ enter_initials_dialog:
     ret
 
 draw_top3_rows:
-    ; Platz 1 (Row 13)
+    ; Rank 1 (Row 13)
     mov al, 25
     mov bl, 13
     call xy_to_di
@@ -3214,7 +3214,7 @@ draw_top3_rows:
     mov ax, [TOP3_TABLE + 3]
     call render_3digits_yellow
 
-    ; Platz 2 (Row 14)
+    ; Rank 2 (Row 14)
     mov al, 25
     mov bl, 14
     call xy_to_di
@@ -3230,7 +3230,7 @@ draw_top3_rows:
     mov ax, [TOP3_TABLE + 8]
     call render_3digits_white
 
-    ; Platz 3 (Row 15)
+    ; Rank 3 (Row 15)
     mov al, 25
     mov bl, 15
     call xy_to_di
@@ -3256,7 +3256,7 @@ print_3chars:
     stosw
     ret
 
-    ; --- CMOS NVRAM PERSISTENZ (0x70 / 0x71) ---
+    ; --- CMOS NVRAM PERSISTENCE (0x70 / 0x71) ---
 cmos_read_byte:
     out 0x70, al
     jmp $+2
@@ -3273,17 +3273,17 @@ cmos_write_byte:
     ret
 
 load_cmos_settings:
-    ; 1. Zuerst versuchen, das 16 KB Persistenz-Volume (LBA 0..31 -> 0x3000..0x6FFF) von ATA-Disk zu laden!
+    ; 1. First try loading the 16 KB persistent volume (LBA 0..31 -> 0x3000..0x6FFF) from ATA disk!
     call ata_load_nvram
-    cmp word [FS_MAGIC], 0x5346     ; Gueltiges 'FS' (CybFS v1.0) auf der Festplatte gefunden?
+    cmp word [FS_MAGIC], 0x5346     ; Valid 'FS' (CybFS v1.0) found on disk?
     je .ata_fs_valid
 
-    ; Kein gueltiges CybFS auf Disk -> Frisch aus ROM Block 0 (0xFFFC0100) ins RAM formatieren
+    ; No valid CybFS on disk -> Format fresh from ROM Block 0 (0xFFFC0100) into RAM
     call fs_format_from_rom
     jmp .check_cmos_hw
 
 .ata_fs_valid:
-    ; Wenn im Disk-Image bei 0x6FE0 die Signatur 0xCC steht, CMOS-Register 0x40..0x5F daraus wiederherstellen!
+    ; If signature 0xCC is present at 0x6FE0 in the disk image, restore CMOS registers 0x40..0x5F from it!
     cmp byte [NVRAM_MIRROR], 0xCC
     jne .check_cmos_hw
     mov cl, 0x40
@@ -3298,13 +3298,13 @@ load_cmos_settings:
     jb .restore_cmos_from_disk
 
 .check_cmos_hw:
-    ; Pruefen ob Signatur 0xCC bei Index 0x40 steht
+    ; Check if signature 0xCC is present at index 0x40
     mov al, 0x40
     call cmos_read_byte
     cmp al, 0xCC
     jne .cmos_invalid
 
-    ; Checksumme berechnen (0x40..0x5D, Checksumme in 0x5E)
+    ; Calculate checksum (0x40..0x5D, checksum in 0x5E)
     xor bl, bl
     mov cl, 0x40
 .chk_loop:
@@ -3320,7 +3320,7 @@ load_cmos_settings:
     cmp al, bl
     jne .cmos_invalid
 
-    ; Gueltige Konfiguration laden!
+    ; Load valid configuration!
     mov al, 0x41
     call cmos_read_byte
     mov [CFG_SPEED], al
@@ -3349,7 +3349,7 @@ load_cmos_settings:
     call cmos_read_byte
     mov [CFG_ARENA], al
 
-    ; Top 3 Leaderboard laden (15 Bytes: 0x4A..0x58)
+    ; Load Top 3 Leaderboard (15 bytes: 0x4A..0x58)
     mov cl, 0x4A
     mov di, TOP3_TABLE
 .load_top3_loop:
@@ -3361,7 +3361,7 @@ load_cmos_settings:
     cmp cl, 0x59
     jb .load_top3_loop
 
-    ; BiosShell Einstellungen laden (0x59..0x5D)
+    ; Load BiosShell settings (0x59..0x5D)
     mov al, 0x59
     call cmos_read_byte
     and al, 3
@@ -3381,7 +3381,7 @@ load_cmos_settings:
     and al, 1
     mov [CFG_BOOT_MODE], al
 
-    ; Schriftgroesse CFG_SH_FONT aus Register 0x5F laden (Signatur-Nibble 0xD0)
+    ; Load font scale CFG_SH_FONT from register 0x5F (signature nibble 0xD0)
     mov al, 0x5F
     call cmos_read_byte
     mov ah, al
@@ -3400,7 +3400,7 @@ load_cmos_settings:
     ret
 
 .cmos_invalid:
-    ; Werkseinstellungen
+    ; Factory defaults
     mov byte [CFG_SPEED], 0
     mov byte [CFG_WALLS], 0
     mov byte [CFG_SOUND], 0
@@ -3470,7 +3470,7 @@ save_cmos_settings:
     mov ah, [CFG_ARENA]
     call cmos_write_byte
 
-    ; Top 3 Leaderboard schreiben (0x4A..0x58)
+    ; Write Top 3 Leaderboard (0x4A..0x58)
     mov cl, 0x4A
     mov si, TOP3_TABLE
 .save_top3_loop:
@@ -3482,7 +3482,7 @@ save_cmos_settings:
     cmp cl, 0x59
     jb .save_top3_loop
 
-    ; BiosShell Einstellungen schreiben (0x59..0x5D)
+    ; Write BiosShell settings (0x59..0x5D)
     mov al, 0x59
     mov ah, [CFG_SH_THEME]
     call cmos_write_byte
@@ -3499,7 +3499,7 @@ save_cmos_settings:
     mov ah, [CFG_BOOT_MODE]
     call cmos_write_byte
 
-    ; Checksumme berechnen & in 0x5E schreiben
+    ; Calculate checksum & write to 0x5E
     xor bl, bl
     mov cl, 0x40
 .save_chk:
@@ -3514,7 +3514,7 @@ save_cmos_settings:
     mov ah, bl
     call cmos_write_byte
 
-    ; Aktuelle Schriftgroesse CFG_SH_FONT mit Signatur 0xD0 in Register 0x5F sichern
+    ; Save current font scale CFG_SH_FONT with signature 0xD0 into register 0x5F
     mov al, [CFG_SH_FONT]
     and al, 3
     or al, 0xD0
@@ -3522,7 +3522,7 @@ save_cmos_settings:
     mov al, 0x5F
     call cmos_write_byte
 
-    ; Komplettes CybFS + CMOS NVRAM Spiegelbild (0x3000..0x6FFF) persistent auf ATA-Festplatte schreiben!
+    ; Write complete CybFS + CMOS NVRAM mirror (0x3000..0x6FFF) persistently to ATA disk!
     call ata_sync_nvram
     ret
 
@@ -3544,7 +3544,7 @@ apply_color_theme:
 
     mov dx, 0x3C8
     xor al, al
-    out dx, al                      ; Start bei Farb-Index 0
+    out dx, al                      ; Start at color index 0
     mov dx, 0x3C9
     mov cx, 48
 .dac_loop:
@@ -3559,7 +3559,7 @@ apply_color_theme:
     pop ax
     ret
 
-    ; --- ANIMIERTER POST RAM COUNTER ---
+    ; --- ANIMATED POST RAM COUNTER ---
 post_ram_counter:
     mov di, (14 * 80 + 2) * 2
     mov si, str_post_mem_lbl
@@ -4140,7 +4140,7 @@ sb16_play_pcm:
     cmp al, 7
     ja .skip_sb16
 
-    ; EBX = Sample Index (0..7) VOR jedem I/O-Port-Zugriff berechnen!
+    ; Calculate EBX = sample index (0..7) BEFORE any I/O port access!
     movzx ebx, al
     imul ebx, 6
     mov esi, [cs:sample_table + ebx]
@@ -4270,7 +4270,7 @@ str_box_title_main:
 str_box_title_help:
     db " Item Specific Help ", 0
 str_setup_footer:
-    db "[TAB] Switch Reiter   [W/S] Select   [A/D/ENTER] Action   [ESC] Boot", 0
+    db "[TAB] Switch Tab      [W/S] Select   [A/D/ENTER] Action   [ESC] Boot", 0
 
 str_opt_speed:
     db "Game Speed        : ", 0
@@ -4384,7 +4384,7 @@ str_help_9:
 str_game_title:
     db "CYBFORGE SNAKE", 0
 str_game_ver:
-    db "v2.2", 0
+    db "v2.8", 0
 str_hi_score_lbl:
     db "HIGH: ", 0
 str_score_lbl:
@@ -4494,7 +4494,7 @@ str_vic_footer:
 ; =============================================================================
 bios_shell_main:
     call drain_kbd
-    call fs_ensure_mounted          ; CybFS aus ROM Block 0 mounten falls noch nicht aktiv
+    call fs_ensure_mounted          ; Mount CybFS from ROM Block 0 if not yet mounted
     mov byte [SH_SHIFT], 0
     mov byte [SH_CTRL], 0
     mov byte [SH_CMD_LEN], 0
@@ -4505,7 +4505,7 @@ bios_shell_main:
     call sh_init_theme
     call sh_clear_screen
 
-    ; Startup Banner gemaess CFG_SH_BANNER anzeigen
+    ; Display startup banner according to CFG_SH_BANNER
     cmp byte [CFG_SH_BANNER], 2
     je .sh_prompt_init
     cmp byte [CFG_SH_BANNER], 1
@@ -4564,21 +4564,21 @@ bios_shell_main:
     test al, al
     jz .sh_idle
 
-    ; Sondertasten pruefen:
-    cmp al, 0x1C                    ; ENTER -> Befehl ausfuehren
+    ; Check special keys:
+    cmp al, 0x1C                    ; ENTER -> Execute command
     je .sh_on_enter
-    cmp al, 0x0E                    ; BACKSPACE -> Zeichen loeschen
+    cmp al, 0x0E                    ; BACKSPACE -> Delete character
     je .sh_on_backspace
-    cmp al, 0x01                    ; ESC -> Zeile leeren
+    cmp al, 0x01                    ; ESC -> Clear input line
     je .sh_on_esc
-    cmp al, 0x48                    ; UP ARROW -> Letzten Befehl aus History holen
+    cmp al, 0x48                    ; UP ARROW -> Recall last command from history
     je .sh_on_up
-    cmp al, 0x50                    ; DOWN ARROW -> Zeile leeren
+    cmp al, 0x50                    ; DOWN ARROW -> Clear input line
     je .sh_on_esc
     cmp al, 0x0F                    ; TAB -> Auto-Completion!
     je .sh_on_tab
 
-    ; Druckbares ASCII-Zeichen aus Scancode-Tabelle ermitteln
+    ; Look up printable ASCII character from scancode table
     cmp al, 0x58
     jae .sh_idle
     xor bh, bh
@@ -4591,7 +4591,7 @@ bios_shell_main:
     test dl, dl
     jz .sh_idle
 
-    ; Puffer-Limit (max 54 Zeichen innerhalb des Rahmens) pruefen
+    ; Check buffer limit (max 54 chars inside frame)
     mov bl, [SH_CMD_LEN]
     cmp bl, 54
     jae .sh_idle
@@ -4603,7 +4603,7 @@ bios_shell_main:
     jmp .sh_input_loop
 
 .sh_idle:
-    mov ecx, 200000                 ; ~1ms Polling fuer verzögerungsfreies Tippen
+    mov ecx, 200000                 ; ~1ms polling for lag-free typing
     call delay_cycles
     jmp .sh_input_loop
 
@@ -4650,7 +4650,7 @@ bios_shell_main:
     cmp byte [SH_CMD_LEN], 0
     je .sh_prompt_init
 
-    ; In History-Puffer sichern
+    ; Save into history buffer
     mov cl, [SH_CMD_LEN]
     mov [SH_HIST_LEN], cl
     xor ch, ch
@@ -4661,12 +4661,12 @@ bios_shell_main:
     inc bx
     loop .sh_save_hist
 
-    ; Eingabe normalisieren (Leading Spaces ueberspringen, Lowercase)
+    ; Normalize input (skip leading spaces, lowercase)
     call sh_normalize_cmd
     cmp byte [SH_CLEAN_BUF], 0
     je .sh_prompt_init
 
-    ; Befehl auswerten & ausfuehren
+    ; Evaluate & execute command
     call sh_execute_command
     cmp byte [SH_CUR_ROW], 2
     jbe .sh_prompt_init
@@ -4677,15 +4677,15 @@ bios_shell_main:
 ; CYBFS v1.0 DRIVER: MOUNT FROM ROM BLOCK 0, INODE LOOKUP & DECIMAL PRINTER
 ; -----------------------------------------------------------------------------
 fs_ensure_mounted:
-    cmp word [FS_MAGIC], 0x5346     ; 'FS' Signatur schon im RAM?
+    cmp word [FS_MAGIC], 0x5346     ; 'FS' signature already in RAM?
     je .fem_ok
     call fs_format_from_rom
 .fem_ok:
     ret
 
 fs_format_from_rom:
-    ; Kopiert das 4 KB CybFS Master-Image aus ROM Block 0 (0xFFFC0100) nach RAM 0x3000..0x3FFF
-    ; und nullt den restlichen Datenpool 0x4000..0x7FFF.
+    ; Copies the 4 KB CybFS master image from ROM Block 0 (0xFFFC0100) to RAM 0x3000..0x3FFF
+    ; and zeroes the remaining data pool 0x4000..0x7FFF.
     push eax
     push ecx
     push esi
@@ -4702,7 +4702,7 @@ fs_format_from_rom:
     dec cx
     jnz .ffr_copy
 
-    ; Restlichen CybFS-Datenpool (0x4000..0x6FDF = 12,256 Bytes) leeren
+    ; Clear remaining CybFS data pool (0x4000..0x6FDF = 12,256 bytes)
     mov di, 0x4000
     mov cx, 12256
     xor al, al
@@ -4720,12 +4720,12 @@ fs_format_from_rom:
     ret
 
 fs_find_in_dir:
-    ; Sucht in [SH_DIR_ID] nach Dateiname ab [SH_CLEAN_BUF + bx] (bis Space oder 0).
-    ; Output: Carry=1 wenn gefunden -> DI = Inode-Adresse (0x3020 + idx*32), CL = Inode-Index (0..31)
-    ;         Carry=0 wenn nicht gefunden.
+    ; Searches in [SH_DIR_ID] for filename starting at [SH_CLEAN_BUF + bx] (up to space or 0).
+    ; Output: Carry=1 if found -> DI = Inode address (0x3020 + idx*32), CL = Inode index (0..31)
+    ;         Carry=0 if not found.
     push ax
     push si
-    mov cl, 1                       ; Inode 1..31 durchsuchen
+    mov cl, 1                       ; Scan Inodes 1..31
     mov di, FS_INODE_BASE + 32
 .ffid_loop:
     mov al, [ds:di + 0]             ; flags
@@ -4735,14 +4735,14 @@ fs_find_in_dir:
     cmp al, [SH_DIR_ID]
     jne .ffid_next
 
-    ; Namen vergleichen: [ds:di + 8] vs [SH_CLEAN_BUF + bx]
+    ; Compare names: [ds:di + 8] vs [SH_CLEAN_BUF + bx]
     push bx
     lea si, [di + 8]
 .ffid_cmp:
     mov al, [SH_CLEAN_BUF + bx]
     cmp al, ' '
     jne .ffid_not_sp
-    xor al, al                      ; Space beendet Dateinamen-Token
+    xor al, al                      ; Space terminates filename token
 .ffid_not_sp:
     mov ah, [ds:si]
     cmp al, ah
@@ -4774,8 +4774,8 @@ fs_find_in_dir:
     ret
 
 fs_alloc_inode:
-    ; Sucht freien Inode-Slot (flags == 0) ab Index 1..31.
-    ; Output: Carry=1 -> DI = Inode-Adresse, CL = Inode-Index. Carry=0 wenn voll.
+    ; Finds a free Inode slot (flags == 0) from index 1..31.
+    ; Output: Carry=1 -> DI = Inode address, CL = Inode index. Carry=0 if full.
     mov cl, 1
     mov di, FS_INODE_BASE + 32
 .fai_loop:
@@ -4792,18 +4792,18 @@ fs_alloc_inode:
     ret
 
 sh_print_dec16:
-    ; Gibt AX als vorzeichenlose 16-Bit Dezimalzahl (0..65535) mit Farb-Attribut BL aus
+    ; Prints AX as an unsigned 16-bit decimal number (0..65535) with color attribute BL
     push ax
     push bx
     push cx
     push dx
     push si
-    mov bh, bl                      ; Farb-Attribut in BH sichern (AX bleibt unberuehrt!)
+    mov bh, bl                      ; Save color attribute in BH (AX remains untouched!)
     xor cx, cx
     mov si, 10
 .spd_div:
     xor dx, dx
-    div si                          ; AX = AX / 10, DX = Rest (0..9)
+    div si                          ; AX = AX / 10, DX = remainder (0..9)
     add dl, '0'
     push dx
     inc cx
@@ -4823,7 +4823,7 @@ sh_print_dec16:
     ret
 
 sh_print_dec16_pad6:
-    ; Gibt AX rechtsbuendig auf 6 Zeichen gepaddet mit Farb-Attribut BL aus
+    ; Prints AX right-aligned padded to 6 characters with color attribute BL
     push ax
     cmp ax, 10000
     jae .p6_go
@@ -4859,14 +4859,14 @@ sh_print_dec16_pad6:
     ret
 
 ; -----------------------------------------------------------------------------
-; SHELL KEYBOARD DRIVER (Mit Shift-Tracking fuer Grossbuchstaben & Symbole)
+; SHELL KEYBOARD DRIVER (With Shift tracking for uppercase & symbols)
 ; -----------------------------------------------------------------------------
 sh_read_key_event:
     in al, 0x64
     test al, 0x01
     jz .sh_no_key
     in al, 0x60
-    cmp al, 0xE0                    ; Extended Scancode Prefix ignorieren
+    cmp al, 0xE0                    ; Ignore extended scancode prefix
     je .sh_no_key
     cmp al, 0x2A                    ; Left Shift Make
     je .sh_shift_dn
@@ -4880,7 +4880,7 @@ sh_read_key_event:
     je .sh_ctrl_dn
     cmp al, 0x9D                    ; Ctrl Break
     je .sh_ctrl_up
-    test al, 0x80                   ; Andere Break-Codes ignorieren
+    test al, 0x80                   ; Ignore other break codes
     jnz .sh_no_key
     ret
 .sh_shift_dn:
@@ -4949,7 +4949,7 @@ sh_init_theme:
     ret
 
 sh_clear_screen:
-    ; Zeile 0: Top Status Bar
+    ; Row 0: Top Status Bar
     xor di, di
     mov cx, 80
     mov ah, [SH_BAR_ATTR]
@@ -4960,14 +4960,14 @@ sh_clear_screen:
     mov ah, [SH_BAR_ATTR]
     call print_string
 
-    ; Zeilen 1..23: Terminal Viewport Hintergrund
+    ; Rows 1..23: Terminal viewport background
     mov di, (1 * 80) * 2
     mov cx, 23 * 80
     mov ah, [SH_TEXT_ATTR]
     mov al, ' '
     rep stosw
 
-    ; Zeile 1: Oberer Doppelrahmen (Cols 0..79)
+    ; Row 1: Top double border (Cols 0..79)
     mov ah, 0x0B
     call sh_fix_attr
     mov di, (1 * 80) * 2
@@ -4985,7 +4985,7 @@ sh_clear_screen:
     call sh_fix_attr
     call print_string
 
-    ; Zeilen 2..22: Seitliche Rahmenlinien '│' bei Spalte 0 und 79
+    ; Rows 2..22: Side border lines '│' at Col 0 and 79
     mov ah, 0x0B
     call sh_fix_attr
     mov al, 0x06                    ; '│'
@@ -4997,7 +4997,7 @@ sh_clear_screen:
     add di, 80 * 2
     loop .sh_frame_sides
 
-    ; Zeile 23: Unterer Doppelrahmen (Cols 0..79)
+    ; Row 23: Bottom double border (Cols 0..79)
     mov ah, 0x0B
     call sh_fix_attr
     mov di, (23 * 80) * 2
@@ -5015,7 +5015,7 @@ sh_clear_screen:
     call sh_fix_attr
     call print_string
 
-    ; Zeile 24: Bottom Help Bar
+    ; Row 24: Bottom Help Bar
     mov di, (24 * 80) * 2
     mov cx, 80
     mov ah, [SH_BAR_ATTR]
@@ -5048,21 +5048,21 @@ sh_scroll_up:
 
     push ds
     mov ax, es
-    mov ds, ax                      ; DS = ES = 0xB800 fuer VRAM-Copy
-    mov si, (3 * 80) * 2            ; Quelle: Zeile 3
-    mov di, (2 * 80) * 2            ; Ziel:   Zeile 2
-    mov cx, 20 * 80                 ; 20 Zeilen (Zeilen 3..22 -> 2..21)
+    mov ds, ax                      ; DS = ES = 0xB800 for VRAM copy
+    mov si, (3 * 80) * 2            ; Source: Row 3
+    mov di, (2 * 80) * 2            ; Target: Row 2
+    mov cx, 20 * 80                 ; 20 rows (Rows 3..22 -> 2..21)
     rep movsw
-    pop ds                          ; DS = 0x0000 sofort wiederherstellen!
+    pop ds                          ; Restore DS = 0x0000 immediately!
 
-    ; Zeile 22 innerhalb des Rahmens (Spalten 1..78) leeren
+    ; Clear Row 22 inside frame (Cols 1..78)
     mov di, (22 * 80 + 1) * 2
     mov cx, 78
     mov ah, [SH_TEXT_ATTR]
     mov al, ' '
     rep stosw
 
-    ; Rahmenlinien '│' auf Zeile 22 erneuern
+    ; Redraw side border lines '│' on Row 22
     mov ah, 0x0B
     call sh_fix_attr
     mov al, 0x06
@@ -5087,7 +5087,7 @@ sh_fix_attr:
     ret
 
 sh_print_inline:
-    ; Druckt String [cs:si] mit Attribut AH ab (SH_CUR_COL, SH_CUR_ROW)
+    ; Prints string [cs:si] with attribute AH at (SH_CUR_COL, SH_CUR_ROW)
     push ax
     push bx
     push di
@@ -5112,7 +5112,7 @@ sh_print_inline:
     ret
 
 sh_print_ram_inline:
-    ; Druckt Null-terminierten String aus RAM [ds:si] mit Attribut AH
+    ; Prints null-terminated string from RAM [ds:si] with attribute AH
     push ax
     push bx
     push di
@@ -5192,7 +5192,7 @@ sh_print_hex16:
     ret
 
 ; -----------------------------------------------------------------------------
-; PROMPT & INPUT LINE RENDERING (Mit echtem Verzeichnisnamen aus CybFS Inode!)
+; PROMPT & INPUT LINE RENDERING (With real directory name from CybFS Inode!)
 ; -----------------------------------------------------------------------------
 sh_draw_input_line:
     call sh_draw_input_no_cursor
@@ -5218,14 +5218,14 @@ sh_draw_input_no_cursor:
     cmp byte [CFG_SH_PROMPT], 2
     je .sdp_root
 
-    ; UEFI Prompt: "FS0:" + echter Inode-Ordnername + "> "
+    ; UEFI Prompt: "FS0:" + real Inode directory name + "> "
     mov si, str_pr_fs0_pfx
     call sh_print_inline
     mov al, [SH_DIR_ID]
     test al, al
     jz .sdp_close_gt
 
-    ; Inode-Adresse des aktuellen Ordners berechnen: 0x3020 + SH_DIR_ID * 32
+    ; Calculate Inode address of current directory: 0x3020 + SH_DIR_ID * 32
     xor ah, ah
     shl ax, 5
     add ax, FS_INODE_BASE + 8
@@ -5239,7 +5239,7 @@ sh_draw_input_no_cursor:
     jb .sdp_up_ok
     cmp al, 'z'
     ja .sdp_up_ok
-    sub al, 32                      ; Ordnernamen im Prompt gross darstellen
+    sub al, 32                      ; Display directory name in uppercase in prompt
 .sdp_up_ok:
     call sh_print_char
     inc si
@@ -5398,14 +5398,14 @@ sh_autocomplete:
 ; SHELL COMMAND DISPATCHER (30 Built-In Live Commands)
 ; -----------------------------------------------------------------------------
 sh_execute_command:
-    ; Kommentarzeilen ('#' oder '@') in Skripten ignorieren
+    ; Ignore comment lines ('#' or '@') in scripts
     mov al, [SH_CLEAN_BUF]
     cmp al, '#'
     je .sh_noop_ret
     cmp al, '@'
     je .sh_noop_ret
 
-    ; 1. exit / quit / setup -> Zurueck ins BIOS Setup!
+    ; 1. exit / quit / setup -> Return to BIOS Setup!
     mov si, cmd_exit
     call sh_match_cmd
     jc .do_sh_exit
@@ -5453,7 +5453,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_memmap
 
-    ; 7. ls / dir (Echte CybFS Inode-Iteration!)
+    ; 7. ls / dir (Real CybFS Inode iteration!)
     mov si, cmd_ls
     call sh_match_cmd
     jc .do_sh_ls
@@ -5472,7 +5472,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_cd_audio
 
-    ; 9. mkdir / md (Echten Ordner in CybFS anlegen)
+    ; 9. mkdir / md (Create real directory in CybFS)
     mov si, cmd_mkdir
     call sh_match_cmd
     jc .do_sh_mkdir
@@ -5480,12 +5480,12 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_mkdir
 
-    ; 10. touch (Echte leere Datei in CybFS anlegen)
+    ; 10. touch (Create real empty file in CybFS)
     mov si, cmd_touch
     call sh_match_cmd
     jc .do_sh_touch
 
-    ; 11. write / nano / edit (Interaktiver GNU Nano Texteditor fuer CybFS!)
+    ; 11. write / nano / edit (Interactive GNU Nano text editor for CybFS!)
     mov si, cmd_write
     call sh_match_cmd
     jc .do_sh_write
@@ -5496,12 +5496,12 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_write
 
-    ; 12. append (Zeile an echte CybFS-Datei anhaengen)
+    ; 12. append (Append line to real CybFS file)
     mov si, cmd_append
     call sh_match_cmd
     jc .do_sh_append
 
-    ; 13. rm / del (Echte Datei / Ordner aus CybFS loeschen)
+    ; 13. rm / del (Delete real file / directory from CybFS)
     mov si, cmd_rm
     call sh_match_cmd
     jc .do_sh_rm
@@ -5509,7 +5509,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_rm
 
-    ; 14. cat / type (Echte Datei-Bytes aus CybFS / ROM lesen)
+    ; 14. cat / type (Read real file bytes from CybFS / ROM)
     mov si, cmd_cat
     call sh_match_cmd
     jc .do_sh_cat
@@ -5517,7 +5517,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_cat
 
-    ; 15. run / sh (Echtes Skript aus CybFS Zeile fuer Zeile ausfuehren)
+    ; 15. run / sh (Execute real script from CybFS line by line)
     mov si, cmd_run
     call sh_match_cmd
     jc .do_sh_run
@@ -5525,7 +5525,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_run
 
-    ; 16. factoryreset / wipe / resetbios / format (Kompletter Werkseinstellungs-Reset!)
+    ; 16. factoryreset / wipe / resetbios / format (Complete factory reset!)
     mov si, cmd_factoryreset
     call sh_match_cmd
     jc .do_sh_format
@@ -5550,7 +5550,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_sysinfo
 
-    ; 18. pci / devices / devtree / lspci (Echter Hardware-PCI-Bus-Scan!)
+    ; 18. pci / devices / devtree / lspci (Real hardware PCI bus scan!)
     mov si, cmd_pci
     call sh_match_cmd
     jc .do_sh_pci
@@ -5652,7 +5652,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_snake
 
-    ; 30. setfont (Schriftgroesse in der BIOS Shell live skalieren: 1..4)
+    ; 30. setfont (Scale font size live in BIOS Shell: 1..4)
     mov si, cmd_setfont
     call sh_match_cmd
     jc .do_sh_setfont
@@ -5668,7 +5668,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_reboot
 
-    ; 32. shutdown / poweroff / halt / off (Echter ACPI S5 Soft-Off Shutdown!)
+    ; 32. shutdown / poweroff / halt / off (Real ACPI S5 Soft-Off shutdown!)
     mov si, cmd_shutdown
     call sh_match_cmd
     jc .do_sh_shutdown
@@ -5682,7 +5682,7 @@ sh_execute_command:
     call sh_match_cmd
     jc .do_sh_shutdown
 
-    ; Unbekannter Befehl:
+    ; Unknown command:
     mov si, str_sh_err_pfx
     mov ah, 0x0C
     call sh_print_inline
@@ -5702,7 +5702,7 @@ sh_execute_command:
 .sh_noop_ret:
     ret
 
-; --- 1. EXIT -> ZURUECK INS BIOS SETUP ---
+; --- 1. EXIT -> RETURN TO BIOS SETUP ---
 .do_sh_exit:
     pop ax
     mov byte [SETUP_TAB], 1
@@ -5829,7 +5829,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 7. LS / DIR (100% ECHTER CYBFS INODE-SCANNER!) ---
+; --- 7. LS / DIR (100% REAL CYBFS INODE SCANNER!) ---
 .do_sh_ls:
     mov si, str_ls_hdr_pfx
     mov ah, [SH_HIGH_ATTR]
@@ -5852,9 +5852,9 @@ sh_execute_command:
     mov ah, 0x08
     call sh_print_line
 
-    xor bp, bp                      ; BP = Anzahl gefundener Dateien
-    xor edx, edx                    ; EDX (low 16) = Anzahl gefundener Ordner
-    mov di, FS_INODE_BASE + 32      ; Ab Inode 1..31 scannen
+    xor bp, bp                      ; BP = Number of files found
+    xor edx, edx                    ; EDX (low 16) = Number of directories found
+    mov di, FS_INODE_BASE + 32      ; Scan Inodes 1..31
     mov cl, 1
 .ls_inode_loop:
     mov al, [ds:di + 0]             ; flags
@@ -5867,7 +5867,7 @@ sh_execute_command:
     push cx
     push dx
 
-    ; Spalte 1: Typ-Badge (<DIR>, [RAM], [ROM], [HW ])
+    ; Column 1: Type badge (<DIR>, [RAM], [ROM], [HW ])
     mov al, [ds:di + 0]
     cmp al, 2
     je .ls_type_dir
@@ -5876,7 +5876,7 @@ sh_execute_command:
     cmp al, 4
     je .ls_type_hw
 
-    ; flags == 1: [RAM] (Beschreibbare Datei im CybFS RAM-Pool)
+    ; flags == 1: [RAM] (Writable file in CybFS RAM pool)
     mov si, str_tag_ram
     mov ah, 0x0E
     call sh_print_inline
@@ -5903,7 +5903,7 @@ sh_execute_command:
     call sh_print_inline
 
 .ls_print_size:
-    mov ax, [ds:di + 6]             ; Echte 16-Bit Dateigroesse aus Inode!
+    mov ax, [ds:di + 6]             ; Real 16-bit file size from Inode!
     push di
     mov bl, 0x0F
     call sh_print_dec16_pad6
@@ -5913,7 +5913,7 @@ sh_execute_command:
     call sh_print_inline
 
 .ls_print_addr:
-    ; Spalte 3: Echte Speicheradresse (data_seg_hi : data_off)
+    ; Column 3: Real memory address (data_seg_hi : data_off)
     mov dx, [ds:di + 4]             ; data_seg_hi
     mov ah, 0x08
     call sh_print_hex16
@@ -5928,12 +5928,12 @@ sh_execute_command:
     call sh_print_char
     call sh_print_char
 
-    ; Spalte 4: Echter Dateiname aus Inode (Offset +8)
+    ; Column 4: Real filename from Inode (Offset +8)
     lea si, [di + 8]
     mov ah, 0x0F
     cmp byte [ds:di + 0], 2
     jne .ls_name_out
-    mov ah, 0x0B                    ; Ordnernamen in hellem Cyan
+    mov ah, 0x0B                    ; Directory names in bright cyan
 .ls_name_out:
     call sh_print_ram_inline
     call sh_newline
@@ -5953,7 +5953,7 @@ sh_execute_command:
     cmp cl, 32
     jb .ls_inode_loop
 
-    ; Zusammenfassung mit echten Zaehlern und freiem CybFS-Speicherplatz:
+    ; Summary with real counters and free CybFS storage space:
     mov si, str_ls_sum1
     mov ah, [SH_HIGH_ATTR]
     call sh_print_inline
@@ -5970,7 +5970,7 @@ sh_execute_command:
     mov ah, [SH_HIGH_ATTR]
     call sh_print_inline
 
-    ; Freier R/W Speicher = 0x7000 - [FS_ALLOC_PTR]
+    ; Free R/W storage = 0x7000 - [FS_ALLOC_PTR]
     mov ax, FS_POOL_END
     sub ax, [FS_ALLOC_PTR]
     mov bl, 0x0A
@@ -5980,7 +5980,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 8. CD (Echter Inode-Verzeichniswechsel) ---
+; --- 8. CD (Real Inode directory change) ---
 .do_sh_cd:
     mov al, [SH_CLEAN_BUF + bx]
     cmp al, 0
@@ -5992,10 +5992,10 @@ sh_execute_command:
     cmp al, '.'
     je .do_sh_cd_up
 
-    ; Ordnername in aktuellem Verzeichnis suchen
+    ; Look up directory name in current directory
     call fs_find_in_dir
     jnc .cd_not_found
-    cmp byte [ds:di + 0], 2         ; Muss ein <DIR> (flags == 2) sein!
+    cmp byte [ds:di + 0], 2         ; Must be a <DIR> (flags == 2)!
     jne .cd_not_dir
     mov [SH_DIR_ID], cl
     ret
@@ -6008,7 +6008,7 @@ sh_execute_command:
     shl ax, 5
     add ax, FS_INODE_BASE
     mov di, ax
-    mov al, [ds:di + 1]             ; parent_id des aktuellen Ordners!
+    mov al, [ds:di + 1]             ; parent_id of current directory!
     mov [SH_DIR_ID], al
 .cd_done:
     ret
@@ -6031,7 +6031,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 9. MKDIR <DIRNAME> (Echten Ordner in CybFS anlegen) ---
+; --- 9. MKDIR <DIRNAME> (Create real directory in CybFS) ---
 .do_sh_mkdir:
     cmp byte [SH_CLEAN_BUF + bx], 0
     je .mkdir_usage
@@ -6049,7 +6049,7 @@ sh_execute_command:
     mov [ds:di + 4], ax             ; Inode ID
     mov word [ds:di + 6], 0         ; size = 0
 
-    ; Namen kopieren (bis Space oder 0, max 15 Zeichen)
+    ; Copy name (up to space or 0, max 15 chars)
     push di
     add di, 8
     mov ch, 15
@@ -6091,7 +6091,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 10. TOUCH <FILENAME> (Echte leere Datei anlegen) ---
+; --- 10. TOUCH <FILENAME> (Create real empty file) ---
 .do_sh_touch:
     cmp byte [SH_CLEAN_BUF + bx], 0
     je .touch_usage
@@ -6151,7 +6151,7 @@ sh_execute_command:
 
 ; --- 11. WRITE / NANO / EDIT <FILENAME> (FULL-SCREEN GNU NANO TEXT EDITOR!) ---
 .do_sh_write:
-    ; Falls kein Dateiname angegeben wurde -> Standarddatei "notes.txt" oeffnen!
+    ; If no filename was given -> Open default file "notes.txt"!
     cmp byte [SH_CLEAN_BUF + bx], 0
     jne .nano_has_arg
     mov byte [SH_CLEAN_BUF + bx + 0], 'n'
@@ -6166,20 +6166,20 @@ sh_execute_command:
     mov byte [SH_CLEAN_BUF + bx + 9], 0
 
 .nano_has_arg:
-    ; Pruefen ob Datei im aktuellen Verzeichnis existiert, sonst neuen Inode anlegen
+    ; Check if file exists in current directory, otherwise allocate new Inode
     call fs_find_in_dir
     jc .nano_found_existing
     call fs_alloc_inode
     jnc .fs_full_err
 
-    ; Neuen Inode initialisieren & Dateinamen kopieren
+    ; Initialize new Inode & copy filename
     mov byte [ds:di + 0], 1         ; flags = 1 ([RAM])
     mov al, [SH_DIR_ID]
     mov [ds:di + 1], al
     mov ax, [FS_ALLOC_PTR]
     mov [ds:di + 2], ax             ; data_off
     mov word [ds:di + 4], 0x0000
-    mov word [ds:di + 6], 0         ; file_size = 0 (noch leer)
+    mov word [ds:di + 6], 0         ; file_size = 0 (initially empty)
     push di
     add di, 8
     mov ch, 15
@@ -6202,7 +6202,7 @@ sh_execute_command:
 .nano_found_existing:
     cmp byte [ds:di + 0], 2
     je .cd_not_dir
-    ; BX ueber Dateinamen vorspulen
+    ; Advance BX past filename
 .nano_adv_fn:
     mov al, [SH_CLEAN_BUF + bx]
     test al, al
@@ -6228,7 +6228,7 @@ sh_execute_command:
     mov ax, [ds:di + 6]
     mov [NANO_LAST_SZ], ax
 
-    ; 18 x 72 Nano-Textpuffer (0x7000..0x750F = 1296 Bytes) mit Spaces (' ') fuellen
+    ; Fill 18 x 72 Nano text buffer (0x7000..0x750F = 1296 bytes) with spaces (' ')
     push di
     mov di, NANO_BUF
     mov cx, 18 * 72
@@ -6239,14 +6239,14 @@ sh_execute_command:
     loop .nano_clr_lp
     pop di
 
-    ; Falls die Datei bereits Inhalt im RAM hat (flags == 1 und file_size > 0), in den Puffer laden!
+    ; If the file already has content in RAM (flags == 1 and file_size > 0), load it into the buffer!
     cmp byte [ds:di + 0], 1
     jne .nano_check_inline_arg
     mov cx, [ds:di + 6]
     test cx, cx
     jz .nano_check_inline_arg
 
-    mov si, [ds:di + 2]             ; data_off im CybFS RAM-Pool
+    mov si, [ds:di + 2]             ; data_off in CybFS RAM pool
     xor dx, dx                      ; DH = Row (0..17), DL = Col (0..71)
 .nano_load_file_lp:
     mov al, [ds:si]
@@ -6286,11 +6286,11 @@ sh_execute_command:
     mov [NANO_COL], dl
 
 .nano_check_inline_arg:
-    ; Pruefen ob beim Aufruf 'write <datei> <text>' direkt Text mitgegeben wurde
+    ; Check if inline text was passed via 'write <file> <text>'
     cmp byte [SH_CLEAN_BUF + bx], 0
     je .nano_check_script_mode
 
-    ; Korrespondierende Stelle im Original-Puffer SH_CMD_BUF suchen (Gross/Kleinschreibung erhalten)
+    ; Find corresponding position in original buffer SH_CMD_BUF (preserve case)
     xor si, si
     mov cl, [SH_CMD_LEN]
     xor ch, ch
@@ -6336,7 +6336,7 @@ sh_execute_command:
     jmp .nano_orig_s3
 
 .nano_copy_inline:
-    ; Falls wir im Skript-Modus ('run <script.nsh>') sind, Zeile 0 frisch ueberschreiben
+    ; If running in script mode ('run <script.nsh>'), overwrite Row 0 cleanly
     mov di, NANO_BUF
     mov dx, 72
 .nano_clr_l0:
@@ -6365,7 +6365,7 @@ sh_execute_command:
     mov byte [NANO_MOD], 1
 
 .nano_check_script_mode:
-    ; Wenn aus einem .nsh Skript aufgerufen: direkt speichern ohne interaktive Oberflaeche!
+    ; If called from a .nsh script: save directly without interactive UI!
     cmp byte [SH_SCRIPT_ACT], 1
     jne .nano_enter_ui
     call .nano_save_buffer
@@ -6388,7 +6388,7 @@ sh_execute_command:
     ret
 
 ; =============================================================================
-; INTERAKTIVE GNU NANO VOLLBILD-OBERFLAECHE (CYBFORGE NANO v2.7)
+; INTERACTIVE GNU NANO FULL-SCREEN UI (CYBFORGE NANO v2.7)
 ; =============================================================================
 .nano_enter_ui:
     call .nano_render_screen
@@ -6398,21 +6398,21 @@ sh_execute_command:
     test al, al
     jz .nano_idle
 
-    ; Befinden wir uns im "Save modified buffer? [Y/N/C]" Dialog (NANO_MSG_ID == 2)?
+    ; Are we in the "Save modified buffer? [Y/N/C]" dialog (NANO_MSG_ID == 2)?
     cmp byte [NANO_MSG_ID], 2
     jne .nano_normal_keys
 
-    cmp al, 0x15                    ; 'Y' (US) -> Ja, speichern & beenden
+    cmp al, 0x15                    ; 'Y' (US) -> Yes, save & exit
     je .nano_save_and_exit
-    cmp al, 0x2C                    ; 'Z' (DE Tastatur 'Y') -> Ja, speichern & beenden
+    cmp al, 0x2C                    ; 'Z' (QWERTZ 'Y' key) -> Yes, save & exit
     je .nano_save_and_exit
-    cmp al, 0x1C                    ; ENTER -> Ja, speichern & beenden
+    cmp al, 0x1C                    ; ENTER -> Yes, save & exit
     je .nano_save_and_exit
-    cmp al, 0x31                    ; 'N' -> Nein, Aenderungen verwerfen & beenden
+    cmp al, 0x31                    ; 'N' -> No, discard changes & exit
     je .nano_exit_now
-    cmp al, 0x2E                    ; 'C' -> Abbrechen, weiter editieren
+    cmp al, 0x2E                    ; 'C' -> Cancel, continue editing
     je .nano_cancel_prompt
-    cmp al, 0x01                    ; ESC -> Im Dialog: ebenfalls speichern & beenden oder abbrechen
+    cmp al, 0x01                    ; ESC -> In dialog: cancel and return to editor
     je .nano_cancel_prompt
     jmp .nano_event_loop
 
@@ -6423,11 +6423,11 @@ sh_execute_command:
     jmp .nano_event_loop
 
 .nano_normal_keys:
-    ; 1. Pruefen ob CTRL gedrueckt ist (^O, ^X, ^S, ^K, ^G)
+    ; 1. Check if CTRL is pressed (^O, ^X, ^S, ^K, ^G)
     cmp byte [SH_CTRL], 1
     jne .nano_check_fn_keys
 
-    cmp al, 0x18                    ; Ctrl+O (^O) -> WriteOut (Speichern)
+    cmp al, 0x18                    ; Ctrl+O (^O) -> WriteOut (Save)
     je .nano_do_writeout
     cmp al, 0x2D                    ; Ctrl+X (^X) -> Exit Nano
     je .nano_try_exit
@@ -6440,7 +6440,7 @@ sh_execute_command:
     jmp .nano_event_loop
 
 .nano_check_fn_keys:
-    ; 2. Funktionstasten & Navigationstasten pruefen
+    ; 2. Check function keys & navigation keys
     cmp al, 0x3B                    ; F1 -> Get Help (^G)
     je .nano_show_help
     cmp al, 0x3C                    ; F2 -> WriteOut / Save (^O)
@@ -6464,16 +6464,16 @@ sh_execute_command:
     je .nano_cur_home
     cmp al, 0x4F                    ; END
     je .nano_cur_end
-    cmp al, 0x1C                    ; ENTER -> Neue Zeile
+    cmp al, 0x1C                    ; ENTER -> New line
     je .nano_on_enter
     cmp al, 0x0E                    ; BACKSPACE
     je .nano_on_bs
-    cmp al, 0x53                    ; DELETE (Entf)
+    cmp al, 0x53                    ; DELETE
     je .nano_on_del
-    cmp al, 0x0F                    ; TAB -> 4 Spaces einfuegen
+    cmp al, 0x0F                    ; TAB -> Insert 4 spaces
     je .nano_on_tab
 
-    ; 3. Normales druckbares Zeichen ermitteln und an Cursorposition einfuegen
+    ; 3. Decode printable character and insert at cursor position
     cmp al, 0x58
     jae .nano_idle
     xor bh, bh
@@ -6496,7 +6496,7 @@ sh_execute_command:
     call delay_cycles
     jmp .nano_event_loop
 
-; --- Nano Cursor- & Edit-Aktionen ---
+; --- Nano Cursor & Edit Actions ---
 .nano_cur_up:
     cmp byte [NANO_ROW], 0
     je .nano_event_loop
@@ -6601,19 +6601,19 @@ sh_execute_command:
     jmp .nano_event_loop
 
 .nano_cut_line:
-    ; Aktuelle Zeile (NANO_ROW) leeren und nachfolgende Zeilen um 1 nach oben schieben
+    ; Clear current line (NANO_ROW) and shift subsequent lines up by 1
     mov al, [NANO_ROW]
     mov ah, 72
     mul ah
     add ax, NANO_BUF
-    mov di, ax                      ; DI = Start der aktuellen Zeile
+    mov di, ax                      ; DI = Start of current line
 
     mov al, 17
     sub al, [NANO_ROW]
     jz .nano_cut_clear_last
     mov ah, 72
     mul ah
-    mov cx, ax                      ; CX = Anzahl Bytes unterhalb von NANO_ROW
+    mov cx, ax                      ; CX = Number of bytes below NANO_ROW
     lea si, [di + 72]
 .nano_cut_shift:
     mov al, [ds:si]
@@ -6653,7 +6653,7 @@ sh_execute_command:
 .nano_try_exit:
     cmp byte [NANO_MOD], 0
     je .nano_exit_now
-    ; Ungespeicherte Aenderungen -> GNU Nano "Save modified buffer?" Prompt anzeigen!
+    ; Unsaved changes -> Show GNU Nano "Save modified buffer?" prompt!
     mov byte [NANO_MSG_ID], 2
     call sound_click
     call .nano_render_screen
@@ -6664,7 +6664,7 @@ sh_execute_command:
     call sound_toggle
 
 .nano_exit_now:
-    ; Zurueck in die gerahmte BIOS Shell Oberflaeche schalten
+    ; Return to the framed BIOS Shell interface
     call sh_clear_screen
     mov di, [NANO_INODE]
     cmp byte [NANO_SAVED_FLAG], 1
@@ -6699,16 +6699,16 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- Hilfsroutinen fuer Nano Buffer Manipulation & Speichern ---
+; --- Helper Routines for Nano Buffer Manipulation & Saving ---
 .nano_insert_char:
-    ; Fuegt Zeichen DL an (NANO_ROW, NANO_COL) ein
+    ; Inserts character DL at (NANO_ROW, NANO_COL)
     mov al, [NANO_ROW]
     mov ah, 72
     mul ah
     add ax, NANO_BUF
-    mov si, ax                      ; SI = Zeilenstart
+    mov si, ax                      ; SI = Line start
 
-    ; Zeichen ab Spalte 70 runter bis NANO_COL um 1 nach rechts schieben
+    ; Shift characters from Col 70 down to NANO_COL right by 1
     mov cl, 71
 .nic_shift:
     cmp cl, [NANO_COL]
@@ -6739,7 +6739,7 @@ sh_execute_command:
     ret
 
 .nano_delete_at_cursor:
-    ; Loescht Zeichen an (NANO_ROW, NANO_COL) und zieht Zeilenrest nach links
+    ; Deletes character at (NANO_ROW, NANO_COL) and pulls remainder of line left
     mov al, [NANO_ROW]
     mov ah, 72
     mul ah
@@ -6762,7 +6762,7 @@ sh_execute_command:
     ret
 
 .nano_find_line_end:
-    ; Ermittelt die Spalte (CL = 0..71) hinter dem letzten Nicht-Space-Zeichen in NANO_ROW
+    ; Finds the column (CL = 0..71) after the last non-space character in NANO_ROW
     mov al, [NANO_ROW]
     mov ah, 72
     mul ah
@@ -6786,10 +6786,10 @@ sh_execute_command:
     ret
 
 .nano_save_buffer:
-    ; Serialisiert den 18x72 Nano-Puffer als echte Zeilen (mit 0x0A) in den CybFS RAM-Pool!
+    ; Serializes the 18x72 Nano buffer as real lines (with 0x0A) into the CybFS RAM pool!
     mov di, [NANO_INODE]
 
-    ; 1. Letzte nicht-leere Zeile (0..17) suchen
+    ; 1. Find last non-empty line (0..17)
     mov ch, 18
 .nsb_find_last_row:
     test ch, ch
@@ -6820,8 +6820,8 @@ sh_execute_command:
     ret
 
 .nsb_found_last_row:
-    ; CH = Anzahl zu speichernder Zeilen (1..18)
-    ; Pruefen ob wir den bisherigen Platz am Ende von FS_ALLOC_PTR in-place wiederverwenden koennen
+    ; CH = Number of lines to save (1..18)
+    ; Check if we can reuse the existing space at the end of FS_ALLOC_PTR in-place
     mov bp, [FS_ALLOC_PTR]
     mov ax, [ds:di + 2]
     add ax, [ds:di + 6]
@@ -6829,19 +6829,19 @@ sh_execute_command:
     jne .nsb_check_pool
     cmp word [ds:di + 2], FS_DATA_BASE
     jb .nsb_check_pool
-    mov bp, [ds:di + 2]             ; In-place am Pool-Ende wiederverwenden!
+    mov bp, [ds:di + 2]             ; Reuse in-place at the end of the pool!
 
 .nsb_check_pool:
     cmp bp, FS_POOL_END - 256
     jb .nsb_start_write
-    mov bp, FS_DATA_BASE + 1024     ; Sicherheits-Fallback falls Pool voll
+    mov bp, FS_DATA_BASE + 1024     ; Safety fallback if pool is full
 
 .nsb_start_write:
     mov byte [ds:di + 0], 1         ; flags = 1 ([RAM])
     mov [ds:di + 2], bp             ; data_off
     mov word [ds:di + 4], 0x0000
-    xor dx, dx                      ; DX = geschriebene Gesamt-Bytes
-    xor bh, bh                      ; BH = aktueller Zeilenindex (0..CH-1)
+    xor dx, dx                      ; DX = Total bytes written
+    xor bh, bh                      ; BH = Current line index (0..CH-1)
 
 .nsb_row_loop:
     mov al, bh
@@ -6850,7 +6850,7 @@ sh_execute_command:
     add ax, NANO_BUF
     mov si, ax
 
-    ; Zeilenlaenge ohne Trailing Spaces ermitteln (CL = 72..0)
+    ; Determine line length without trailing spaces (CL = 72..0)
     mov cl, 72
 .nsb_trim_lp:
     test cl, cl
@@ -6876,14 +6876,14 @@ sh_execute_command:
     jnz .nsb_copy_row_bytes
 
 .nsb_write_nl:
-    mov byte [ds:bp], 0x0A          ; Echter Zeilenumbruch LF (0x0A)
+    mov byte [ds:bp], 0x0A          ; Real line feed LF (0x0A)
     inc bp
     inc dx
     inc bh
     cmp bh, ch
     jb .nsb_row_loop
 
-    mov [ds:di + 6], dx             ; Echte Dateigroesse im Inode aktualisieren!
+    mov [ds:di + 6], dx             ; Update real file size in Inode!
     cmp bp, [FS_ALLOC_PTR]
     jbe .nsb_keep_alloc
     mov [FS_ALLOC_PTR], bp
@@ -6896,8 +6896,8 @@ sh_execute_command:
     ret
 
 .nano_render_screen:
-    ; Zeichnet das komplette GNU Nano Vollbild-Interface (Zeilen 0..24)
-    ; Zeile 0: Klassischer invertierter GNU Nano Header Balken (0x70 = Schwarz auf Hellgrau)
+    ; Draws the complete GNU Nano full-screen interface (Rows 0..24)
+    ; Row 0: Classic inverted GNU Nano header bar (0x70 = Black on Light Gray)
     xor di, di
     mov cx, 80
     mov ax, 0x7020
@@ -6913,14 +6913,14 @@ sh_execute_command:
     mov ah, 0x70
     call print_string
 
-    ; Echten Dateinamen aus Inode in die Titelzeile schreiben
+    ; Write real filename from Inode into the title bar
     mov bx, [NANO_INODE]
     lea si, [bx + 8]
 .nrs_fn_lp:
     mov al, [ds:si]
     test al, al
     jz .nrs_fn_done
-    mov ah, 0x71                    ; Dunkelblau auf Hellgrau
+    mov ah, 0x71                    ; Dark Blue on Light Gray
     stosw
     inc si
     jmp .nrs_fn_lp
@@ -6932,11 +6932,11 @@ sh_execute_command:
     cmp byte [NANO_MOD], 0
     je .nrs_mod_pr
     mov si, str_nano_mod_yes
-    mov ah, 0x74                    ; Dunkelrot auf Hellgrau fuer [Modified]
+    mov ah, 0x74                    ; Dark Red on Light Gray for [Modified]
 .nrs_mod_pr:
     call print_string
 
-    ; Zeile 1: Oberer Editor-Rahmen
+    ; Row 1: Top editor border
     mov di, (1 * 80) * 2
     mov ah, 0x0B
     mov al, 0x01                    ; '┌'
@@ -6951,24 +6951,24 @@ sh_execute_command:
     mov ah, 0x0E
     call print_string
 
-    ; Zeilen 2..19: Die 18 Textzeilen aus NANO_BUF (mit Zeilennummern 01..18 & Cursor!)
-    xor dl, dl                      ; DL = Zeilenindex 0..17
+    ; Rows 2..19: The 18 text lines from NANO_BUF (with line numbers 01..18 & cursor!)
+    xor dl, dl                      ; DL = Line index 0..17
 .nrs_row_lp:
     mov bl, dl
-    add bl, 2                       ; Bildschirmzeile = DL + 2
+    add bl, 2                       ; Screen row = DL + 2
     xor al, al
     call xy_to_di
 
-    ; Linker Rahmen '│'
+    ; Left border '│'
     mov ah, 0x0B
     mov al, 0x06
     stosw
 
-    ; Zeilennummer (01..18)
+    ; Line number (01..18)
     mov ah, 0x08
     cmp dl, [NANO_ROW]
     jne .nrs_ln_col_ok
-    mov ah, 0x0E                    ; Aktive Zeile gelb hervorheben!
+    mov ah, 0x0E                    ; Highlight active line in yellow!
 .nrs_ln_col_ok:
     mov al, ' '
     stosw
@@ -6995,28 +6995,28 @@ sh_execute_command:
     mov al, ' '
     stosw
     mov ah, 0x03
-    mov al, 0x06                    ; Trennstrich '│' nach Zeilennummer
+    mov al, 0x06                    ; Separator '│' after line number
     stosw
     mov ah, 0x07
     mov al, ' '
     stosw
 
-    ; 72 Textspalten aus NANO_BUF + dl * 72 ausgeben
+    ; Output 72 text columns from NANO_BUF + dl * 72
     mov al, dl
     mov ah, 72
     mul ah
     add ax, NANO_BUF
     mov si, ax
-    xor dh, dh                      ; DH = Spaltenindex 0..71
+    xor dh, dh                      ; DH = Column index 0..71
 .nrs_col_lp:
     mov al, [ds:si]
     inc si
-    mov ah, 0x0F                    ; Heller weisser Text auf Schwarz
+    mov ah, 0x0F                    ; Bright white text on black
     cmp dl, [NANO_ROW]
     jne .nrs_put_ch
     cmp dh, [NANO_COL]
     jne .nrs_put_ch
-    mov ah, 0x70                    ; Invertierter Block-Cursor an (NANO_ROW, NANO_COL)!
+    mov ah, 0x70                    ; Inverted block cursor at (NANO_ROW, NANO_COL)!
 .nrs_put_ch:
     stosw
     inc dh
@@ -7027,14 +7027,14 @@ sh_execute_command:
     mov al, ' '
     stosw
     mov ah, 0x0B
-    mov al, 0x06                    ; Rechter Rahmen '│'
+    mov al, 0x06                    ; Right border '│'
     stosw
 
     inc dl
     cmp dl, 18
     jb .nrs_row_lp
 
-    ; Zeile 20: Unterer Editor-Rahmen
+    ; Row 20: Bottom editor border
     mov di, (20 * 80) * 2
     mov ah, 0x0B
     mov al, 0x03                    ; '└'
@@ -7045,7 +7045,7 @@ sh_execute_command:
     mov al, 0x04                    ; '┘'
     stosw
 
-    ; Zeile 21: Nano Status- & Dialog-Zeile
+    ; Row 21: Nano status & dialog bar
     mov di, (21 * 80) * 2
     mov cx, 80
     mov ax, 0x0720
@@ -7090,7 +7090,7 @@ sh_execute_command:
 .nrs_msg_ask:
     mov di, (21 * 80) * 2
     mov cx, 80
-    mov ax, 0x4F20                  ; Weiss auf Rot fuer wichtigen Speichern-Dialog!
+    mov ax, 0x4F20                  ; White on Red for save confirmation prompt!
     rep stosw
     mov di, (21 * 80 + 2) * 2
     mov si, str_nano_msg_ask
@@ -7112,7 +7112,7 @@ sh_execute_command:
     call print_string
 
 .nrs_row22:
-    ; Zeile 22: Live Cursor-Position (Line/Col) & Freier CybFS Speicherpool
+    ; Row 22: Live cursor position (Line/Col) & free CybFS storage pool
     mov di, (22 * 80) * 2
     mov cx, 80
     mov ax, 0x0820
@@ -7152,7 +7152,7 @@ sh_execute_command:
     mov ah, 0x0A
     call sh_print_inline
 
-    ; Zeilen 23 & 24: Authentische 2-zeilige GNU Nano Shortcut-Leiste ('^' Badges in 0x70!)
+    ; Rows 23 & 24: Authentic 2-row GNU Nano shortcut bar ('^' badges in 0x70!)
     mov di, (23 * 80) * 2
     mov si, str_nano_bot1
     call .nano_print_shortcut_bar
@@ -7162,16 +7162,16 @@ sh_execute_command:
     ret
 
 .nano_print_shortcut_bar:
-    ; Gibt einen 80-Zeichen String aus, wobei Zeichen innerhalb von [...] oder ^X invertiert (0x70) dargestellt werden
+    ; Outputs an 80-char string, rendering characters inside {...} inverted (0x70)
     mov ah, 0x07
 .npsb_lp:
     mov al, [cs:si]
     inc si
     test al, al
     jz .npsb_done
-    cmp al, '{'                     ; '{' startet invertiertes Shortcut-Badge (0x70)
+    cmp al, '{'                     ; '{' starts inverted shortcut badge (0x70)
     je .npsb_inv_on
-    cmp al, '}'                     ; '}' beendet invertiertes Shortcut-Badge (0x07)
+    cmp al, '}'                     ; '}' ends inverted shortcut badge (0x07)
     je .npsb_inv_off
     stosw
     jmp .npsb_lp
@@ -7190,7 +7190,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 12. APPEND <FILENAME> <TEXT> (Zeile an echte Datei anhaengen!) ---
+; --- 12. APPEND <FILENAME> <TEXT> (Append line to real file!) ---
 .do_sh_append:
     cmp byte [SH_CLEAN_BUF + bx], 0
     je .append_usage
@@ -7199,20 +7199,20 @@ sh_execute_command:
     cmp byte [ds:di + 0], 1
     jne .append_not_ram
 
-    ; Pruefen ob die Datei direkt am Ende des aktuellen Pools liegt, sonst umkopieren
+    ; Check if the file is at the end of the current pool, otherwise relocate
     mov bp, [FS_ALLOC_PTR]
     cmp bp, FS_POOL_END - 128
     jae .fs_full_err
 
-    mov ax, [ds:di + 2]             ; altes data_off
-    add ax, [ds:di + 6]             ; + alte file_size
+    mov ax, [ds:di + 2]             ; old data_off
+    add ax, [ds:di + 6]             ; + old file_size
     cmp ax, bp
     je .app_in_place
 
-    ; Alte Daten nach [FS_ALLOC_PTR] kopieren, damit Datei zusammenhaengend bleibt
+    ; Copy existing data to [FS_ALLOC_PTR] so the file remains contiguous
     push si
     mov si, [ds:di + 2]
-    mov [ds:di + 2], bp             ; neues data_off
+    mov [ds:di + 2], bp             ; new data_off
     mov cx, [ds:di + 6]
     test cx, cx
     jz .app_cp_done
@@ -7226,7 +7226,7 @@ sh_execute_command:
     pop si
 
 .app_in_place:
-    ; Text nach dem 2. Wort in SH_CMD_BUF finden
+    ; Find text after the 2nd word in SH_CMD_BUF
     xor si, si
     mov cl, [SH_CMD_LEN]
     xor ch, ch
@@ -7272,7 +7272,7 @@ sh_execute_command:
     jmp .ap_s3
 
 .ap_do_append:
-    mov dx, [ds:di + 6]             ; Bisherige Dateigroesse
+    mov dx, [ds:di + 6]             ; Previous file size
 .ap_cp_loop:
     test cx, cx
     jz .ap_finish
@@ -7319,14 +7319,14 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 13. RM / DEL <NAME> (Echten Inode aus CybFS loeschen!) ---
+; --- 13. RM / DEL <NAME> (Delete real Inode from CybFS!) ---
 .do_sh_rm:
     cmp byte [SH_CLEAN_BUF + bx], 0
     je .rm_usage
     call fs_find_in_dir
     jnc .cat_not_found
 
-    ; Inode als geloescht markieren (flags = 0) & persistent auf Festplatte synchronisieren
+    ; Mark Inode as deleted (flags = 0) & sync persistently to disk
     mov byte [ds:di + 0], 0
     call ata_sync_nvram
 
@@ -7347,7 +7347,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 14. CAT / TYPE <FILENAME> (100% ECHTE DATEI-BYTES AUS CYBFS / ROM LESEN!) ---
+; --- 14. CAT / TYPE <FILENAME> (READ 100% REAL FILE BYTES FROM CYBFS / ROM!) ---
 .do_sh_cat:
     cmp byte [SH_CLEAN_BUF + bx], 0
     je .cat_no_arg
@@ -7359,10 +7359,10 @@ sh_execute_command:
     je .cd_not_dir
     cmp al, 4                       ; [HW] cmos.bin -> Live CMOS Hardware Dump!
     je .do_sh_cmos
-    cmp al, 3                       ; [ROM] Datei -> Live 32-Bit ROM Header Dump (+ Audio Play)!
+    cmp al, 3                       ; [ROM] file -> Live 32-bit ROM header dump (+ audio playback)!
     je .cat_rom_file
 
-    ; flags == 1: Echte RAM-Datei Byte fuer Byte aus [ds:data_off] lesen und ausgeben!
+    ; flags == 1: Read and print real RAM file byte-by-byte from [ds:data_off]!
     mov si, str_cat_hdr1
     mov ah, 0x0B
     call sh_print_inline
@@ -7381,14 +7381,14 @@ sh_execute_command:
     mov ah, 0x0B
     call sh_print_line
 
-    mov cx, [ds:di + 6]             ; Echte Dateigroesse in Bytes
+    mov cx, [ds:di + 6]             ; Real file size in bytes
     test cx, cx
     jz .cat_empty_done
-    mov si, [ds:di + 2]             ; Echte RAM-Startadresse (data_off)
+    mov si, [ds:di + 2]             ; Real RAM start address (data_off)
 .cat_ram_loop:
     mov al, [ds:si]
     inc si
-    cmp al, 0x0A                    ; Zeilenumbruch?
+    cmp al, 0x0A                    ; Line break?
     je .cat_nl
     cmp al, 0x0D
     je .cat_next_b
@@ -7406,7 +7406,7 @@ sh_execute_command:
     ret
 
 .cat_rom_file:
-    ; Prüfen ob es eine WAV-Datei ist (meta 0..7) -> automatisch ueber SB16 abspielen!
+    ; Check if it is a WAV file (meta 0..7) -> automatically play via SB16!
     mov al, [ds:di + 24]
     cmp al, 7
     ja .cat_rom_dump
@@ -7414,14 +7414,14 @@ sh_execute_command:
     call sb16_play_pcm
     pop di
 .cat_rom_dump:
-    ; Echte 32-Bit Lineare ROM-Adresse aus Inode holen: (data_seg_hi << 16) | data_off
+    ; Get real 32-bit linear ROM address from Inode: (data_seg_hi << 16) | data_off
     movzx eax, word [ds:di + 4]
     shl eax, 16
     movzx edx, word [ds:di + 2]
     or eax, edx
     mov esi, eax
 
-    ; 4 Zeilen a 16 echte Bytes direkt via 32-Bit Unreal Mode [fs:esi] dumpen!
+    ; Dump 4 rows of 16 real bytes directly via 32-bit Unreal Mode [fs:esi]!
     mov cx, 4
 .crf_row:
     push cx
@@ -7491,14 +7491,14 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 15. RUN / SH <SCRIPT.NSH> (Echte Skriptdatei aus CybFS ausfuehren!) ---
+; --- 15. RUN / SH <SCRIPT.NSH> (Execute real script file from CybFS!) ---
 .do_sh_run:
     cmp byte [SH_CLEAN_BUF + bx], 0
     je .run_usage
     call fs_find_in_dir
     jnc .cat_not_found
 
-    ; Falls es snake.efi ist -> Snake starten
+    ; If it is snake.efi -> Launch Snake
     cmp byte [ds:di + 24], 0xFD
     je .do_sh_snake
     cmp byte [ds:di + 0], 1
@@ -7506,7 +7506,7 @@ sh_execute_command:
 
     mov ax, [ds:di + 2]             ; data_off
     mov [SH_SCRIPT_PTR], ax
-    add ax, [ds:di + 6]             ; + file_size = Ende
+    add ax, [ds:di + 6]             ; + file_size = End
     mov [SH_SCRIPT_END], ax
     mov byte [SH_SCRIPT_ACT], 1
 
@@ -7515,7 +7515,7 @@ sh_execute_command:
     cmp si, [SH_SCRIPT_END]
     jae .run_done
 
-    ; Eine Zeile aus der Datei in SH_CMD_BUF kopieren
+    ; Copy one line from the file into SH_CMD_BUF
     xor bx, bx
 .run_cp_ch:
     cmp si, [SH_SCRIPT_END]
@@ -7542,7 +7542,7 @@ sh_execute_command:
     cmp byte [SH_CLEAN_BUF], 0
     je .run_line_loop
 
-    ; Schutz gegen Endlos-Rekursion ('run' im Skript ignorieren)
+    ; Guard against infinite recursion (ignore 'run' inside script)
     mov si, cmd_run
     call sh_match_cmd
     jc .run_line_loop
@@ -7564,12 +7564,12 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 16. FACTORYRESET / WIPE / FORMAT (Kompletter Werkseinstellungs-Reset fuer Disk, CybFS & BIOS!) ---
+; --- 16. FACTORYRESET / WIPE / FORMAT (Complete Factory Reset for Disk, CybFS & BIOS!) ---
 .do_sh_format:
-    ; 1. CybFS im RAM (0x3000..0x6FDF) komplett loeschen & frisch aus ROM Block 0 (0xFFFC0100) laden
+    ; 1. Completely wipe CybFS in RAM (0x3000..0x6FDF) & reload fresh from ROM Block 0 (0xFFFC0100)
     call fs_format_from_rom
 
-    ; 2. Alle BIOS Setup Einstellungen, Shell-Theme, Font-Skalierung & Top-3 Highscores auf Werkseinstellungen setzen!
+    ; 2. Reset all BIOS Setup settings, shell theme, font scaling & Top-3 highscores to factory defaults!
     mov byte [CFG_SPEED], 0
     mov byte [CFG_WALLS], 0
     mov byte [CFG_SOUND], 0
@@ -7585,9 +7585,9 @@ sh_execute_command:
     mov byte [CFG_SH_BANNER], 0
     mov byte [CFG_SH_BEEP],   0
     mov byte [CFG_BOOT_MODE], 0
-    mov byte [CFG_SH_FONT],   2     ; Standard 8x16 IBM VGA Schriftgroesse
+    mov byte [CFG_SH_FONT],   2     ; Standard 8x16 IBM VGA font size
 
-    ; Default Top 3 Leaderboard wiederherstellen: CYB (30), JON (20), ACE (10)
+    ; Restore default Top 3 Leaderboard: CYB (30), JON (20), ACE (10)
     mov byte [TOP3_TABLE + 0], 'C'
     mov byte [TOP3_TABLE + 1], 'Y'
     mov byte [TOP3_TABLE + 2], 'B'
@@ -7604,10 +7604,10 @@ sh_execute_command:
     mov word [TOP3_TABLE + 13], 10
     mov word [HIGH_SCORE], 30
 
-    ; 3. Werkseinstellungen in Hardware-CMOS (0x70/0x71) UND auf die ATA-Festplatte (LBA 0..31) ueberschreiben!
+    ; 3. Overwrite factory defaults into hardware CMOS (0x70/0x71) AND onto the ATA disk (LBA 0..31)!
     call save_cmos_settings
 
-    ; 4. VGA Farbpalette, Schriftgroesse (8x16) und Shell-Oberflaeche sofort live zuruecksetzen
+    ; 4. Immediately reset VGA color palette, font size (8x16) and shell UI live
     call apply_color_theme
     call vga_apply_font_scale
     call sh_init_theme
@@ -7645,7 +7645,7 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 18. PCI / DEVTREE (100% ECHTER HARDWARE PCI BUS SCANNER UEBER 0xCF8/0xCFC!) ---
+; --- 18. PCI / DEVTREE (100% REAL HARDWARE PCI BUS SCANNER VIA 0xCF8/0xCFC!) ---
 .do_sh_pci:
     mov si, str_pci_hdr
     mov ah, [SH_HIGH_ATTR]
@@ -7653,7 +7653,7 @@ sh_execute_command:
 
     xor cx, cx                      ; CL = Device (0..7), CH = Function (0..3)
 .pci_scan_loop:
-    ; 32-Bit PCI Config Address bauen: 0x80000000 | (dev << 11) | (fn << 8)
+    ; Build 32-bit PCI Config Address: 0x80000000 | (dev << 11) | (fn << 8)
     mov eax, 0x80000000
     movzx edx, cl
     shl edx, 11
@@ -7667,7 +7667,7 @@ sh_execute_command:
     mov dx, 0x0CFC
     in eax, dx                      ; EAX = [DeviceID (31:16) | VendorID (15:0)]
 
-    cmp ax, 0xFFFF                  ; 0xFFFF = Kein PCI-Geraet an diesem Slot
+    cmp ax, 0xFFFF                  ; 0xFFFF = No PCI device in this slot
     je .pci_next_slot
     test ax, ax
     jz .pci_next_slot
@@ -7675,7 +7675,7 @@ sh_execute_command:
     push eax
     push cx
 
-    ; Bus 00, Dev CL, Fn CH ausgeben
+    ; Output Bus 00, Dev CL, Fn CH
     mov si, str_pci_b0
     mov ah, [SH_TEXT_ATTR]
     call sh_print_inline
@@ -7690,7 +7690,7 @@ sh_execute_command:
     call sh_print_char
     call sh_print_char
 
-    ; Echte VendorID : DeviceID aus Hardware-Register EAX ausgeben!
+    ; Output real VendorID : DeviceID from hardware register EAX!
     pop cx
     pop eax
     push eax
@@ -7709,7 +7709,7 @@ sh_execute_command:
     call sh_print_char
     call sh_print_char
 
-    ; PCI Class/Subclass aus Register 0x08 live auslesen!
+    ; Read PCI Class/Subclass live from register 0x08!
     mov eax, 0x80000008
     movzx edx, cl
     shl edx, 11
@@ -7722,7 +7722,7 @@ sh_execute_command:
     mov dx, 0x0CFC
     in eax, dx
     shr eax, 16                     ; AX = [BaseClass (15:8) | SubClass (7:0)]
-    mov edx, eax                    ; DX = Class/Subclass sichern BEVOR AH fuer Textfarbe genutzt wird!
+    mov edx, eax                    ; Save DX = Class/Subclass BEFORE AH is used for text color!
 
     mov si, str_pci_cl_pfx
     mov ah, [SH_TEXT_ATTR]
@@ -7730,7 +7730,7 @@ sh_execute_command:
     mov ah, 0x0A
     call sh_print_hex16
 
-    ; Bekannte Chipset-Namen anhand der echten Class/Device zuordnen
+    ; Map known chipset names based on real Class/Device
     mov si, str_pci_desc_brg
     cmp dh, 0x06                    ; Class 06h = Bridge
     je .pci_pr_desc
@@ -7760,7 +7760,7 @@ sh_execute_command:
     cmp cl, 8
     jb .pci_scan_loop
 
-    ; Zusaetzlich aktive ISA-Hardware-Statuszeile (SB16 DSP + CMOS RTC)
+    ; Additional active ISA hardware status line (SB16 DSP + CMOS RTC)
     mov si, str_pci_isa
     mov ah, 0x0B
     call sh_print_line
@@ -8098,7 +8098,7 @@ sh_execute_command:
     call sh_newline
     ret
 
-; --- 25. MEMTEST (Echter 64KB RAM Schreib-/Lese-Vergleichstest mit Fehlerzaehler!) ---
+; --- 25. MEMTEST (Real 64KB RAM Write/Read Verification Test with Error Counter!) ---
 .do_sh_memtest:
     mov si, str_mt_1
     mov ah, [SH_HIGH_ATTR]
@@ -8107,9 +8107,9 @@ sh_execute_command:
     push es
     mov ax, 0x2000
     mov es, ax
-    xor dx, dx                      ; DX = Echter Fehlerzaehler!
+    xor dx, dx                      ; DX = Real error counter!
 
-    ; Pass 1: 0x55AA schreiben und Wort fuer Wort zuruecklesen & pruefen!
+    ; Pass 1: Write 0x55AA and read back & verify word-by-word!
     xor di, di
     mov cx, 32768
     mov ax, 0x55AA
@@ -8125,7 +8125,7 @@ sh_execute_command:
     add di, 2
     loop .mt_verify1
 
-    ; Pass 2: 0xAA55 schreiben und Wort fuer Wort zuruecklesen & pruefen!
+    ; Pass 2: Write 0xAA55 and read back & verify word-by-word!
     xor di, di
     mov cx, 32768
     mov ax, 0xAA55
@@ -8147,7 +8147,7 @@ sh_execute_command:
     mov si, str_mt_2
     mov ah, 0x0A
     call sh_print_inline
-    pop ax                          ; AX = Echte gemessene Fehleranzahl!
+    pop ax                          ; AX = Real measured error count!
     mov bl, 0x0E
     call sh_print_dec16
     mov si, str_mt_3
@@ -8298,32 +8298,32 @@ sh_execute_command:
     call sh_print_line
     ret
 
-; --- 31. REBOOT / RESET (Echter x86 Hardware-Reset via 8042 Port 0x64 & PCI 0xCF9!) ---
+; --- 31. REBOOT / RESET (Real x86 Hardware Reset via 8042 Port 0x64 & PCI 0xCF9!) ---
 .do_sh_reboot:
     mov si, str_reboot_msg
     mov ah, 0x0E
     call sh_print_line
-    call ata_sync_nvram             ; Vor dem Hardware-Reset alle Daten auf Festplatte flushen!
+    call ata_sync_nvram             ; Flush all data to disk before hardware reset!
     call sound_toggle
-    mov ecx, 100000000              ; ~0.35s kurze Anzeige vor dem Hardware-Reset
+    mov ecx, 100000000              ; ~0.35s brief display before hardware reset
     call delay_cycles
 
     cli
-    ; 1. Echter 8042 Keyboard Controller CPU Reset-Puls (Port 0x64 <- 0xFE)
+    ; 1. Real 8042 Keyboard Controller CPU reset pulse (Port 0x64 <- 0xFE)
     mov al, 0xFE
     out 0x64, al
     jmp $+2
 
-    ; 2. Echter Intel PIIX/ICH PCI Reset Control Register Hard-Reset (Port 0xCF9 <- 0x06)
+    ; 2. Real Intel PIIX/ICH PCI Reset Control Register hard reset (Port 0xCF9 <- 0x06)
     mov dx, 0x0CF9
     mov al, 0x06
     out dx, al
     jmp $+2
 
-    ; 3. Fallback: Sprung zum x86 Hardware Reset-Vektor F000:FFF0
+    ; 3. Fallback: Jump to x86 hardware reset vector F000:FFF0
     jmp 0xF000:0xFFF0
 
-; --- 32. SHUTDOWN / POWEROFF / HALT (Echter Hardware ACPI S5 Soft-Off + Disk Sync!) ---
+; --- 32. SHUTDOWN / POWEROFF / HALT (Real Hardware ACPI S5 Soft-Off + Disk Sync!) ---
 .do_sh_shutdown:
     mov si, str_shut_msg1
     mov ah, 0x0E
@@ -8332,16 +8332,16 @@ sh_execute_command:
     mov ah, 0x0C
     call sh_print_line
 
-    ; Komplettes CybFS & CMOS-Mirror persistent auf Festplatte (cybfs_nvram.img) sichern!
+    ; Save complete CybFS & CMOS mirror persistently to disk (cybfs_nvram.img)!
     call ata_sync_nvram
 
-    ; Akustisches Shutdown-Signal abspielen
+    ; Play acoustic shutdown signal
     mov al, 6                       ; Sample 6 (Descending Chime)
     call sb16_play_pcm
-    mov ecx, 250000000              ; ~0.8s warten damit Meldung & Sound wahrnehmbar sind
+    mov ecx, 250000000              ; Wait ~0.8s so message & sound are perceptible
     call delay_cycles
 
-    ; 1. Bare-Metal Intel PIIX4 PM (PCI 00:01.3) ACPI I/O Base auf 0x0600 mappen & aktivieren!
+    ; 1. Map & enable bare-metal Intel PIIX4 PM (PCI 00:01.3) ACPI I/O Base at 0x0600!
     mov dx, 0x0CF8
     mov eax, 0x80000B40             ; Bus 0, Dev 1, Fn 3, Reg 0x40 (PMBA)
     out dx, eax
@@ -8364,12 +8364,12 @@ sh_execute_command:
     or ax, 0x0001                   ; Bit 0 = I/O Space Enable
     out dx, ax
 
-    ; Jetzt echten ACPI S5 Soft-Off (SLP_TYP5 | SLP_EN = 0x2000) an PM1a_CNT (0x0604) senden!
+    ; Now send real ACPI S5 Soft-Off (SLP_TYP5 | SLP_EN = 0x2000) to PM1a_CNT (0x0604)!
     mov dx, 0x0604
     mov ax, 0x2000
     out dx, ax
 
-    ; 2. Bochs / Aelteres QEMU ACPI Power-Off (Port 0xB004 -> 0x2000)
+    ; 2. Bochs / Older QEMU ACPI Power-Off (Port 0xB004 -> 0x2000)
     mov dx, 0xB004
     mov ax, 0x2000
     out dx, ax
@@ -8379,7 +8379,7 @@ sh_execute_command:
     mov ax, 0x3400
     out dx, ax
 
-    ; 4. Fallback falls Hardware kein ACPI S5 unterstuetzt: Sichere ATX Halt-Konsole
+    ; 4. Fallback if hardware does not support ACPI S5: Safe ATX halt console
     mov si, str_shut_halted
     mov ah, 0x0A
     call sh_print_line
@@ -8400,7 +8400,7 @@ vga_apply_font_scale:
     push di
     push es
 
-    ; 1. VGA Sequencer & Graphics Controller fuer Plane 2 (0xA0000) freischalten
+    ; 1. Unlock VGA Sequencer & Graphics Controller for Plane 2 (0xA0000)
     mov dx, 0x3C4
     mov ax, 0x0100
     out dx, ax
@@ -8422,7 +8422,7 @@ vga_apply_font_scale:
     mov ax, 0xA000
     mov es, ax
 
-    ; 2. Alle ASCII-Glyphen aus font_table entsprechend [CFG_SH_FONT] (0..3) skalieren!
+    ; 2. Scale all ASCII glyphs from font_table according to [CFG_SH_FONT] (0..3)!
     mov si, font_table
 .vafs_char_lp:
     mov al, [cs:si]
@@ -8443,7 +8443,7 @@ vga_apply_font_scale:
     cmp bl, 3
     je .vafs_scale_huge             ; 3: Huge 8x16 XL Tall (14px Cap Height)
 
-    ; 2: Large 8x16 Standard IBM VGA (10px Cap Height, 1:1 Kopie)
+    ; 2: Large 8x16 Standard IBM VGA (10px Cap Height, 1:1 copy)
     mov cx, 16
 .vafs_std_lp:
     mov al, [cs:si]
@@ -8453,7 +8453,7 @@ vga_apply_font_scale:
     jmp .vafs_char_lp
 
 .vafs_scale_small:
-    ; Small (1): 4 Leerzeilen oben + 8 komprimierte Scanlines (2:1 OR) + 4 Leerzeilen unten
+    ; Small (1): 4 blank top lines + 8 compressed scanlines (2:1 OR) + 4 blank bottom lines
     xor al, al
     stosb
     stosb
@@ -8474,7 +8474,7 @@ vga_apply_font_scale:
     jmp .vafs_char_lp
 
 .vafs_scale_medium:
-    ; Medium (2): 12 aktive Scanlines zentriert (8px Cap Height)
+    ; Medium (2): 12 active scanlines centered (8px Cap Height)
     xor al, al
     stosb
     stosb
@@ -8509,7 +8509,7 @@ vga_apply_font_scale:
     jmp .vafs_char_lp
 
 .vafs_scale_huge:
-    ; Huge (4): Vertikal auf 14 aktive Scanlines gestreckt
+    ; Huge (4): Vertically stretched to 14 active scanlines
     xor al, al
     stosb
     mov bx, si
@@ -8548,7 +8548,7 @@ vga_apply_font_scale:
     jmp .vafs_char_lp
 
 .vafs_restore_custom:
-    ; 3. Rahmen-Glyphen (0x01..0x0A) immer in voller 16-Scanline Qualitaet halten
+    ; 3. Always keep border glyphs (0x01..0x0A) at full 16-scanline quality
     mov si, custom_glyphs_table
 .vafs_cg_lp:
     mov al, [cs:si]
@@ -8567,7 +8567,7 @@ vga_apply_font_scale:
     jmp .vafs_cg_lp
 .vafs_cg_done:
 
-    ; 4. Zurueck in den Odd/Even Text-Mode bei 0xB8000 schalten
+    ; 4. Switch back to Odd/Even Text Mode at 0xB8000
     mov dx, 0x3C4
     mov ax, 0x0100
     out dx, ax
@@ -8583,7 +8583,7 @@ vga_apply_font_scale:
     out dx, ax
     mov ax, 0x1005
     out dx, ax
-    mov ax, 0x0E06                  ; GR06 = 0xB8000 Textfenster
+    mov ax, 0x0E06                  ; GR06 = 0xB8000 text window
     out dx, ax
 
     pop es
@@ -8597,11 +8597,11 @@ vga_apply_font_scale:
 
 ; =============================================================================
 ; BARE-METAL ATA/IDE PIO PERSISTENCE DRIVER (Ports 0x1F0..0x1F7, LBA 0..31)
-; Speichert & laedt das komplette 16 KB CybFS + CMOS Mirror (0x3000..0x6FFF)
-; dauerhaft in/aus der Datei 'cybfs_nvram.img'!
+; Saves & loads the complete 16 KB CybFS + CMOS Mirror (0x3000..0x6FFF)
+; persistently to/from the 'cybfs_nvram.img' disk image!
 ; =============================================================================
 ata_init_piix3_ide:
-    ; Bare-Metal Intel PIIX3 IDE Controller (PCI 00:01.1) fuer Ports 0x1F0..0x1F7 freischalten!
+    ; Unlock bare-metal Intel PIIX3 IDE Controller (PCI 00:01.1) for Ports 0x1F0..0x1F7!
     push eax
     push dx
     mov dx, 0x0CF8
@@ -8631,19 +8631,19 @@ ata_load_nvram:
 
     call ata_init_piix3_ide
 
-    ; Pruefen ob Primary Master IDE Drive angeschlossen ist
+    ; Check if Primary Master IDE drive is attached
     mov dx, 0x1F6
     mov al, 0xE0                    ; Master Drive + LBA28 Mode
     out dx, al
     mov dx, 0x1F7
     in al, dx
-    cmp al, 0xFF                    ; 0xFF = Floating Bus (kein Drive)
+    cmp al, 0xFF                    ; 0xFF = Floating bus (no drive)
     je .aln_done
-    test al, al                     ; 0x00 = Kein Drive
+    test al, al                     ; 0x00 = No drive
     jz .aln_done
 
-    mov di, 0x3000                  ; Ziel im RAM: 0x0000:0x3000..0x6FFF (16 KB)
-    xor bl, bl                      ; BL = Sektor-LBA 0..31
+    mov di, 0x3000                  ; Target in RAM: 0x0000:0x3000..0x6FFF (16 KB)
+    xor bl, bl                      ; BL = Sector LBA 0..31
 .aln_sec_loop:
     call ata_wait_not_bsy
     jc .aln_done
@@ -8653,7 +8653,7 @@ ata_load_nvram:
     out dx, al
 
     mov dx, 0x1F2
-    mov al, 1                       ; 1 Sektor pro PIO-Transfer (512 Bytes)
+    mov al, 1                       ; 1 sector per PIO transfer (512 bytes)
     out dx, al
 
     mov dx, 0x1F3
@@ -8675,7 +8675,7 @@ ata_load_nvram:
     jc .aln_done
 
     mov dx, 0x1F0
-    mov cx, 256                     ; 256 Worte = 512 Bytes lesen
+    mov cx, 256                     ; Read 256 words = 512 bytes
 .aln_rd_words:
     in ax, dx
     mov [ds:di], ax
@@ -8702,7 +8702,7 @@ ata_sync_nvram:
     push si
     push di
 
-    ; 1. Aktuelle Hardware-CMOS-Register (0x40..0x5F) nach 0x6FE0..0x6FFF spiegeln
+    ; 1. Mirror current hardware CMOS registers (0x40..0x5F) to 0x6FE0..0x6FFF
     mov cl, 0x40
     mov di, NVRAM_MIRROR
 .asn_mirror_lp:
@@ -8714,7 +8714,7 @@ ata_sync_nvram:
     cmp cl, 0x60
     jb .asn_mirror_lp
 
-    ; 2. PIIX3 IDE Controller aktivieren & pruefen ob Primary Master IDE Drive angeschlossen ist
+    ; 2. Enable PIIX3 IDE Controller & check if Primary Master IDE drive is attached
     call ata_init_piix3_ide
     mov dx, 0x1F6
     mov al, 0xE0
@@ -8726,9 +8726,9 @@ ata_sync_nvram:
     test al, al
     jz .asn_done
 
-    ; 3. 32 Sektoren (16,384 Bytes: 0x3000..0x6FFF) auf LBA 0..31 schreiben
+    ; 3. Write 32 sectors (16,384 bytes: 0x3000..0x6FFF) to LBA 0..31
     mov si, 0x3000
-    xor bl, bl                      ; BL = Sektor-LBA 0..31
+    xor bl, bl                      ; BL = Sector LBA 0..31
 .asn_sec_loop:
     call ata_wait_not_bsy
     jc .asn_done
@@ -8760,7 +8760,7 @@ ata_sync_nvram:
     jc .asn_done
 
     mov dx, 0x1F0
-    mov cx, 256                     ; 256 Worte = 512 Bytes schreiben
+    mov cx, 256                     ; Write 256 words = 512 bytes
 .asn_wr_words:
     mov ax, [ds:si]
     out dx, ax
@@ -8771,7 +8771,7 @@ ata_sync_nvram:
     cmp bl, 32
     jb .asn_sec_loop
 
-    ; 4. ATA Cache Flush (0xE7) senden, damit Host-Datei cybfs_nvram.img sofort synchronisiert wird
+    ; 4. Send ATA Cache Flush (0xE7) so host file cybfs_nvram.img is synced immediately
     call ata_wait_not_bsy
     mov dx, 0x1F7
     mov al, 0xE7                    ; ATA Command 0xE7: FLUSH CACHE
@@ -8953,7 +8953,7 @@ str_tab1_label:
 str_box_title_shell:
     db " Cybforge EFI / BIOS Shell & Boot Configuration ", 0
 str_opt_tab:
-    db "Setup Reiter (Tab): ", 0
+    db "Setup Menu Tab    : ", 0
 str_val_tab_main:
     db "< 1: Main & Game >", 0
 str_val_tab_shell:
@@ -9097,7 +9097,7 @@ str_sh_hlp12:
     db "snake / boot Launch SNAKE.EFI game     exit / quit  Return to BIOS Setup!", 0
 
 str_sh_ver1:
-    db "Cybforge UEFI Interactive Shell v2.6 [Live CybFS v1.0 & Hardware Edition]", 0
+    db "Cybforge UEFI Interactive Shell v2.8 [Persistent ATA Disk & CybFS Edition]", 0
 str_sh_ver2:
     db "  File System     : CybFS v1.0 (32 Inodes @ 0x3020, 19.4 KB R/W Pool @ 0x3420)", 0
 str_sh_ver3:
@@ -9225,7 +9225,7 @@ str_neo3:
 str_neo4:
     db " |  RETRO BIOS  |   FileSys  : Persistent ATA Disk + CybFS v1.0", 0
 str_neo5:
-    db "  \    v2.6    /    Memory   : 640 KB Base RAM / 256 KB ROM", 0
+    db "  \    v2.8    /    Memory   : 640 KB Base RAM / 256 KB ROM", 0
 str_neo6:
     db "   '=========='     Hardware : Live PCI 0xCF8 / SB16 DMA Ch5", 0
 str_neo7:
@@ -9396,26 +9396,26 @@ vga_gc_table:
 vga_ac_ext_table:
     db 0x04, 0x00, 0x0F, 0x00, 0x00
 
-; 16-Farben VGA DAC Palette (Je 3 Bytes: R, G, B im Bereich 0..63)
+; 16-Color VGA DAC Palette (3 bytes each: R, G, B in range 0..63)
 vga_dac_table:
-    db  0,  0,  0           ; 0x00: Schwarz (Screen-Hintergrund)
-    db  0, 12, 48           ; 0x01: Kräftiges BIOS-Blau (Box-Hintergrund)
-    db  0, 42,  0           ; 0x02: Dunkelgrün
+    db  0,  0,  0           ; 0x00: Black (Screen background)
+    db  0, 12, 48           ; 0x01: Deep BIOS Blue (Box background)
+    db  0, 42,  0           ; 0x02: Dark Green
     db  0, 42, 42           ; 0x03: Cyan
-    db 42,  0,  0           ; 0x04: Rot
+    db 42,  0,  0           ; 0x04: Red
     db 42,  0, 42           ; 0x05: Magenta
-    db 42, 21,  0           ; 0x06: Braun
-    db 42, 42, 42           ; 0x07: Hellgrau
-    db 21, 21, 21           ; 0x08: Dunkelgrau
-    db 21, 21, 63           ; 0x09: Hellblau
-    db 10, 63, 20           ; 0x0A: Matrix-Hellgrün ("Hello World from BIOS!")
-    db 21, 63, 63           ; 0x0B: Hellcyan
-    db 63, 21, 21           ; 0x0C: Hellrot
+    db 42, 21,  0           ; 0x06: Brown
+    db 42, 42, 42           ; 0x07: Light Gray
+    db 21, 21, 21           ; 0x08: Dark Gray
+    db 21, 21, 63           ; 0x09: Light Blue
+    db 10, 63, 20           ; 0x0A: Matrix Bright Green ("Hello World from BIOS!")
+    db 21, 63, 63           ; 0x0B: Light Cyan
+    db 63, 21, 21           ; 0x0C: Light Red
     db 63, 21, 63           ; 0x0D: Pink
-    db 63, 63, 21           ; 0x0E: Gelb
-    db 63, 63, 63           ; 0x0F: Reines Weiß ("die box geht!" + Rahmen)
+    db 63, 63, 21           ; 0x0E: Yellow
+    db 63, 63, 63           ; 0x0F: Pure White (Box text + border)
 
-; Kompakte 8x8 Bitmap-Font-Tabelle (wird beim Upload auf 8x16 verdoppelt)
+; Compact 8x8 bitmap font table (doubled to 8x16 during upload)
 
 align 8
 sample_table:
@@ -9622,9 +9622,9 @@ logo_font_table:
 
 times 0xFFF0 - ($ - $$) db 0xFF
 
-reset_vector:               ; Physisch 0xFFFFFFF0 / Alias 0xF000:0xFFF0
+reset_vector:               ; Physical 0xFFFFFFF0 / Alias 0xF000:0xFFF0
     jmp 0xF000:bios_start   ; 5 Bytes (0xFFF0..0xFFF4)
     db "10/23/26"           ; 8 Bytes (0xFFF5..0xFFFC)
     db 0x00                 ; 1 Byte  (0xFFFD)
     db 0xFC                 ; 1 Byte  (0xFFFE): System Model ID (PC/AT)
-    db 0x00                 ; 1 Byte  (0xFFFF) -> Exakt 65536 Bytes
+    db 0x00                 ; 1 Byte  (0xFFFF) -> Exactly 65536 Bytes

@@ -1,46 +1,46 @@
 ; =============================================================================
-; Bare-Metal x86 BIOS ROM (64 KB) für QEMU – BLUE BOX EDITION
-; Startet bei 0xFFFFFFF0 (0xF000:0xFFF0), initialisiert CAR/MTRR, i440FX PAM/DRB,
-; PCI-VGA, Real-Mode-IVT, PIC, A20, 16550 UART, VGA-Font & zeichnet die Box!
+; Bare-Metal x86 BIOS ROM (64 KB) for QEMU - BLUE BOX EDITION
+; Starts at 0xFFFFFFF0 (0xF000:0xFFF0), initializes CAR/MTRR, i440FX PAM/DRB,
+; PCI-VGA, Real-Mode IVT, PIC, A20, 16550 UART, VGA Font & draws the box!
 ; =============================================================================
 
 [BITS 16]
-[ORG 0x0000]                ; Gemappt auf Physisch 0xF0000 - 0xFFFFF (CS = 0xF000)
+[ORG 0x0000]                ; Mapped to Physical 0xF0000 - 0xFFFFF (CS = 0xF000)
 
-; --- RAM-Adressen fuer DVD-Logo Animation (im freien RAM bei 0x0000) ---
-CLEAN_BUF equ 0x1000        ; 4000 Bytes Puffer (0x1000..0x1FA0) fuer Original-Screen
-POS_X1    equ 0x2000        ; Position & Richtung Ausrufezeichen 1
+; --- RAM Addresses for DVD-Logo Animation (in free RAM at 0x0000) ---
+CLEAN_BUF equ 0x1000        ; 4000-byte buffer (0x1000..0x1FA0) for original screen
+POS_X1    equ 0x2000        ; Position & direction of exclamation mark 1
 POS_Y1    equ 0x2002
 DIR_X1    equ 0x2004
 DIR_Y1    equ 0x2006
-POS_X2    equ 0x2008        ; Position & Richtung Ausrufezeichen 2
+POS_X2    equ 0x2008        ; Position & direction of exclamation mark 2
 POS_Y2    equ 0x200A
 DIR_X2    equ 0x200C
 DIR_Y2    equ 0x200E
-SOUND_TIMER equ 0x2010     ; Timer fuer PC-Speaker Tonlaenge
+SOUND_TIMER equ 0x2010     ; Timer for PC Speaker tone duration
 
 bios_start:
-    cli                     ; 1. Maskierbare Interrupts sofort sperren
-    cld                     ; Direction-Flag löschen
+    cli                     ; 1. Disable maskable interrupts immediately
+    cld                     ; Clear direction flag
 
-    ; --- NMI (Non-Maskable Interrupt) über CMOS-Port 0x70 deaktivieren ---
+    ; --- Disable NMI (Non-Maskable Interrupt) via CMOS Port 0x70 ---
     mov al, 0x80
     out 0x70, al
     in  al, 0x71
 
     ; =========================================================================
-    ; SCHRITT 1: CPU Cache & Cache-as-RAM (CAR) sauber initialisieren
+    ; STEP 1: Initialize CPU Cache & Cache-as-RAM (CAR) cleanly
     ; =========================================================================
     mov eax, 1
     cpuid
-    bt  edx, 12             ; MTRR Feature-Bit prüfen
+    bt  edx, 12             ; Check MTRR feature bit
     jnc .skip_mtrr
 
     mov eax, cr0
     or  eax, 0x40000000     ; CR0.CD = 1 (Cache Disable)
     and eax, 0xDFFFFFFF     ; CR0.NW = 0
     mov cr0, eax
-    invd                    ; Internen Cache invalidieren
+    invd                    ; Invalidate internal cache
 
     mov ecx, 0x0250         ; IA32_MTRR_FIX64K_00000
     mov eax, 0x06060606     ; Write-Back (0x06)
@@ -54,22 +54,22 @@ bios_start:
 
 .skip_mtrr:
     mov eax, cr0
-    and eax, 0x9FFFFFFF     ; L1/L2 Cache aktivieren (CD=0, NW=0)
+    and eax, 0x9FFFFFFF     ; Enable L1/L2 cache (CD=0, NW=0)
     mov cr0, eax
 
     ; =========================================================================
-    ; SCHRITT 2: Northbridge (i440FX 00:00.0) & PCI-VGA (00:02.0) aufwecken
+    ; STEP 2: Wake up Northbridge (i440FX 00:00.0) & PCI-VGA (00:02.0)
     ; =========================================================================
     mov eax, 0x80000058     ; Bus 0, Dev 0, Func 0, Offset 0x58 (DRAMC & PAM0..2)
     mov dx, 0x0CF8
     out dx, eax
     mov dx, 0x0CFC
     in  eax, dx
-    and eax, 0x000000FF     ; PAM0 (AH) = 0x00 (BIOS-ROM bleibt lesbar)
+    and eax, 0x000000FF     ; PAM0 (AH) = 0x00 (BIOS ROM remains readable)
     or  eax, 0x33330000     ; PAM1 & PAM2 = R/W RAM
     out dx, eax
 
-    mov eax, 0x8000005C     ; PAM3..PAM6 (Offset 0x5C..0x5F) auf R/W RAM
+    mov eax, 0x8000005C     ; Set PAM3..PAM6 (Offset 0x5C..0x5F) to R/W RAM
     mov dx, 0x0CF8
     out dx, eax
     mov dx, 0x0CFC
@@ -87,17 +87,17 @@ bios_start:
     out dx, eax
 .ram_ready:
 
-    ; PCI-VGA-Grafikkarte (Bus 0, Dev 2, Func 0, Offset 0x04 Command Reg)
+    ; PCI-VGA graphics card (Bus 0, Dev 2, Func 0, Offset 0x04 Command Reg)
     mov eax, 0x80001004
     mov dx, 0x0CF8
     out dx, eax
     mov dx, 0x0CFC
     in  eax, dx
-    or  eax, 0x00000007     ; I/O + Memory + Bus Master aktivieren
+    or  eax, 0x00000007     ; Enable I/O + Memory + Bus Master
     out dx, eax
 
     ; =========================================================================
-    ; SCHRITT 3: Stack, Segmente & Real-Mode-IVT (Interrupt Vector Table)
+    ; STEP 3: Stack, Segments & Real-Mode IVT (Interrupt Vector Table)
     ; =========================================================================
     xor ax, ax
     mov ss, ax
@@ -117,7 +117,7 @@ bios_start:
     loop .ivt_init_loop
 
     ; =========================================================================
-    ; SCHRITT 4: Fast-A20, 8259 PIC & 16550 UART (inkl. FIFO)
+    ; STEP 4: Fast-A20, 8259 PIC & 16550 UART (incl. FIFO)
     ; =========================================================================
     in  al, 0x92
     or  al, 0x02
@@ -138,11 +138,11 @@ bios_start:
     mov al, 0x01
     out 0x21, al
     out 0xA1, al
-    mov al, 0xFF            ; Alle IRQs maskieren
+    mov al, 0xFF            ; Mask all IRQs
     out 0x21, al
     out 0xA1, al
 
-    ; COM1 (0x3F8) auf 115200 Baud, 8N1
+    ; COM1 (0x3F8) at 115200 Baud, 8N1
     xor al, al
     mov dx, 0x3F9
     out dx, al
@@ -166,14 +166,14 @@ bios_start:
     out dx, al
 
     ; =========================================================================
-    ; SCHRITT 5: Kompletter Bare-Metal VGA-Bringup (80x25 Text Mode)
+    ; STEP 5: Complete Bare-Metal VGA Bringup (80x25 Text Mode)
     ; =========================================================================
     mov dx, 0x3C2
     mov al, 0x67
     out dx, al
 
     mov dx, 0x3C4
-    mov ax, 0x0100          ; Sequencer Sync-Reset
+    mov ax, 0x0100          ; Sequencer Sync Reset
     out dx, ax
 
     mov si, vga_seq_table
@@ -190,11 +190,11 @@ bios_start:
     loop .seq_loop
 
     mov dx, 0x3C4
-    mov ax, 0x0300          ; Sync-Reset beenden
+    mov ax, 0x0300          ; End Sync Reset
     out dx, ax
 
     mov dx, 0x3D4
-    mov ax, 0x0011          ; CRTC Schreibschutz aufheben
+    mov ax, 0x0011          ; Unlock CRTC write protection
     out dx, ax
 
     mov si, vga_crtc_table
@@ -224,13 +224,13 @@ bios_start:
     loop .gc_loop
 
     mov dx, 0x3DA
-    in  al, dx              ; Flip-Flop zurücksetzen
+    in  al, dx              ; Reset flip-flop
     mov dx, 0x3C0
     xor ah, ah
 .ac_pal_loop:
     mov al, ah
     out dx, al
-    out dx, al              ; Identitäts-Mapping 0..15 -> DAC 0..15
+    out dx, al              ; Identity mapping 0..15 -> DAC 0..15
     inc ah
     cmp ah, 16
     jb  .ac_pal_loop
@@ -248,30 +248,30 @@ bios_start:
     mov dx, 0x3DA
     in  al, dx
     mov dx, 0x3C0
-    mov al, 0x20            ; Video-Output freigeben (PAS=1)
+    mov al, 0x20            ; Enable video output (PAS=1)
     out dx, al
 
-    ; PEL Mask Register (0x3C6) auf 0xFF
+    ; Set PEL Mask Register (0x3C6) to 0xFF
     mov dx, 0x3C6
     mov al, 0xFF
     out dx, al
 
     ; =========================================================================
-    ; SCHRITT 5.8: VGA DAC Palette für Schwarz, Blau, Grün & Weiß laden
+    ; STEP 5.8: Load VGA DAC Palette for Black, Blue, Green & White
     ; =========================================================================
     mov dx, 0x3C8
     xor al, al
-    out dx, al              ; Start bei DAC-Index 0
+    out dx, al              ; Start at DAC index 0
     mov dx, 0x3C9
     mov si, vga_dac_table
-    mov cx, 16 * 3          ; 16 Farben * 3 Bytes (R, G, B)
+    mov cx, 16 * 3          ; 16 colors * 3 bytes (R, G, B)
 .dac_load_loop:
     lodsb
     out dx, al
     loop .dac_load_loop
 
     ; =========================================================================
-    ; SCHRITT 6: Bitmap-Font sauber in VGA Plane 2 (0xA0000) laden
+    ; STEP 6: Load bitmap font cleanly into VGA Plane 2 (0xA0000)
     ; =========================================================================
     mov dx, 0x3C4
     mov ax, 0x0100
@@ -316,7 +316,7 @@ bios_start:
     jmp .font_char_loop
 
 .font_done:
-    ; Zurück in den Odd/Even Text-Mode bei 0xB8000 schalten
+    ; Switch back to Odd/Even Text Mode at 0xB8000
     mov dx, 0x3C4
     mov ax, 0x0100
     out dx, ax
@@ -332,33 +332,33 @@ bios_start:
     out dx, ax
     mov ax, 0x1005
     out dx, ax
-    mov ax, 0x0E06          ; GR06 = 0xB8000 Textfenster
+    mov ax, 0x0E06          ; GR06 = 0xB8000 text window
     out dx, ax
 
     ; =========================================================================
-    ; SCHRITT 7: "Hello World from BIOS!" + Blaue Box in der Mitte zeichnen
+    ; STEP 7: Draw "Hello World from BIOS!" + Blue Box in the center
     ; =========================================================================
     mov ax, 0xB800
     mov es, ax
     xor di, di
-    mov ax, 0x0A20          ; Schwarzer Hintergrund, grüne Textfarbe
+    mov ax, 0x0A20          ; Black background, green text color
     mov cx, 80 * 25
-    rep stosw               ; Kompletten Screen löschen
+    rep stosw               ; Clear entire screen
 
-    ; --- 7.1 "Hello World from BIOS!" oben links (Zeile 0, Spalte 0) ---
+    ; --- 7.1 "Hello World from BIOS!" top-left (Row 0, Col 0) ---
     xor di, di
     mov si, msg_hello
-    mov ah, 0x0A            ; Attribut 0x0A = Hellgrün auf Schwarz
+    mov ah, 0x0A            ; Attribute 0x0A = Bright Green on Black
 .print_hello:
     lodsb
     test al, al
     jz  .hello_done
     stosw
-    call serial_putc        ; Parallel auf COM1 & Port 0xE9 ausgeben
+    call serial_putc        ; Output in parallel to COM1 & Port 0xE9
     jmp .print_hello
 
 .hello_done:
-    ; Hardware-Cursor direkt hinter "Hello World from BIOS!" parken
+    ; Park hardware cursor right after "Hello World from BIOS!"
     mov bx, di
     shr bx, 1
     mov dx, 0x3D4
@@ -374,55 +374,55 @@ bios_start:
     mov al, bl
     out dx, al
 
-    ; --- 7.2 Blaue Box in der Bildschirmmitte (Zeile 9..15, Spalte 24..55) ---
-    ; Start-Offset für Zeile 9, Spalte 24: (9 * 80 + 24) * 2 = 1488
+    ; --- 7.2 Blue Box in screen center (Row 9..15, Col 24..55) ---
+    ; Start offset for Row 9, Col 24: (9 * 80 + 24) * 2 = 1488
     mov di, (9 * 80 + 24) * 2
-    mov dx, 7               ; Höhe der Box: 7 Zeilen (Zeile 9 bis 15)
+    mov dx, 7               ; Box height: 7 rows (Row 9 to 15)
 .box_row_loop:
     push di
-    mov cx, 32              ; Breite der Box: 32 Spalten (Spalte 24 bis 55)
-    mov ax, 0x1F20          ; Attribut 0x1F (Weiß auf Blau), Zeichen ' '
+    mov cx, 32              ; Box width: 32 columns (Col 24 to 55)
+    mov ax, 0x1F20          ; Attribute 0x1F (White on Blue), char ' '
     rep stosw
     pop di
-    add di, 80 * 2          ; Nächste Bildschirmzeile (+160 Bytes)
+    add di, 80 * 2          ; Next screen row (+160 bytes)
     dec dx
     jnz .box_row_loop
 
-    ; --- 7.3 Dezenter weißer Rahmen in die blaue Box zeichnen ---
-    ; Obere Rahmenlinie (Zeile 9, Spalte 24..55)
+    ; --- 7.3 Draw subtle white border inside the blue box ---
+    ; Top border line (Row 9, Col 24..55)
     mov di, (9 * 80 + 24) * 2
-    mov ax, 0x1F01          ; 0x01 = Ecke oben links '┌'
+    mov ax, 0x1F01          ; 0x01 = Top-left corner '┌'
     stosw
     mov cx, 30
-    mov ax, 0x1F05          ; 0x05 = Horizontale Linie '─'
+    mov ax, 0x1F05          ; 0x05 = Horizontal line '─'
     rep stosw
-    mov ax, 0x1F02          ; 0x02 = Ecke oben rechts '┐'
+    mov ax, 0x1F02          ; 0x02 = Top-right corner '┐'
     stosw
 
-    ; Untere Rahmenlinie (Zeile 15, Spalte 24..55)
+    ; Bottom border line (Row 15, Col 24..55)
     mov di, (15 * 80 + 24) * 2
-    mov ax, 0x1F03          ; 0x03 = Ecke unten links '└'
+    mov ax, 0x1F03          ; 0x03 = Bottom-left corner '└'
     stosw
     mov cx, 30
-    mov ax, 0x1F05          ; 0x05 = Horizontale Linie '─'
+    mov ax, 0x1F05          ; 0x05 = Horizontal line '─'
     rep stosw
-    mov ax, 0x1F04          ; 0x04 = Ecke unten rechts '┘'
+    mov ax, 0x1F04          ; 0x04 = Bottom-right corner '┘'
     stosw
 
-    ; Seitliche Rahmenlinien für Zeilen 10..14
+    ; Side border lines for Rows 10..14
     mov di, (10 * 80 + 24) * 2
     mov cx, 5
 .side_border_loop:
-    mov word [es:di], 0x1F06            ; Links '│'
-    mov word [es:di + 31 * 2], 0x1F06   ; Rechts '│'
+    mov word [es:di], 0x1F06            ; Left '│'
+    mov word [es:di + 31 * 2], 0x1F06   ; Right '│'
     add di, 80 * 2
     loop .side_border_loop
 
-    ; --- 7.4 Weißen Text "die box geht!" exakt zentriert in die Box setzen ---
-    ; Zeile 12 (Mitte von 9..15), Spalte 33: (12 * 80 + 33) * 2 = 1986
+    ; --- 7.4 Place white text centered inside the box ---
+    ; Row 12 (center of 9..15), Col 33: (12 * 80 + 33) * 2 = 1986
     mov di, (12 * 80 + 33) * 2
     mov si, msg_box
-    mov ah, 0x1F            ; Attribut 0x1F = Strahlend Weiß auf Blau!
+    mov ah, 0x1F            ; Attribute 0x1F = Bright White on Blue!
 .print_box_text:
     lodsb
     test al, al
@@ -439,10 +439,10 @@ bios_start:
 
 
     ; =========================================================================
-    ; SCHRITT 8: DVD-Logo Animation – 2 fliegende gelbe Ausrufezeichen
+    ; STEP 8: DVD-Logo Animation - 2 flying yellow exclamation marks
     ; =========================================================================
-    ; 1. Den fertigen Bildschirm (inkl. Box & Text) als sauberes Backup
-    ;    nach CLEAN_BUF (0x0000:0x1000) sichern (4000 Bytes).
+    ; 1. Save the rendered screen (incl. box & text) as a clean backup
+    ;    to CLEAN_BUF (0x0000:0x1000) (4000 bytes).
     mov ax, 0x0000
     mov es, ax
     mov ax, 0xB800
@@ -452,30 +452,30 @@ bios_start:
     mov cx, 80 * 25
     rep movsw
 
-    ; 2. Segmente fuer die Animation einrichten:
-    ;    DS = 0x0000 (RAM fuer Backup & Variablen)
-    ;    ES = 0xB800 (VGA-Textspeicher)
+    ; 2. Set up segments for animation:
+    ;    DS = 0x0000 (RAM for backup & variables)
+    ;    ES = 0xB800 (VGA text memory)
     mov ax, 0x0000
     mov ds, ax
     mov ax, 0xB800
     mov es, ax
 
-    ; 3. Startpositionen und Richtungen der beiden Ausrufezeichen initialisieren
-    ;    Ausrufezeichen 1: Startet links oben (X=2, Y=2), fliegt nach rechts-unten (+1, +1)
+    ; 3. Initialize starting positions and directions of both exclamation marks
+    ;    Exclamation mark 1: Starts top-left (X=2, Y=2), moves bottom-right (+1, +1)
     mov word [POS_X1], 2
     mov word [POS_Y1], 2
     mov word [DIR_X1], 1
     mov word [DIR_Y1], 1
 
-    ;    Ausrufezeichen 2: Startet rechts unten (X=72, Y=20), fliegt nach links-oben (-1, -1)
+    ;    Exclamation mark 2: Starts bottom-right (X=72, Y=20), moves top-left (-1, -1)
     mov word [POS_X2], 72
     mov word [POS_Y2], 20
     mov word [DIR_X2], -1
     mov word [DIR_Y2], -1
-    mov byte [SOUND_TIMER], 0       ; Speaker initial aus
+    mov byte [SOUND_TIMER], 0       ; Speaker initially off
 
 .anim_loop:
-    ; --- Schritt A: Alte Positionen mit Original-Hintergrund restaurieren ---
+    ; --- Step A: Restore old positions with original background ---
     mov ax, [POS_Y1]
     mov bx, [POS_X1]
     call calc_offset
@@ -488,8 +488,8 @@ bios_start:
     mov ax, [CLEAN_BUF + di]
     mov [es:di], ax
 
-    ; --- Schritt B: Position von Ausrufezeichen 1 berechnen & an Waenden abprallen ---
-    xor cx, cx                      ; CX zaehlt Wandkontakte (1 = Wand, 2 = Ecke!)
+    ; --- Step B: Calculate position of exclamation mark 1 & bounce off walls ---
+    xor cx, cx                      ; CX counts wall hits (1 = wall, 2 = corner!)
     mov ax, [POS_X1]
     add ax, [DIR_X1]
     cmp ax, 0
@@ -524,25 +524,25 @@ bios_start:
 .set_y1:
     mov [POS_Y1], ax
 
-    ; Sound fuer Ausrufezeichen 1
+    ; Sound for exclamation mark 1
     test cx, cx
     jz .snd_chk2
     cmp cx, 2
     je .corner_snd1
-    ; Standard-Wandabpraller: 750 Hz (Divisor 1590 = 0x0636), 2 Frames (~70ms)
+    ; Standard wall bounce: 750 Hz (Divisor 1590 = 0x0636), 2 frames (~70ms)
     mov bx, 0x0636
     mov dl, 2
     call play_sound
     jmp .snd_chk2
 .corner_snd1:
-    ; Eckenabpraller: hoher Jubel-Ping 1400 Hz (Divisor 852 = 0x0354), 4 Frames (~140ms)
+    ; Corner bounce: high chime ping 1400 Hz (Divisor 852 = 0x0354), 4 frames (~140ms)
     mov bx, 0x0354
     mov dl, 4
     call play_sound
 
 .snd_chk2:
-    ; --- Schritt C: Position von Ausrufezeichen 2 berechnen & an Waenden abprallen ---
-    xor cx, cx                      ; CX zaehlt Wandkontakte
+    ; --- Step C: Calculate position of exclamation mark 2 & bounce off walls ---
+    xor cx, cx                      ; CX counts wall hits
     mov ax, [POS_X2]
     add ax, [DIR_X2]
     cmp ax, 0
@@ -577,52 +577,52 @@ bios_start:
 .set_y2:
     mov [POS_Y2], ax
 
-    ; Sound fuer Ausrufezeichen 2
+    ; Sound for exclamation mark 2
     test cx, cx
     jz .snd_done_bounce
     cmp cx, 2
     je .corner_snd2
-    ; Standard-Wandabpraller: 950 Hz (Divisor 1256 = 0x04E8), 2 Frames (~70ms)
+    ; Standard wall bounce: 950 Hz (Divisor 1256 = 0x04E8), 2 frames (~70ms)
     mov bx, 0x04E8
     mov dl, 2
     call play_sound
     jmp .snd_done_bounce
 .corner_snd2:
-    ; Eckenabpraller: hoher Ping 1600 Hz (Divisor 745 = 0x02E9), 4 Frames (~140ms)
+    ; Corner bounce: high ping 1600 Hz (Divisor 745 = 0x02E9), 4 frames (~140ms)
     mov bx, 0x02E9
     mov dl, 4
     call play_sound
 .snd_done_bounce:
 
-    ; --- Schritt D: Gelbes Ausrufezeichen 1 zeichnen ---
+    ; --- Step D: Draw yellow exclamation mark 1 ---
     mov ax, [POS_Y1]
     mov bx, [POS_X1]
     call calc_offset
-    mov ah, [CLEAN_BUF + di + 1]    ; Original-Hintergrundfarbe (Schwarz oder Blau)
-    and ah, 0xF0                    ; Behalte Hintergrund
-    or  ah, 0x0E                    ; Strahlendes Gelb (0x0E) fuer Vordergrund
+    mov ah, [CLEAN_BUF + di + 1]    ; Original background color (Black or Blue)
+    and ah, 0xF0                    ; Keep background
+    or  ah, 0x0E                    ; Bright Yellow (0x0E) for foreground
     mov al, '!'
     mov [es:di], ax
 
-    ; --- Schritt E: Gelbes Ausrufezeichen 2 zeichnen ---
+    ; --- Step E: Draw yellow exclamation mark 2 ---
     mov ax, [POS_Y2]
     mov bx, [POS_X2]
     call calc_offset
-    mov ah, [CLEAN_BUF + di + 1]    ; Original-Hintergrundfarbe
-    and ah, 0xF0                    ; Behalte Hintergrund
-    or  ah, 0x0E                    ; Strahlendes Gelb (0x0E) fuer Vordergrund
+    mov ah, [CLEAN_BUF + di + 1]    ; Original background color
+    and ah, 0xF0                    ; Keep background
+    or  ah, 0x0E                    ; Bright Yellow (0x0E) for foreground
     mov al, '!'
     mov [es:di], ax
 
-    ; --- Schritt F: Frame-Pause fuer fluessige Animation (~25 FPS) ---
+    ; --- Step F: Frame delay for smooth animation (~25 FPS) ---
     call delay_frame
 
-    ; --- Schritt G: PC-Speaker Sound-Timer dekrementieren & ggf. stoppen ---
+    ; --- Step G: Decrement PC Speaker sound timer & stop if expired ---
     cmp byte [SOUND_TIMER], 0
     jz .sound_off_done
     dec byte [SOUND_TIMER]
     jnz .sound_off_done
-    ; Timer abgelaufen: Speaker stummschalten
+    ; Timer expired: mute speaker
     in  al, 0x61
     and al, 0xFC
     out 0x61, al
@@ -630,13 +630,13 @@ bios_start:
 
     jmp .anim_loop
 
-; Offset-Berechnung: DI = (AX * 80 + BX) * 2
+; Offset calculation: DI = (AX * 80 + BX) * 2
 
-; --- PC-Speaker Sound-Routine (PIT Kanal 2 / Port 0x61) ---
-; Eingang: BX = Divisor (Frequenz = 1193182 / BX), DL = Dauer in Frames
+; --- PC Speaker Sound Routine (PIT Channel 2 / Port 0x61) ---
+; Input: BX = Divisor (Frequency = 1193182 / BX), DL = Duration in frames
 play_sound:
     push ax
-    ; PIT Kanal 2 auf Modus 3 (Rechteckwelle) konfigurieren
+    ; Configure PIT Channel 2 to Mode 3 (square wave)
     mov al, 0xB6
     out 0x43, al
     mov al, bl
@@ -644,12 +644,12 @@ play_sound:
     mov al, bh
     out 0x42, al            ; Divisor MSB
 
-    ; Speaker anschalten (Bits 0 & 1 auf Port 0x61 setzen)
+    ; Turn speaker on (set bits 0 & 1 on Port 0x61)
     in  al, 0x61
     or  al, 0x03
     out 0x61, al
 
-    ; Timer setzen
+    ; Set timer
     mov byte [SOUND_TIMER], dl
     pop ax
     ret
@@ -663,7 +663,7 @@ calc_offset:
     shl di, 1
     ret
 
-; Verzoegerung: Wartet ca. 35-40 Millisekunden (~25 FPS)
+; Delay: Waits approx. 35-40 milliseconds (~25 FPS)
 delay_frame:
     push eax
     push ebx
@@ -679,7 +679,7 @@ delay_frame:
     ret
 
 
-; --- Hilfsroutine: Zeichen in AL über UART & QEMU-Debug-Port senden ---
+; --- Helper routine: Send character in AL via UART & QEMU debug port ---
 serial_putc:
     push dx
     push bx
@@ -701,14 +701,14 @@ dummy_isr:
     iret
 
 ; =============================================================================
-; KONSTANTEN, VGA-REGISTER-TABELLEN, PALETTE & BITMAP-FONT
+; CONSTANTS, VGA REGISTER TABLES, PALETTE & BITMAP FONT
 ; =============================================================================
 
 msg_hello:
     db "Hello World from BIOS!", 0
 
 msg_box:
-    db "die box geht!", 0
+    db "Box is working!", 0
 
 ; Sequencer Registers SR01 - SR04
 vga_seq_table:
@@ -729,28 +729,28 @@ vga_gc_table:
 vga_ac_ext_table:
     db 0x04, 0x00, 0x0F, 0x00, 0x00
 
-; 16-Farben VGA DAC Palette (Je 3 Bytes: R, G, B im Bereich 0..63)
+; 16-Color VGA DAC Palette (3 bytes each: R, G, B in range 0..63)
 vga_dac_table:
-    db  0,  0,  0           ; 0x00: Schwarz (Screen-Hintergrund)
-    db  0, 12, 48           ; 0x01: Kräftiges BIOS-Blau (Box-Hintergrund)
-    db  0, 42,  0           ; 0x02: Dunkelgrün
+    db  0,  0,  0           ; 0x00: Black (Screen background)
+    db  0, 12, 48           ; 0x01: Deep BIOS Blue (Box background)
+    db  0, 42,  0           ; 0x02: Dark Green
     db  0, 42, 42           ; 0x03: Cyan
-    db 42,  0,  0           ; 0x04: Rot
+    db 42,  0,  0           ; 0x04: Red
     db 42,  0, 42           ; 0x05: Magenta
-    db 42, 21,  0           ; 0x06: Braun
-    db 42, 42, 42           ; 0x07: Hellgrau
-    db 21, 21, 21           ; 0x08: Dunkelgrau
-    db 21, 21, 63           ; 0x09: Hellblau
-    db 10, 63, 20           ; 0x0A: Matrix-Hellgrün ("Hello World from BIOS!")
-    db 21, 63, 63           ; 0x0B: Hellcyan
-    db 63, 21, 21           ; 0x0C: Hellrot
+    db 42, 21,  0           ; 0x06: Brown
+    db 42, 42, 42           ; 0x07: Light Gray
+    db 21, 21, 21           ; 0x08: Dark Gray
+    db 21, 21, 63           ; 0x09: Light Blue
+    db 10, 63, 20           ; 0x0A: Matrix Bright Green ("Hello World from BIOS!")
+    db 21, 63, 63           ; 0x0B: Light Cyan
+    db 63, 21, 21           ; 0x0C: Light Red
     db 63, 21, 63           ; 0x0D: Pink
-    db 63, 63, 21           ; 0x0E: Gelb
-    db 63, 63, 63           ; 0x0F: Reines Weiß ("die box geht!" + Rahmen)
+    db 63, 63, 21           ; 0x0E: Yellow
+    db 63, 63, 63           ; 0x0F: Pure White (Box text + border)
 
-; Kompakte 8x8 Bitmap-Font-Tabelle (wird beim Upload auf 8x16 verdoppelt)
+; Compact 8x8 bitmap font table (doubled to 8x16 during upload)
 font_table:
-    ; --- Rahmen-Glyphen auf Slot 0x01 bis 0x06 ---
+    ; --- Border glyphs in slots 0x01 to 0x06 ---
     db 0x01, 0x00, 0x00, 0x00, 0x1F, 0x18, 0x18, 0x18, 0x18 ; '┌'
     db 0x02, 0x00, 0x00, 0x00, 0xF8, 0x18, 0x18, 0x18, 0x18 ; '┐'
     db 0x03, 0x18, 0x18, 0x18, 0x1F, 0x00, 0x00, 0x00, 0x00 ; '└'
@@ -758,7 +758,7 @@ font_table:
     db 0x05, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00 ; '─'
     db 0x06, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18 ; '│'
 
-    ; --- Text-Glyphen ---
+    ; --- Text glyphs ---
     db ' ',  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     db '!',  0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00
     db 'B',  0xFC, 0x66, 0x66, 0x7C, 0x66, 0x66, 0xFC, 0x00
@@ -783,13 +783,13 @@ font_table:
     db 0
 
 ; =============================================================================
-; PADDING BIS ZUM HARDWARE-RESET-VECTOR (0xFFF0)
+; PADDING UP TO HARDWARE RESET VECTOR (0xFFF0)
 ; =============================================================================
 times 0xFFF0 - ($ - $$) db 0xFF
 
-reset_vector:               ; Physisch 0xFFFFFFF0 / Alias 0xF000:0xFFF0
+reset_vector:               ; Physical 0xFFFFFFF0 / Alias 0xF000:0xFFF0
     jmp 0xF000:bios_start   ; 5 Bytes (0xFFF0..0xFFF4)
     db "10/23/26"           ; 8 Bytes (0xFFF5..0xFFFC)
     db 0x00                 ; 1 Byte  (0xFFFD)
     db 0xFC                 ; 1 Byte  (0xFFFE): System Model ID (PC/AT)
-    db 0x00                 ; 1 Byte  (0xFFFF) -> Exakt 65536 Bytes
+    db 0x00                 ; 1 Byte  (0xFFFF) -> Exactly 65536 Bytes

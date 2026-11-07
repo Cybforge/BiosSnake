@@ -50,11 +50,11 @@ A custom, bare-metal **x86 16/32-bit PC BIOS** in a full **256 KB (`262,144 Byte
 ## Multi-Tab BIOS Setup & Interactive UEFI/BIOS Shell (New in v2.5)
 
 ### 1. Multi-Tab BIOS Setup Utility (`[ 1: Main & Game ]` & `[ 2: BiosShell ]`)
-Press **`[F12]`** or **`[DEL]`** during POST (or **`[ESC]`** from the game) to open the **Cybforge Retro BIOS Setup Utility**. Switch between the two tabs at any time using **`[TAB]`**, **`[1]` / `[2]`**, or **`[Left]` / `[Right]`** (`[A]` / `[D]`) on the first row (`Setup Reiter (Tab)`):
+Press **`[F12]`** or **`[DEL]`** during POST (or **`[ESC]`** from the game) to open the **Cybforge Retro BIOS Setup Utility**. Switch between the two tabs at any time using **`[TAB]`**, **`[1]` / `[2]`**, or **`[Left]` / `[Right]`** (`[A]` / `[D]`) on the first row (`Setup Menu Tab`):
 
 * **Tab 1 (`[ 1: Main & Game ]`):** Configures `Game Speed`, `Wall Mode`, `Sound Output` (`SB16 16-Bit`, `PC Speaker`, `Dual Audio`, `Muted`), `Snake Face`, `Initial Length`, `Win Target`, `Color Theme`, `Game Arena`, and `Reset High Score`.
 * **Tab 2 (`[ 2: BiosShell ]`):**
-  * **`BiosShell : [ Press ENTER to Launch ]`** — Immediately launches the interactive **Cybforge UEFI/BIOS Shell v2.40**.
+  * **`BiosShell : [ Press ENTER to Launch ]`** — Immediately launches the interactive **Cybforge UEFI/BIOS Shell v2.8**.
   * **`Shell Color Scheme`** — Select between `< Classic EFI (Yel) >`, `< Matrix Hacker >`, `< Cyber Neon (Cyan) >`, and `< Retro BIOS Blue >`.
   * **`Shell Prompt Style`** — Choose `< FS0:\> (UEFI) >`, `< SHELL> (Compact) >`, or `< root@cybforge:# >`.
   * **`Startup Banner`** — Choose `< Full EFI Dev Map >`, `< Compact Header >`, or `< Quiet (No Banner) >`.
@@ -226,7 +226,7 @@ build.bat
 
 ### v2.5: Multi-Tab BIOS Setup & Interactive UEFI/BIOS Shell
 - **Multi-Tab BIOS Setup Utility**:
-  - Added visual Tab Bar (`[ 1: Main & Game ]` and `[ 2: BiosShell ]`) switchable via `[TAB]`, `[1]`/`[2]`, or `[Left]`/`[Right]` on the `Setup Reiter (Tab)` option.
+  - Added visual Tab Bar (`[ 1: Main & Game ]` and `[ 2: BiosShell ]`) switchable via `[TAB]`, `[1]`/`[2]`, or `[Left]`/`[Right]` on the `Setup Menu Tab` option.
   - Added `BiosShell : [ Press ENTER to Launch ]` entry and 5 CMOS-persisted shell configuration options (`Shell Color Scheme`, `Shell Prompt Style`, `Startup Banner`, `Keystroke Beep`, `Default POST Boot`, plus `Reset Shell Cfg`).
   - Extended CMOS NVRAM persistence (`0x40..0x5E`, signature `0xCC`) to store all BiosShell settings across reboots.
 - **Interactive UEFI/BIOS Shell (`v2.40`)**:
