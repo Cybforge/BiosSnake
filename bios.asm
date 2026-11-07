@@ -93,6 +93,51 @@ FS_DATA_BASE    equ 0x3420  ; File data pool (0x3420..0x6FDF = 15,296 Bytes)
 FS_POOL_END     equ 0x6FE0  ; Upper bound of CybFS data pool (0x6FE0..0x6FFF = 32B NVRAM Settings Mirror)
 NVRAM_MIRROR    equ 0x6FE0  ; 32-byte persistent CMOS/Setup/Highscore mirror on ATA LBA 31
 
+; --- v3.0 Hardware xHCI (USB 3.0), EHCI (USB 2.0), Mouse & Google Snake State ---
+XHCI_FOUND      equ 0x1BE0  ; 1 = xHCI USB 3.0 Controller initialized (Byte)
+XHCI_BUS_DEV    equ 0x1BE1  ; PCI Dev/Fn byte for xHCI (Byte)
+XHCI_VEN_ID     equ 0x1BE2  ; xHCI PCI Vendor ID (Word)
+XHCI_DEV_ID     equ 0x1BE4  ; xHCI PCI Device ID (Word)
+XHCI_HCI_VER    equ 0x1BE6  ; xHCI Interface Version BCD (Word)
+XHCI_MAX_SLOTS  equ 0x1BE8  ; xHCI HCSPARAMS1 MaxSlots (Byte)
+XHCI_MAX_PORTS  equ 0x1BE9  ; xHCI HCSPARAMS1 MaxPorts (Byte)
+XHCI_PORTS_CONN equ 0x1BEA  ; Connected ports count on xHCI Root Hub (Byte)
+XHCI_PORT1_SC   equ 0x1BEC  ; Live xHCI Port 1 PORTSC register (Dword)
+
+EHCI_FOUND      equ 0x1BF0  ; 1 = EHCI USB 2.0 Controller initialized (Byte)
+EHCI_BUS_DEV    equ 0x1BF1  ; PCI Dev/Fn byte for EHCI (Byte)
+EHCI_VEN_ID     equ 0x1BF2  ; EHCI PCI Vendor ID (Word)
+EHCI_DEV_ID     equ 0x1BF4  ; EHCI PCI Device ID (Word)
+EHCI_HCI_VER    equ 0x1BF6  ; EHCI Interface Version BCD (Word)
+EHCI_MAX_PORTS  equ 0x1BF8  ; EHCI HCSPARAMS N_PORTS (Byte)
+EHCI_PORTS_CONN equ 0x1BF9  ; Connected ports count on EHCI Root Hub (Byte)
+EHCI_PORT1_SC   equ 0x1BFC  ; Live EHCI Port 1 PORTSC register (Dword)
+
+MOUSE_READY     equ 0x1C00  ; 1 = 8042 PS/2 Aux / USB Mouse active (Byte)
+MOUSE_PKT_IDX   equ 0x1C01  ; Packet byte index 0..2 (Byte)
+MOUSE_PKT_B0    equ 0x1C02  ; Packet byte 0: Buttons & Sign/Overflow (Byte)
+MOUSE_PKT_B1    equ 0x1C03  ; Packet byte 1: Delta X (Byte)
+MOUSE_FINE_X    equ 0x1C04  ; Sub-cell X position 0..639 (Word)
+MOUSE_FINE_Y    equ 0x1C06  ; Sub-cell Y position 0..399 (Word)
+MOUSE_X         equ 0x1C08  ; Text column 0..79 (Byte)
+MOUSE_Y         equ 0x1C09  ; Text row 0..24 (Byte)
+MOUSE_BTN       equ 0x1C0A  ; Current button state bit0=L, bit1=R, bit2=M (Byte)
+MOUSE_PREV_BTN  equ 0x1C0B  ; Previous button state for rising-edge click (Byte)
+MOUSE_CLICK     equ 0x1C0C  ; Latched rising-edge click bit0=Left, bit1=Right (Byte)
+MOUSE_CUR_VIS   equ 0x1C0D  ; 1 = Software mouse cursor currently drawn on VRAM (Byte)
+MOUSE_OLD_X     equ 0x1C0E  ; Saved cursor column (Byte)
+MOUSE_OLD_Y     equ 0x1C0F  ; Saved cursor row (Byte)
+MOUSE_SAVED_W   equ 0x1C10  ; Saved VRAM word under mouse cursor (Word)
+MOUSE_EVT_CNT   equ 0x1C12  ; Total mouse packets processed counter (Word)
+
+BULGE_X         equ 0x1C14  ; Digesting apple bulge X coordinate (0xFF=none) (Byte)
+BULGE_Y         equ 0x1C15  ; Digesting apple bulge Y coordinate (Byte)
+TONGUE_TICK     equ 0x1C16  ; Animation tick counter for flicking tongue (Byte)
+TONGUE_X        equ 0x1C17  ; Drawn tongue X coordinate (0xFF=none) (Byte)
+TONGUE_Y        equ 0x1C18  ; Drawn tongue Y coordinate (Byte)
+CARD_BTN_SEL    equ 0x1C19  ; Selected button (0=Play, 1=Setup, 2=Shell) on Start/GameOver card (Byte)
+UI_PAL_MODE     equ 0x1C1A  ; 0 = Modern UEFI Dark Palette, 1 = Google Snake Grass Palette (Byte)
+
 ; --- RAM Addresses for DVD-Logo Animation (in free RAM at 0x0000) ---
 CLEAN_BUF equ 0x1000        ; 4000-byte buffer (0x1000..0x1FA0) for original screen
 POS_X1    equ 0x2000        ; Position & direction of exclamation mark 1
@@ -490,8 +535,14 @@ bios_start:
     mov ax, 0xB800
     mov es, ax              ; ES points permanently to VGA text memory!
 
-    ; Initialize Flat Real Mode (Unreal Mode) for 256KB ROM audio
+    ; Initialize Flat Real Mode (Unreal Mode) for 256KB ROM audio & MMIO
     call enter_unreal_mode
+
+    ; Initialize Bare-Metal xHCI (USB 3.0) & EHCI (USB 2.0) PCI/MMIO Controllers
+    call usb_init_controllers
+
+    ; Initialize 8042 PS/2 Aux & USB Pointer Hardware Mouse Driver
+    call mouse_init
 
     ; Initialize Sound Blaster 16 hardware (DSP Reset, Mixer, Volumes)
     call sb16_init
@@ -500,21 +551,33 @@ bios_start:
     ; Load saved settings, CybFS & Top 3 highscores from ATA disk / CMOS
     mov byte [CFG_SH_FONT], 2       ; Default before loading: 2 (Large 8x16)
     call load_cmos_settings
-    call apply_color_theme
+    call load_ui_palette
     call vga_apply_font_scale
     mov byte [SETUP_SEL], 0         ; Row 0 selected
     mov byte [SETUP_TAB], 0         ; Default tab: 0 (Main & Game)
 
     ; =========================================================================
-    ; PHASE 1: CYBFORGE RETRO BIOS POST SCREEN (3 seconds wait time for F12)
+    ; PHASE 1: CYBFORGE UEFI/BIOS v3.0 POST SCREEN (Modern Dashboard)
     ; =========================================================================
 post_screen:
+    call mouse_hide_cursor
+    call load_ui_palette
     call clear_screen_black
 
-    ; Row 2: BIOS Date & Version (top line removed as requested)
+    ; Top Modern UEFI Banner Bar (Row 0)
+    xor di, di
+    mov cx, 80
+    mov ax, 0x1F20
+    rep stosw
+    mov di, (0 * 80 + 2) * 2
+    mov si, str_post_top_bar
+    mov ah, 0x1F
+    call print_string
+
+    ; Row 2: BIOS Date & Version
     mov di, (2 * 80 + 2) * 2
     mov si, str_post_hdr2
-    mov ah, 0x07                    ; Light Gray
+    mov ah, 0x0B
     call print_string
 
     ; Rows 4 & 5: CPU & Co-Processor
@@ -528,7 +591,7 @@ post_screen:
     mov ah, 0x07
     call print_string
 
-    ; Rows 7..9: VGA Display, Keyboard, Timer
+    ; Rows 7..9: VGA Display, Keyboard/Mouse, Timer
     mov di, (7 * 80 + 2) * 2
     mov si, str_post_vga
     mov ah, 0x07
@@ -536,7 +599,7 @@ post_screen:
 
     mov di, (8 * 80 + 2) * 2
     mov si, str_post_kbd
-    mov ah, 0x07
+    mov ah, 0x0A
     call print_string
 
     mov di, (9 * 80 + 2) * 2
@@ -544,18 +607,28 @@ post_screen:
     mov ah, 0x07
     call print_string
 
-    ; Rows 11 & 12: Monitor Detection & Scaler
+    ; Rows 11 & 12: Live xHCI (USB 3.0) & EHCI (USB 2.0) Controller Status!
     mov di, (11 * 80 + 2) * 2
-    mov si, str_post_disp_mon
-    mov ah, 0x0B                    ; Bright Cyan for screen check!
+    mov si, str_post_xhci_ok
+    mov ah, 0x0B
+    cmp byte [XHCI_FOUND], 1
+    je .post_pr_xhci
+    mov si, str_post_xhci_none
+    mov ah, 0x08
+.post_pr_xhci:
     call print_string
 
     mov di, (12 * 80 + 2) * 2
-    mov si, str_post_vid_scale
-    mov ah, 0x07                    ; Light Gray
+    mov si, str_post_ehci_ok
+    mov ah, 0x0B
+    cmp byte [EHCI_FOUND], 1
+    je .post_pr_ehci
+    mov si, str_post_ehci_none
+    mov ah, 0x08
+.post_pr_ehci:
     call print_string
 
-    ; Row 14: Animated RAM counter with PC Speaker ticks (0..640 KB)
+    ; Row 14: Animated RAM counter with soft ticks (0..640 KB)
     call post_ram_counter
 
     mov di, (15 * 80 + 2) * 2
@@ -563,27 +636,37 @@ post_screen:
     mov ah, 0x07
     call print_string
 
-    ; Row 17: Disks
+    ; Row 17: Persistent NVRAM Disk & Audio
     mov di, (17 * 80 + 2) * 2
     mov si, str_post_drives
-    mov ah, 0x07
+    mov ah, 0x0A
     call print_string
 
     ; Draw Cybforge logo on the right side (Rows 2 to 9, Cols 64 to 73)
     call draw_cybforge_logo
 
-    ; Rows 20 & 21: F12 prompt & countdown
+    ; Rows 20 & 21: F12 prompt & countdown (also clickable with mouse!)
     mov di, (20 * 80 + 2) * 2
     mov si, str_post_f12
-    mov ah, 0x0E                    ; Bright Yellow!
+    mov ah, 0x0E
     call print_string
 
     mov di, (21 * 80 + 2) * 2
     mov si, str_post_boot
-    mov ah, 0x07                    ; Light Gray
+    mov ah, 0x07
     call print_string
 
-    ; Wait exactly 3.0 seconds for keystroke (F12/DEL for Setup or ENTER for direct boot)
+    ; Bottom Status Bar (Row 24)
+    mov di, (24 * 80) * 2
+    mov cx, 80
+    mov ax, 0x1F20
+    rep stosw
+    mov di, (24 * 80 + 2) * 2
+    mov si, str_post_bot_bar
+    mov ah, 0x1E
+    call print_string
+
+    call mouse_show_cursor
     call drain_kbd
     mov bp, 60
 .post_wait_loop:
@@ -595,12 +678,20 @@ post_screen:
     cmp al, 0x1C                    ; ENTER -> Boot immediately
     je boot_direct_snake
 
-    mov ecx, 12500000               ; ~50 ms Mini-Tick (60 * 12.5M = 750M cycles = exactly 3.0s)
+    ; Check if user clicked mouse during POST
+    test byte [MOUSE_CLICK], 0x01
+    jz .post_no_click
+    mov byte [MOUSE_CLICK], 0
+    cmp byte [MOUSE_Y], 20
+    je core_bios_setup
+    jmp boot_direct_snake
+.post_no_click:
+
+    mov ecx, 12500000               ; ~50 ms Mini-Tick (60 * 50ms = 3.0s)
     call delay_cycles
     dec bp
     jnz .post_wait_loop
 
-    ; 3 seconds elapsed without F12 -> Boot into Snake or BiosShell per CFG_BOOT_MODE
 boot_direct_snake:
     cmp byte [CFG_BOOT_MODE], 1
     je bios_shell_main
@@ -616,7 +707,6 @@ draw_cybforge_logo:
     cmp dh, 8
     je .done_logo_tiles
 
-    ; Offset = (dh * 80 + 64) * 2
     movzx ax, dh
     mov cl, 80
     mul cl
@@ -636,14 +726,11 @@ draw_cybforge_logo:
     jmp .row_loop
 
 .done_logo_tiles:
-    ; Text below logo:
-    ; Row 8, Col 64: "   CYBFORGE   " (Cyan 0x0B)
     mov di, (8 * 80 + 64) * 2
     mov si, str_logo_lbl1
     mov ah, 0x0B
     call print_string
 
-    ; Row 9, Col 64: "  RETRO BIOS  " (Yellow 0x0E)
     mov di, (9 * 80 + 64) * 2
     mov si, str_logo_lbl2
     mov ah, 0x0E
@@ -651,21 +738,120 @@ draw_cybforge_logo:
     ret
 
     ; =========================================================================
-    ; PHASE 2: CYBFORGE RETRO BIOS SETUP UTILITY (Retro CMOS Setup Menu)
+    ; PHASE 2: MODERNIZED UEFI BIOS SETUP UTILITY (With Full Mouse Support!)
     ; =========================================================================
 core_bios_setup:
-    call apply_color_theme
+    call mouse_hide_cursor
+    call load_ui_palette
     call drain_kbd
+    mov byte [MOUSE_CLICK], 0
     call sound_click
 
 .redraw_setup:
+    call mouse_hide_cursor
     call draw_setup_screen
+    call mouse_show_cursor
 
 .setup_input_loop:
     call read_key
     test al, al
-    jz .setup_wait_tick
+    jnz .setup_got_key
 
+    ; Check for mouse click in BIOS Setup!
+    mov bl, [MOUSE_CLICK]
+    test bl, 0x03                   ; Left or Right click?
+    jz .setup_wait_tick
+    mov byte [MOUSE_CLICK], 0
+
+    ; Right click anywhere -> Previous value on current row
+    test bl, 0x02
+    jnz .val_prev
+
+    ; Left click handling by Row (MOUSE_Y) and Column (MOUSE_X)
+    mov dh, [MOUSE_Y]
+    mov dl, [MOUSE_X]
+
+    ; Row 2: Tab Bar click
+    cmp dh, 2
+    jne .chk_setup_row_click
+    cmp dl, 29
+    jb .switch_tab_0
+    cmp dl, 54
+    jb .switch_tab_1
+    jmp .launch_bios_shell
+
+.chk_setup_row_click:
+    ; Row 24: Bottom Footer Bar click
+    cmp dh, 24
+    jne .chk_setup_items_click
+    cmp dl, 22
+    jb .toggle_tab
+    cmp dl, 56
+    jb .val_enter
+    jmp .exit_setup
+
+.chk_setup_items_click:
+    cmp byte [SETUP_TAB], 1
+    je .setup_click_tab1
+
+    ; Tab 0 rows: Rows 4..12 -> indices 0..8, Row 14 -> 9, Row 15 -> 10
+    cmp dh, 4
+    jb .setup_wait_tick
+    cmp dh, 12
+    jbe .click_t0_0_8
+    cmp dh, 14
+    je .click_t0_9
+    cmp dh, 15
+    je .click_t0_10
+    jmp .setup_wait_tick
+
+.click_t0_0_8:
+    mov al, dh
+    sub al, 4
+    mov [SETUP_SEL], al
+    jmp .val_enter
+.click_t0_9:
+    mov byte [SETUP_SEL], 9
+    jmp .do_reset_defaults
+.click_t0_10:
+    mov byte [SETUP_SEL], 10
+    jmp .exit_setup
+
+.setup_click_tab1:
+    ; Tab 1 rows: Row 4 -> 0, Row 6 -> 1, Rows 8..12 -> 2..6, Row 14 -> 7, Row 15 -> 8
+    cmp dh, 4
+    je .click_t1_0
+    cmp dh, 6
+    je .click_t1_1
+    cmp dh, 8
+    jb .setup_wait_tick
+    cmp dh, 12
+    jbe .click_t1_2_6
+    cmp dh, 14
+    je .click_t1_7
+    cmp dh, 15
+    je .click_t1_8
+    jmp .setup_wait_tick
+
+.click_t1_0:
+    mov byte [SETUP_SEL], 0
+    jmp .toggle_tab
+.click_t1_1:
+    mov byte [SETUP_SEL], 1
+    jmp .launch_bios_shell
+.click_t1_2_6:
+    mov al, dh
+    sub al, 6
+    mov [SETUP_SEL], al
+    jmp .val_next
+.click_t1_7:
+    mov byte [SETUP_SEL], 7
+    jmp .do_reset_shell_defaults
+.click_t1_8:
+    mov byte [SETUP_SEL], 8
+    jmp .exit_setup
+
+.setup_got_key:
     ; Quick tab switching via [TAB] (0x0F), [1] (0x02), [2] (0x03)
     cmp al, 0x0F                    ; TAB -> Switch tab!
     je .toggle_tab
@@ -705,7 +891,7 @@ core_bios_setup:
     je .exit_setup
 
 .setup_wait_tick:
-    mov ecx, 1500000                ; ~5 ms for ultra-responsive menu reaction
+    mov ecx, 1500000                ; ~5 ms for ultra-responsive menu & mouse reaction
     call delay_cycles
     jmp .setup_input_loop
 
@@ -818,7 +1004,6 @@ core_bios_setup:
     jns .th_prev_ok
     mov byte [CFG_THEME], 3
 .th_prev_ok:
-    call apply_color_theme
     jmp .redraw_setup
 .p8:
     cmp al, 8
@@ -829,8 +1014,7 @@ core_bios_setup:
     jmp .redraw_setup
 
 .tab1_prev:
-    ; Tab 1 (BiosShell):
-    cmp al, 1                       ; On "Launch BiosShell", Left switches back to Tab 0
+    cmp al, 1
     je .switch_tab_0
     call sound_toggle
     cmp al, 2
@@ -866,7 +1050,7 @@ core_bios_setup:
 ; --- RIGHT / NEXT VALUE ---
 .val_next:
     mov al, [SETUP_SEL]
-    cmp al, 0                       ; Row 0: Switch tab
+    cmp al, 0
     je .toggle_tab
 
     cmp byte [SETUP_TAB], 1
@@ -922,7 +1106,6 @@ core_bios_setup:
     jb .th_next_ok
     mov byte [CFG_THEME], 0
 .th_next_ok:
-    call apply_color_theme
     jmp .redraw_setup
 .n8:
     cmp al, 8
@@ -934,7 +1117,7 @@ core_bios_setup:
     jmp .redraw_setup
 
 .tab1_next:
-    cmp al, 1                       ; SPACE on "BiosShell" also launches the shell
+    cmp al, 1
     je .launch_bios_shell
     call sound_toggle
     cmp al, 2
@@ -978,7 +1161,6 @@ core_bios_setup:
     cmp byte [SETUP_TAB], 1
     je .tab1_enter
 
-    ; Tab 0 Enter:
     cmp al, 9
     je .do_reset_defaults
     cmp al, 10
@@ -1010,7 +1192,6 @@ core_bios_setup:
     mov byte [CFG_THEME], 0
     mov byte [CFG_ARENA], 0
     call save_cmos_settings
-    call apply_color_theme
     call sound_toggle
     jmp .redraw_setup
 
@@ -1029,59 +1210,67 @@ core_bios_setup:
     jmp init_snake_game
 
     ; =========================================================================
-    ; SETUP SCREEN RENDERER (Multi-Tab Cybforge Retro Style)
+    ; MODERNIZED UEFI SETUP SCREEN RENDERER (Sleek Dark Slate & Sapphire UI)
     ; =========================================================================
 draw_setup_screen:
-    ; 1. Fill background with BIOS Blue (0x1F)
+    ; 1. Fill screen with Deep Obsidian Slate (0x0720) & Top/Bottom UEFI Sapphire Bars
     xor di, di
-    mov cx, 80 * 25
-    mov ax, 0x1F20
+    mov cx, 80
+    mov ax, 0x3F20                  ; Top Title Bar: Crisp White on Deep Teal/Cyan
+    rep stosw
+
+    mov cx, 23 * 80
+    mov ax, 0x1F20                  ; Main Canvas: Sapphire UEFI Blue
+    rep stosw
+
+    mov cx, 80
+    mov ax, 0x3F20                  ; Bottom Footer Bar
     rep stosw
 
     ; 2. Title bar (Row 0)
-    mov di, (0 * 80 + 6) * 2
+    mov di, (0 * 80 + 2) * 2
     mov si, str_setup_title
-    mov ah, 0x1F
+    mov ah, 0x3F
     call print_string
 
-    mov di, (0 * 80 + 50) * 2
+    mov di, (0 * 80 + 52) * 2
     mov si, str_setup_tab_hint
-    mov ah, 0x1E
+    mov ah, 0x3E
     call print_string
 
-    ; Divider line (Row 1)
-    mov di, (1 * 80 + 0) * 2
-    mov cx, 80
-    mov ax, 0x1F05
-    rep stosw
-
-    ; 3. Tab Bar (on Row 2)
+    ; 3. Modern Tab Bar + Hardware Telemetry Strip (Row 2)
     mov di, (2 * 80 + 6) * 2
     mov si, str_tab0_label
-    mov ah, 0x70                    ; Active: Black on Light Gray (Inverted)
+    mov ah, 0x70                    ; Active Pill: Dark Slate on Frosted Silver
     cmp byte [SETUP_TAB], 0
     je .draw_t0_hdr
-    mov ah, 0x17                    ; Inactive: Gray on Blue
+    mov ah, 0x17                    ; Inactive Pill
 .draw_t0_hdr:
     call print_string
 
-    mov di, (2 * 80 + 30) * 2
+    mov di, (2 * 80 + 29) * 2
     mov si, str_tab1_label
-    mov ah, 0x70                    ; Active: Black on Light Gray (Inverted)
+    mov ah, 0x70
     cmp byte [SETUP_TAB], 1
     je .draw_t1_hdr
-    mov ah, 0x17                    ; Inactive: Gray on Blue
+    mov ah, 0x17
 .draw_t1_hdr:
+    call print_string
+
+    ; Live USB 3.0 / USB 2.0 / Mouse badge on Row 2 Right (Col 52)
+    mov di, (2 * 80 + 52) * 2
+    mov si, str_setup_hw_badge
+    mov ah, 0x1A                    ; Neon Mint on Sapphire
     call print_string
 
     ; 4. Main options box (Rows 3 to 17, Cols 6 to 73)
     mov di, (3 * 80 + 6) * 2
-    mov ax, 0x1F01                  ; '┌'
+    mov ax, 0x1B01                  ; '╭' Electric Cyan
     stosw
     mov cx, 66
-    mov ax, 0x1F05                  ; '─'
+    mov ax, 0x1B05                  ; '═'
     rep stosw
-    mov ax, 0x1F02                  ; '┐'
+    mov ax, 0x1B02                  ; '╮'
     stosw
 
     mov di, (3 * 80 + 10) * 2
@@ -1090,34 +1279,34 @@ draw_setup_screen:
     je .draw_box_hdr
     mov si, str_box_title_shell
 .draw_box_hdr:
-    mov ah, 0x1E                    ; Yellow
+    mov ah, 0x1E                    ; Golden Yellow
     call print_string
 
     mov cx, 13
     mov di, (4 * 80 + 6) * 2
 .sb_vert1:
-    mov word [es:di], 0x1F06
-    mov word [es:di + 67 * 2], 0x1F06
+    mov word [es:di], 0x1B06
+    mov word [es:di + 67 * 2], 0x1B06
     add di, 80 * 2
     loop .sb_vert1
 
     mov di, (17 * 80 + 6) * 2
-    mov ax, 0x1F03                  ; '└'
+    mov ax, 0x1B03                  ; '╰'
     stosw
     mov cx, 66
-    mov ax, 0x1F05                  ; '─'
+    mov ax, 0x1B05                  ; '═'
     rep stosw
-    mov ax, 0x1F04                  ; '┘'
+    mov ax, 0x1B04                  ; '╯'
     stosw
 
-    ; 5. Help box (Rows 18 to 23, Cols 6 to 73)
+    ; 5. Help & Live Hardware Status Box (Rows 18 to 23, Cols 6 to 73)
     mov di, (18 * 80 + 6) * 2
-    mov ax, 0x1F01                  ; '┌'
+    mov ax, 0x1B01
     stosw
     mov cx, 66
-    mov ax, 0x1F05                  ; '─'
+    mov ax, 0x1B05
     rep stosw
-    mov ax, 0x1F02                  ; '┐'
+    mov ax, 0x1B02
     stosw
 
     mov di, (18 * 80 + 10) * 2
@@ -1128,24 +1317,30 @@ draw_setup_screen:
     mov cx, 4
     mov di, (19 * 80 + 6) * 2
 .sb_vert2:
-    mov word [es:di], 0x1F06
-    mov word [es:di + 67 * 2], 0x1F06
+    mov word [es:di], 0x1B06
+    mov word [es:di + 67 * 2], 0x1B06
     add di, 80 * 2
     loop .sb_vert2
 
     mov di, (23 * 80 + 6) * 2
-    mov ax, 0x1F03                  ; '└'
+    mov ax, 0x1B03
     stosw
     mov cx, 66
-    mov ax, 0x1F05                  ; '─'
+    mov ax, 0x1B05
     rep stosw
-    mov ax, 0x1F04                  ; '┘'
+    mov ax, 0x1B04
     stosw
 
-    ; 6. Footer / Keyboard controls (Row 24)
-    mov di, (24 * 80 + 4) * 2
+    ; Live Hardware Telemetry inside Help Box Row 22
+    mov di, (22 * 80 + 9) * 2
+    mov si, str_setup_usb_line
+    mov ah, 0x1B
+    call print_string
+
+    ; 6. Footer / Keyboard & Mouse controls (Row 24)
+    mov di, (24 * 80 + 2) * 2
     mov si, str_setup_footer
-    mov ah, 0x1F
+    mov ah, 0x3F
     call print_string
 
     ; Check which tab is active
@@ -1155,7 +1350,6 @@ draw_setup_screen:
     ; =========================================================================
     ; TAB 0: MAIN & GAME ITEMS (Indices 0..10)
     ; =========================================================================
-    ; Index 0 (Row 4): Setup Menu Tab
     mov bl, 0
     mov dh, 4
     mov si, str_opt_tab
@@ -1163,7 +1357,6 @@ draw_setup_screen:
     mov si, str_val_tab_main
     call draw_val_str
 
-    ; Index 1 (Row 5): Game Speed
     mov bl, 1
     mov dh, 5
     mov si, str_opt_speed
@@ -1180,7 +1373,6 @@ draw_setup_screen:
 .draw_spd_val:
     call draw_val_str
 
-    ; Index 2 (Row 6): Wall Collision
     mov bl, 2
     mov dh, 6
     mov si, str_opt_walls
@@ -1192,7 +1384,6 @@ draw_setup_screen:
 .draw_wall_val:
     call draw_val_str
 
-    ; Index 3 (Row 7): Sound Output
     mov bl, 3
     mov dh, 7
     mov si, str_opt_sound
@@ -1217,7 +1408,6 @@ draw_setup_screen:
 .draw_snd_val:
     call draw_val_str
 
-    ; Index 4 (Row 8): Snake Face Style
     mov bl, 4
     mov dh, 8
     mov si, str_opt_face
@@ -1229,7 +1419,6 @@ draw_setup_screen:
 .draw_face_val:
     call draw_val_str
 
-    ; Index 5 (Row 9): Starting Length
     mov bl, 5
     mov dh, 9
     mov si, str_opt_len
@@ -1246,7 +1435,6 @@ draw_setup_screen:
 .draw_len_val:
     call draw_val_str
 
-    ; Index 6 (Row 10): Victory Target
     mov bl, 6
     mov dh, 10
     mov si, str_opt_win
@@ -1268,7 +1456,6 @@ draw_setup_screen:
 .draw_win_val:
     call draw_val_str
 
-    ; Index 7 (Row 11): Color Theme
     mov bl, 7
     mov dh, 11
     mov si, str_opt_theme
@@ -1290,7 +1477,6 @@ draw_setup_screen:
 .draw_th_val:
     call draw_val_str
 
-    ; Index 8 (Row 12): Game Arena
     mov bl, 8
     mov dh, 12
     mov si, str_opt_arena
@@ -1307,13 +1493,11 @@ draw_setup_screen:
 .draw_ar_val:
     call draw_val_str
 
-    ; Index 9 (Row 14): Reset Defaults
     mov bl, 9
     mov dh, 14
     mov si, str_opt_reset
     call draw_menu_row
 
-    ; Index 10 (Row 15): Save & Boot Game
     mov bl, 10
     mov dh, 15
     mov si, str_opt_boot
@@ -1322,10 +1506,13 @@ draw_setup_screen:
     ; Info: Display Session High Score at Row 16
     mov di, (16 * 80 + 10) * 2
     mov si, str_hi_score_lbl
-    mov ah, 0x1E                    ; Yellow
+    mov ah, 0x1E
     call print_string
     mov ax, [HIGH_SCORE]
     call render_3digits_yellow
+    mov byte [es:di - 5], 0x1E
+    mov byte [es:di - 3], 0x1E
+    mov byte [es:di - 1], 0x1E
 
     ; Dynamic help text for Tab 0
     mov di, (20 * 80 + 9) * 2
@@ -1367,7 +1554,6 @@ draw_setup_screen:
     ; TAB 1: BIOSSHELL ITEMS (Indices 0..8)
     ; =========================================================================
 .draw_tab1_items:
-    ; Index 0 (Row 4): Setup Menu Tab
     mov bl, 0
     mov dh, 4
     mov si, str_opt_tab
@@ -1375,7 +1561,6 @@ draw_setup_screen:
     mov si, str_val_tab_shell
     call draw_val_str
 
-    ; Index 1 (Row 6): Launch BiosShell (primary action item!)
     mov bl, 1
     mov dh, 6
     mov si, str_opt_sh_launch
@@ -1383,7 +1568,6 @@ draw_setup_screen:
     mov si, str_val_sh_launch
     call draw_val_str
 
-    ; Index 2 (Row 8): Shell Color Scheme
     mov bl, 2
     mov dh, 8
     mov si, str_opt_sh_theme
@@ -1406,7 +1590,6 @@ draw_setup_screen:
 .draw_sht_val:
     call draw_val_str
 
-    ; Index 3 (Row 9): Shell Prompt Style
     mov bl, 3
     mov dh, 9
     mov si, str_opt_sh_prompt
@@ -1424,7 +1607,6 @@ draw_setup_screen:
 .draw_shp_val:
     call draw_val_str
 
-    ; Index 4 (Row 10): Startup Banner
     mov bl, 4
     mov dh, 10
     mov si, str_opt_sh_banner
@@ -1442,7 +1624,6 @@ draw_setup_screen:
 .draw_shb_val:
     call draw_val_str
 
-    ; Index 5 (Row 11): Keystroke Audio Beep
     mov bl, 5
     mov dh, 11
     mov si, str_opt_sh_beep
@@ -1454,7 +1635,6 @@ draw_setup_screen:
 .draw_shk_val:
     call draw_val_str
 
-    ; Index 6 (Row 12): Default POST Boot Target
     mov bl, 6
     mov dh, 12
     mov si, str_opt_sh_boot
@@ -1466,25 +1646,21 @@ draw_setup_screen:
 .draw_shbt_val:
     call draw_val_str
 
-    ; Index 7 (Row 14): Reset Shell Defaults
     mov bl, 7
     mov dh, 14
     mov si, str_opt_sh_reset
     call draw_menu_row
 
-    ; Index 8 (Row 15): Save & Boot Game
     mov bl, 8
     mov dh, 15
     mov si, str_opt_boot
     call draw_menu_row
 
-    ; Status line at Row 16 in BiosShell tab
     mov di, (16 * 80 + 10) * 2
     mov si, str_sh_tab_status
-    mov ah, 0x1B                    ; Bright Cyan on Blue
+    mov ah, 0x1B
     call print_string
 
-    ; Dynamic help text for Tab 1 (BiosShell)
     mov di, (20 * 80 + 9) * 2
     mov al, [SETUP_SEL]
     mov si, str_help_tab
@@ -1514,30 +1690,42 @@ draw_setup_screen:
     mov si, str_help_9
 
 .do_print_help:
-    mov ah, 0x1E                    ; Yellow
+    mov ah, 0x1E
     call print_string
     ret
 
 draw_menu_row:
     ; Input: bl = row index, dh = screen row (Y), si = string
+    ; Modern UEFI highlight: fills full row (Cols 8..71) with Teal highlight bar (0x3F) when selected!
     push ax
+    push cx
     push di
-    mov al, 10
-    mov ah, dh
+    cmp [SETUP_SEL], bl
+    jne .dm_not_sel_bg
+    mov al, 8
     push bx
-    mov bl, ah
+    mov bl, dh
+    call xy_to_di
+    pop bx
+    mov cx, 64
+    mov ax, 0x3F20
+    rep stosw
+.dm_not_sel_bg:
+    mov al, 10
+    push bx
+    mov bl, dh
     call xy_to_di
     pop bx
 
-    ; Display arrow when selected
-    mov ah, 0x1F                    ; Standard: White on Blue
+    mov ah, 0x1F
     cmp [SETUP_SEL], bl
     jne .dm_no_arrow
-    mov ah, 0x1E                    ; Yellow
-    mov al, '>'
+    mov ah, 0x3E                    ; Golden Arrow on Teal highlight bar
+    mov al, 0x0B                    ; '▶' Play/Selection triangle
     stosw
     mov al, ' '
     stosw
+    mov ah, 0x3F                    ; Crisp White label on Teal bar
     jmp .dm_print_txt
 .dm_no_arrow:
     mov al, ' '
@@ -1546,6 +1734,7 @@ draw_menu_row:
 .dm_print_txt:
     call print_string
     pop di
+    pop cx
     pop ax
     ret
 
@@ -1553,15 +1742,23 @@ draw_val_str:
     push ax
     push di
     mov al, 38                      ; Column 38 for value display
-    mov bl, dh                      ; Row dh
+    push bx
+    mov bl, dh
     call xy_to_di
-    mov ah, 0x1A                    ; Bright Green
+    pop bx
+    mov ah, 0x1A                    ; Neon Mint Green
+    cmp [SETUP_SEL], bl
+    jne .dv_go
+    mov ah, 0x3E                    ; Golden Yellow on Teal when selected
+.dv_go:
     call print_string
     pop di
     pop ax
     ret
 
 init_snake_game:
+    call mouse_hide_cursor
+    call apply_color_theme
     call clear_screen_black
     call draw_game_board
 
@@ -1598,10 +1795,16 @@ init_snake_game:
     mov word [SCORE], 0
     mov word [RND_SEED], 0x1337
 
-    ; Initialize golden apple & counters
+    ; Initialize golden apple, bulge & tongue state
     mov byte [GOLD_FOOD_X], 0xFF
     mov word [GOLD_TIMER], 0
     mov byte [APPLE_COUNT], 0
+    mov byte [BULGE_X], 0xFF
+    mov byte [BULGE_Y], 0xFF
+    mov byte [TONGUE_X], 0xFF
+    mov byte [TONGUE_TICK], 0
+    mov byte [CARD_BTN_SEL], 0
+    mov byte [MOUSE_CLICK], 0
 
     call update_score_display
     call draw_arena_obstacles
@@ -1609,22 +1812,44 @@ init_snake_game:
     call draw_snake
     call draw_fruit
 
-    ; Display start prompt
+    ; Display Maximalist Google Snake Sky-Blue Start Card!
     call draw_start_prompt
+    call mouse_show_cursor
     call drain_kbd
 
 .wait_start:
     call read_key
     test al, al
-    jz .wait_idle
+    jnz .wait_start_key
 
+    ; Check mouse hover & click on the 3 Royal-Blue Card Buttons!
+    call check_card_mouse_hover
+    test byte [MOUSE_CLICK], 0x01
+    jz .wait_idle
+    mov byte [MOUSE_CLICK], 0
+    mov dh, [MOUSE_Y]
+    cmp dh, 15
+    je .game_started
+    cmp dh, 17
+    je core_bios_setup
+    cmp dh, 19
+    je bios_shell_main
+    ; Clicking anywhere else on the playfield starts the game!
+    jmp .game_started
+
+.wait_start_key:
     cmp al, 0x01                    ; ESC -> Enter BIOS Setup
     je core_bios_setup
+    cmp al, 0x0F                    ; TAB -> Cycle Card Button (Play / Setup / Shell)
+    je .card_next_btn
+    cmp al, 0x03                    ; Key '2' -> BIOS Setup
+    je core_bios_setup
+    cmp al, 0x04                    ; Key '3' -> BIOS Shell
+    je bios_shell_main
 
-    ; Start with ENTER or SPACE (keeps default direction Right)
-    cmp al, 0x1C                    ; ENTER
-    je .game_started
-    cmp al, 0x39                    ; SPACE
+    cmp al, 0x1C                    ; ENTER -> Activate selected card button
+    je .card_activate_btn
+    cmp al, 0x39                    ; SPACE -> Start game immediately
     je .game_started
 
     ; Instant start with arrow keys / WASD!
@@ -1641,6 +1866,25 @@ init_snake_game:
     cmp al, 0x4D                    ; RIGHT Arrow
     je .start_right
     jmp .wait_idle
+
+.card_next_btn:
+    call sound_click
+    inc byte [CARD_BTN_SEL]
+    cmp byte [CARD_BTN_SEL], 3
+    jb .card_redraw_btns
+    mov byte [CARD_BTN_SEL], 0
+.card_redraw_btns:
+    call mouse_hide_cursor
+    call draw_card_buttons
+    call mouse_show_cursor
+    jmp .wait_idle
+
+.card_activate_btn:
+    cmp byte [CARD_BTN_SEL], 1
+    je core_bios_setup
+    cmp byte [CARD_BTN_SEL], 2
+    je bios_shell_main
+    jmp .game_started
 
 .start_up:
     mov byte [SNAKE_DIR], 0
@@ -1663,15 +1907,15 @@ init_snake_game:
     jmp .wait_start
 
 .game_started:
+    call mouse_hide_cursor
     call sound_start
     call erase_start_prompt
+    call mouse_show_cursor
 
     ; =========================================================================
     ; PHASE 4: MAIN GAME LOOP
     ; =========================================================================
 game_loop:
-    ; 1. Mini-ticks loop according to CFG_SPEED
-    ; Normal: 10 Ticks (~150ms), Fast: 7 Ticks (~105ms), Slow: 14 Ticks (~210ms)
     mov bp, 10
     cmp byte [CFG_SPEED], 1
     jne .chk_spd_slow
@@ -1725,7 +1969,6 @@ game_loop:
     dec al
 
 .move_calc_done:
-    ; Check if Wrap-Around is active (CFG_WALLS == 1)
     cmp byte [CFG_WALLS], 1
     jne .store_new_head
 
@@ -1767,7 +2010,6 @@ game_loop:
     jge .do_crash
 
 .no_wall_collision:
-    ; Check collision with arena obstacles (Pillars or Maze)
     mov al, [NEW_HEAD_X]
     mov bl, [NEW_HEAD_Y]
     call is_arena_wall
@@ -1795,10 +2037,8 @@ game_loop:
     dec word [GOLD_TIMER]
     jz .gold_expired
 
-    ; Countdown display on HUD at (34, 1): "GOLD: 0Xs"
     call update_gold_hud
 
-    ; Check if golden apple was eaten
     mov al, [NEW_HEAD_X]
     mov bl, [NEW_HEAD_Y]
     cmp al, [GOLD_FOOD_X]
@@ -1808,6 +2048,8 @@ game_loop:
 
     ; --- GOLDEN APPLE EATEN! (+50 Points) ---
     add word [SCORE], 50
+    mov [BULGE_X], al
+    mov [BULGE_Y], bl
     call sound_golden_apple
     call erase_gold_apple
     call update_score_display
@@ -1826,6 +2068,9 @@ game_loop:
     jne .normal_move
 
     ; --- REGULAR APPLE EATEN! ---
+    ; Record digesting apple bulge coordinate at eaten apple position!
+    mov [BULGE_X], al
+    mov [BULGE_Y], bl
     inc word [SCORE]
     inc byte [APPLE_COUNT]
     call update_score_display
@@ -1889,19 +2134,27 @@ game_loop:
     mov al, [NEW_HEAD_Y]
     mov [SNAKE_Y + 0], al
 
+    call mouse_hide_cursor
     call spawn_fruit
     call draw_snake
     call draw_fruit
+    call mouse_show_cursor
     jmp game_loop
 
 .normal_move:
-    ; Erase tail tip
+    call mouse_hide_cursor
+    ; Erase tail tip back to its 2-tone Grass Checkerboard tile!
     mov si, [SNAKE_LEN]
     dec si
     mov al, [SNAKE_X + si]
     mov bl, [SNAKE_Y + si]
-    call xy_to_di
-    mov word [es:di], 0x0720         ; Blank space
+    cmp al, [BULGE_X]
+    jne .erase_tail_tile
+    cmp bl, [BULGE_Y]
+    jne .erase_tail_tile
+    mov byte [BULGE_X], 0xFF        ; Digesting bulge reached the tail and finished!
+.erase_tail_tile:
+    call clear_grass_tile
 
     ; Shift segments
     mov cx, [SNAKE_LEN]
@@ -1921,9 +2174,12 @@ game_loop:
     mov [SNAKE_Y], al
 
     call draw_snake
+    call draw_fruit
+    call mouse_show_cursor
     jmp game_loop
 
 .do_crash:
+    call mouse_hide_cursor
     call crash_dissolve_animation
     jmp game_over
 
@@ -1931,137 +2187,111 @@ game_loop:
     ; PHASE 5A: VICTORY SCREEN (Trophy & Victory Fanfare)
     ; =========================================================================
 victory_screen:
+    call mouse_hide_cursor
     call sound_victory
+    call draw_grass_board
 
-    ; Clear playfield interior
-    mov dh, 4
-.clr_win_rows:
-    mov al, 11
-    mov bl, dh
-    call xy_to_di
-    mov cx, 58
-    mov ax, 0x0720
-    rep stosw
-    inc dh
-    cmp dh, 22
-    jb .clr_win_rows
-
-    ; Header & Title
     mov al, 20
     mov bl, 4
     call xy_to_di
     mov si, str_vic_hdr1
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
 
     mov al, 28
     mov bl, 5
     call xy_to_di
     mov si, str_vic_hdr2
-    mov ah, 0x0A
+    mov ah, 0x2F
     call print_string
 
-    ; Gold Trophy
     mov al, 32
     mov bl, 7
     call xy_to_di
     mov si, str_vic_t1
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
     mov al, 31
     mov bl, 8
     call xy_to_di
     mov si, str_vic_t2
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
     mov al, 32
     mov bl, 9
     call xy_to_di
     mov si, str_vic_t3
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
     mov al, 28
     mov bl, 10
     call xy_to_di
     mov si, str_vic_t4
-    mov ah, 0x0B
+    mov ah, 0x2F
     call print_string
     mov al, 32
     mov bl, 11
     call xy_to_di
     mov si, str_vic_t5
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
     mov al, 31
     mov bl, 12
     call xy_to_di
     mov si, str_vic_t6
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
     mov al, 32
     mov bl, 13
     call xy_to_di
     mov si, str_vic_t7
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
     mov al, 37
     mov bl, 14
     call xy_to_di
     mov si, str_vic_t8
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
     mov al, 34
     mov bl, 15
     call xy_to_di
     mov si, str_vic_t9
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
     mov al, 33
     mov bl, 16
     call xy_to_di
     mov si, str_vic_t10
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
     mov al, 33
     mov bl, 17
     call xy_to_di
     mov si, str_vic_t11
-    mov ah, 0x0F
+    mov ah, 0x2F
     call print_string
     mov al, 33
     mov bl, 18
     call xy_to_di
     mov si, str_vic_t12
-    mov ah, 0x0F
+    mov ah, 0x2F
     call print_string
     mov al, 33
     mov bl, 19
     call xy_to_di
     mov si, str_vic_t13
-    mov ah, 0x0E
+    mov ah, 0x2E
     call print_string
 
     mov al, 26
     mov bl, 21
     call xy_to_di
     mov si, str_vic_status
-    mov ah, 0x0B
+    mov ah, 0x2F
     call print_string
 
-    mov al, 0
-    mov bl, 24
-    call xy_to_di
-    mov cx, 80
-    mov ax, 0x0720
-    rep stosw
-
-    mov al, 17
-    mov bl, 24
-    call xy_to_di
-    mov si, str_vic_footer
-    mov ah, 0x07
-    call print_string
-
+    call mouse_show_cursor
     call drain_kbd
 
 .wait_vic_key:
@@ -2070,123 +2300,96 @@ victory_screen:
     je init_snake_game
     cmp al, 0x01
     je core_bios_setup
-    mov ecx, 30000000
+    test byte [MOUSE_CLICK], 0x01
+    jnz init_snake_game
+    mov ecx, 10000000
     call delay_cycles
     jmp .wait_vic_key
 
     ; =========================================================================
-    ; PHASE 5: GAME OVER MODAL DIALOG & TOP 3 HALL OF CHAMPIONS
+    ; PHASE 5: GOOGLE SNAKE SKY-BLUE GAME OVER POPUP CARD & HALL OF CHAMPIONS
     ; =========================================================================
 game_over:
+    call mouse_hide_cursor
     call sound_game_over
 
     ; Check if score qualifies for Top 3 -> Initials entry!
     call check_top3_qualification
 
-    ; Red Modal Box for GAME OVER (Cols 21..59, Rows 7..19)
-    mov al, 21
-    mov bl, 7
-    call xy_to_di
-    mov ax, 0x0C01
-    stosw ;  '╔' Red
-    mov cx, 37
-    mov ax, 0x0C05
-    rep stosw
-    mov ax, 0x0C02
-    stosw
-
-    mov dh, 8
-.go_box_mid:
-    mov al, 21
-    mov bl, dh
-    call xy_to_di
-    mov ax, 0x0C06
-    stosw
-    mov cx, 37
-    mov ax, 0x0720
-    rep stosw
-    mov ax, 0x0C06
-    stosw
-    inc dh
-    cmp dh, 19
-    jb .go_box_mid
-
-    mov al, 21
-    mov bl, 19
-    call xy_to_di
-    mov ax, 0x0C03
-    stosw
-    mov cx, 37
-    mov ax, 0x0C05
-    rep stosw
-    mov ax, 0x0C04
-    stosw
-
-    ; Row 8: "G A M E   O V E R"
-    mov al, 31
-    mov bl, 8
-    call xy_to_di
-    mov si, str_game_over
-    mov ah, 0x0C
-    call print_string
-
-    ; Row 9: "Final Score: XXX"
-    mov al, 32
-    mov bl, 9
-    call xy_to_di
-    mov si, str_final_score_lbl
-    mov ah, 0x0E
-    call print_string
-    mov ax, [SCORE]
-    call render_3digits_yellow
-
-    ; Row 10: Divider
-    mov al, 22
-    mov bl, 10
-    call xy_to_di
-    mov cx, 37
-    mov ax, 0x0C05
-    rep stosw
-
-    ; Row 11: "HALL OF CHAMPIONS"
-    mov al, 31
-    mov bl, 11
-    call xy_to_di
-    mov si, str_hall_title
-    mov ah, 0x0B
-    call print_string
-
-    ; Rows 13..15: Display Top 1, Top 2, Top 3
-    call draw_top3_rows
-
-    ; Row 16: Divider
-    mov al, 22
-    mov bl, 16
-    call xy_to_di
-    mov cx, 37
-    mov ax, 0x0C05
-    rep stosw
-
-    ; Row 18: "[ENTER] Restart   [ESC] Setup"
-    mov al, 25
-    mov bl, 18
-    call xy_to_di
-    mov si, str_go_restart_info
-    mov ah, 0x0B
-    call print_string
-
+    ; Render the Google Snake Sky-Blue Popup Card in Game Over mode (dl = 1)!
+    mov byte [CARD_BTN_SEL], 0
+    mov byte [MOUSE_CLICK], 0
+    mov dl, 1
+    call draw_google_popup_card
+    call mouse_show_cursor
     call drain_kbd
 
 .wait_enter:
     call read_key
-    cmp al, 0x1C
+    test al, al
+    jnz .go_got_key
+
+    call check_card_mouse_hover
+    test byte [MOUSE_CLICK], 0x01
+    jz .go_idle
+    mov byte [MOUSE_CLICK], 0
+    mov dh, [MOUSE_Y]
+    cmp dh, 15
     je .do_restart
-    cmp al, 0x01
+    cmp dh, 17
     je .do_setup
-    mov ecx, 30000000
+    cmp dh, 19
+    je .do_shell
+    jmp .do_restart
+
+.go_got_key:
+    cmp al, 0x1C                    ; ENTER -> Activate selected button
+    je .go_activate_btn
+    cmp al, 0x39                    ; SPACE -> Restart
+    je .do_restart
+    cmp al, 0x01                    ; ESC -> Setup
+    je .do_setup
+    cmp al, 0x0F                    ; TAB -> Next button
+    je .go_next_btn
+    cmp al, 0x48                    ; Up arrow
+    je .go_prev_btn
+    cmp al, 0x50                    ; Down arrow
+    je .go_next_btn
+    cmp al, 0x03                    ; '2' -> Setup
+    je .do_setup
+    cmp al, 0x04                    ; '3' -> Shell
+    je .do_shell
+
+.go_idle:
+    mov ecx, 2000000
     call delay_cycles
     jmp .wait_enter
 
+.go_next_btn:
+    call sound_click
+    inc byte [CARD_BTN_SEL]
+    cmp byte [CARD_BTN_SEL], 3
+    jb .go_redraw_btns
+    mov byte [CARD_BTN_SEL], 0
+    jmp .go_redraw_btns
+
+.go_prev_btn:
+    call sound_click
+    dec byte [CARD_BTN_SEL]
+    jns .go_redraw_btns
+    mov byte [CARD_BTN_SEL], 2
+
+.go_redraw_btns:
+    call mouse_hide_cursor
+    call draw_card_buttons
+    call mouse_show_cursor
+    jmp .go_idle
+
+.go_activate_btn:
+    cmp byte [CARD_BTN_SEL], 1
+    je .do_setup
+    cmp byte [CARD_BTN_SEL], 2
+    je .do_shell
 .do_restart:
     jmp init_snake_game
 
@@ -2194,14 +2397,63 @@ game_over:
     call sound_click
     jmp core_bios_setup
 
+.do_shell:
+    call sound_start
+    jmp bios_shell_main
+
     ; =========================================================================
-    ; PHASE 6: INPUT HANDLER (WASD + Arrows + ESC + Pause)
+    ; PHASE 6: INPUT HANDLER (WASD + Arrows + Mouse Click Steering & HUD!)
     ; =========================================================================
 handle_input:
     call read_key
     test al, al
-    jz .input_done
+    jnz .hi_got_key
 
+    ; Check if mouse button was clicked during gameplay!
+    test byte [MOUSE_CLICK], 0x01
+    jz .input_done
+    mov byte [MOUSE_CLICK], 0
+
+    ; Did user click the top Forest-Green HUD bar (Row 0..2)?
+    cmp byte [MOUSE_Y], 2
+    ja .mouse_steer_playfield
+    mov dl, [MOUSE_X]
+    cmp dl, 59
+    jb .hud_toggle_sound
+    cmp dl, 65
+    jb .do_pause
+    pop ax                          ; Clean up return address -> jump to Setup
+    call sound_click
+    jmp core_bios_setup
+
+.hud_toggle_sound:
+    inc byte [CFG_SOUND]
+    and byte [CFG_SOUND], 3
+    call sound_toggle
+    ret
+
+.mouse_steer_playfield:
+    ; Steer snake toward clicked playfield coordinate (MOUSE_X, MOUSE_Y)!
+    mov al, [SNAKE_DIR]
+    test al, 1                      ; Moving horizontally (Right=1 or Left=3)?
+    jnz .steer_vertical
+    ; Currently moving Up/Down -> Turn Left (3) or Right (1) toward MOUSE_X
+    mov cl, 1
+    mov dl, [MOUSE_X]
+    cmp dl, [SNAKE_X]
+    jae .apply_new_dir
+    mov cl, 3
+    jmp .apply_new_dir
+.steer_vertical:
+    ; Currently moving Left/Right -> Turn Up (0) or Down (2) toward MOUSE_Y
+    mov cl, 2
+    mov dh, [MOUSE_Y]
+    cmp dh, [SNAKE_Y]
+    jae .apply_new_dir
+    mov cl, 0
+    jmp .apply_new_dir
+
+.hi_got_key:
     cmp al, 0x01                    ; ESC -> Setup
     jne .chk_pause
     pop ax                          ; Clean up stack
@@ -2216,17 +2468,18 @@ handle_input:
     jmp .chk_wasd
 
 .do_pause:
+    call mouse_hide_cursor
     call sound_pause
-    ; Pause Modal Box (Cols 28..52, Rows 10..14)
+    ; Sky-Blue Pause Modal Box (Cols 28..52, Rows 10..14)
     mov al, 28
     mov bl, 10
     call xy_to_di
-    mov ax, 0x0B01
+    mov ax, 0x3B01
     stosw
     mov cx, 23
-    mov ax, 0x0B05
+    mov ax, 0x3B05
     rep stosw
-    mov ax, 0x0B02
+    mov ax, 0x3B02
     stosw
 
     mov dh, 11
@@ -2234,12 +2487,12 @@ handle_input:
     mov al, 28
     mov bl, dh
     call xy_to_di
-    mov ax, 0x0B06
+    mov ax, 0x3B06
     stosw
     mov cx, 23
-    mov ax, 0x0720
+    mov ax, 0x3F20
     rep stosw
-    mov ax, 0x0B06
+    mov ax, 0x3B06
     stosw
     inc dh
     cmp dh, 14
@@ -2248,29 +2501,31 @@ handle_input:
     mov al, 28
     mov bl, 14
     call xy_to_di
-    mov ax, 0x0B03
+    mov ax, 0x3B03
     stosw
     mov cx, 23
-    mov ax, 0x0B05
+    mov ax, 0x3B05
     rep stosw
-    mov ax, 0x0B04
+    mov ax, 0x3B04
     stosw
 
     mov al, 35
     mov bl, 11
     call xy_to_di
     mov si, str_paused_lbl
-    mov ah, 0x0E
+    mov ah, 0x3E
     call print_string
 
     mov al, 30
     mov bl, 13
     call xy_to_di
     mov si, str_pause_resume
-    mov ah, 0x0B
+    mov ah, 0x3F
     call print_string
 
+    call mouse_show_cursor
     call drain_kbd
+    mov byte [MOUSE_CLICK], 0
 
 .wait_pause_key:
     call read_key
@@ -2280,7 +2535,9 @@ handle_input:
     je .resume_game
     cmp al, 0x01
     je .pause_to_setup
-    mov ecx, 30000000
+    test byte [MOUSE_CLICK], 0x01
+    jnz .resume_game
+    mov ecx, 5000000
     call delay_cycles
     jmp .wait_pause_key
 
@@ -2290,30 +2547,25 @@ handle_input:
     jmp core_bios_setup
 
 .resume_game:
+    mov byte [MOUSE_CLICK], 0
+    call mouse_hide_cursor
     call sound_pause
-    ; Clear modal box & restore background
-    mov dh, 10
-.p_clr:
-    mov al, 28
-    mov bl, dh
-    call xy_to_di
-    mov cx, 25
-    mov ax, 0x0720
-    rep stosw
-    inc dh
-    cmp dh, 15
-    jb .p_clr
-
+    ; Restore Grass Checkerboard under pause modal
+    call draw_grass_board
     call draw_arena_obstacles
     call draw_snake
     call draw_fruit
     cmp byte [GOLD_FOOD_X], 0xFF
-    je .input_done
+    je .resume_done
     mov al, [GOLD_FOOD_X]
     mov bl, [GOLD_FOOD_Y]
     call xy_to_di
-    mov ax, 0x0E08
+    call get_grass_bg_ah
+    or ah, 0x0E
+    mov al, 0x08
     stosw
+.resume_done:
+    call mouse_show_cursor
     ret
 
 .chk_wasd:
@@ -2375,58 +2627,125 @@ handle_input:
     ret
 
     ; =========================================================================
-    ; PHASE 7: GRAPHICS & DRAWING FUNCTIONS
+    ; PHASE 7: GOOGLE SNAKE MAXIMALIST GRAPHICS & GRASS CHECKERBOARD ENGINE
     ; =========================================================================
+get_grass_bg_ah:
+    ; Input: AL = X, BL = Y
+    ; Output: AH = 0x20 (Medium Grass) if (X+Y) is even, 0x70 (Light Grass) if odd
+    push ax
+    add al, bl
+    test al, 1
+    pop ax
+    mov ah, 0x20
+    jz .ggb_done
+    mov ah, 0x70
+.ggb_done:
+    ret
+
+clear_grass_tile:
+    ; Restores cell (AL, BL) to its 2-tone Grass Checkerboard tile
+    push ax
+    push di
+    call xy_to_di
+    call get_grass_bg_ah
+    mov al, ' '
+    stosw
+    pop di
+    pop ax
+    ret
+
+draw_grass_board:
+    ; Fills the entire 58x18 playfield interior (Cols 11..68, Rows 4..21)
+    ; with the 2-tone Google Snake grass checkerboard (0x2020 and 0x7020)
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    mov dh, 4
+.dgb_row:
+    mov al, 11
+    mov bl, dh
+    call xy_to_di
+    mov dl, 11
+.dgb_col:
+    mov al, dl
+    mov bl, dh
+    call get_grass_bg_ah
+    mov al, ' '
+    stosw
+    inc dl
+    cmp dl, 69
+    jb .dgb_col
+    inc dh
+    cmp dh, 22
+    jb .dgb_row
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
 draw_game_board:
-    ; Left title: "CYBFORGE SNAKE" + "v2.8"
+    ; 1. Fill entire 80x25 screen with Dark Forest-Green outer frame (0x0F20)
+    xor di, di
+    mov cx, 80 * 25
+    mov ax, 0x0F20
+    rep stosw
+
+    ; 2. Top Google Snake HUD Bar (Row 1):
+    ; Left: Plump Red Apple Icon (0x0C08) + Score + Gold Trophy Icon (0x0E09) + High Score
     mov al, 10
+    mov bl, 1
+    call xy_to_di
+    mov ax, 0x0C08                  ; Red Apple Icon
+    stosw
+    mov ax, 0x0F20
+    stosw
+
+    mov al, 18
+    mov bl, 1
+    call xy_to_di
+    mov ax, 0x0E09                  ; Gold Trophy Icon
+    stosw
+    mov ax, 0x0F20
+    stosw
+
+    ; Center Title: "GOOGLE SNAKE BIOS v3.0"
+    mov al, 28
     mov bl, 1
     call xy_to_di
     mov si, str_game_title
-    mov ah, 0x0B
-    call print_string
-
-    mov al, 25
-    mov bl, 1
-    call xy_to_di
-    mov si, str_game_ver
-    mov ah, 0x07
-    call print_string
-
-    ; High Score Label: "HIGH: " at (50, 1)
-    mov al, 50
-    mov bl, 1
-    call xy_to_di
-    mov si, str_hi_score_lbl
-    mov ah, 0x0E
-    call print_string
-
-    ; Score Label: "SCORE: " at (63, 1)
-    mov al, 63
-    mov bl, 1
-    call xy_to_di
-    mov si, str_score_lbl
     mov ah, 0x0F
     call print_string
 
-    ; Controls bar at bottom Y=24
-    mov al, 8
+    ; Right Clickable HUD Buttons: [Sound] [Pause] [Setup]
+    mov al, 52
+    mov bl, 1
+    call xy_to_di
+    mov si, str_hud_buttons
+    mov ah, 0x0E
+    call print_string
+
+    ; Bottom Controls Bar (Row 24)
+    mov al, 6
     mov bl, 24
     call xy_to_di
     mov si, str_controls
-    mov ah, 0x07
+    mov ah, 0x0F
     call print_string
 
-    ; Playfield border (X: 10..69, Y: 3..22)
+    ; 3. Playfield Deep Moss Border Frame (X: 10..69, Y: 3..22, attr 0x4F)
     mov al, 10
     mov bl, 3
     call xy_to_di
-    mov ax, 0x0B01
+    mov ax, 0x4F01
     stosw
     mov cx, 58
-    mov ax, 0x0B05
+    mov ax, 0x4F05
     rep stosw
-    mov ax, 0x0B02
+    mov ax, 0x4F02
     stosw
 
     mov cx, 18
@@ -2435,11 +2754,11 @@ draw_game_board:
     mov al, 10
     mov bl, dh
     call xy_to_di
-    mov ax, 0x0B06
+    mov ax, 0x4F06
     stosw
     mov al, 69
     call xy_to_di
-    mov ax, 0x0B06
+    mov ax, 0x4F06
     stosw
     inc dh
     loop .vert_loop
@@ -2447,28 +2766,18 @@ draw_game_board:
     mov al, 10
     mov bl, 22
     call xy_to_di
-    mov ax, 0x0B03
+    mov ax, 0x4F03
     stosw
     mov cx, 58
-    mov ax, 0x0B05
+    mov ax, 0x4F05
     rep stosw
-    mov ax, 0x0B04
+    mov ax, 0x4F04
     stosw
 
-    ; Clear playfield interior
-    mov dh, 4
-.clr_inner:
-    mov al, 11
-    mov bl, dh
-    call xy_to_di
-    mov cx, 58
-    mov ax, 0x0720
-    rep stosw
-    inc dh
-    cmp dh, 22
-    jb .clr_inner
+    ; 4. Fill playfield interior with 2-tone Grass Checkerboard!
+    call draw_grass_board
 
-    ; Draw arena obstacles
+    ; 5. Draw arena obstacles
     call draw_arena_obstacles
     ret
 
@@ -2480,53 +2789,49 @@ draw_arena_obstacles:
     ret
 
 .draw_pillars:
-    ; Pillar 1: (24, 8)
     mov al, 24
     mov bl, 8
     call xy_to_di
-    mov word [es:di], 0x0B01
-    mov word [es:di+2], 0x0B02
+    mov word [es:di], 0x4E01
+    mov word [es:di+2], 0x4E02
     mov al, 24
     mov bl, 9
     call xy_to_di
-    mov word [es:di], 0x0B03
-    mov word [es:di+2], 0x0B04
+    mov word [es:di], 0x4E03
+    mov word [es:di+2], 0x4E04
 
-    ; Pillar 2: (54, 8)
     mov al, 54
     mov bl, 8
     call xy_to_di
-    mov word [es:di], 0x0B01
-    mov word [es:di+2], 0x0B02
+    mov word [es:di], 0x4E01
+    mov word [es:di+2], 0x4E02
     mov al, 54
     mov bl, 9
     call xy_to_di
-    mov word [es:di], 0x0B03
-    mov word [es:di+2], 0x0B04
+    mov word [es:di], 0x4E03
+    mov word [es:di+2], 0x4E04
 
-    ; Pillar 3: (24, 16)
     mov al, 24
     mov bl, 16
     call xy_to_di
-    mov word [es:di], 0x0B01
-    mov word [es:di+2], 0x0B02
+    mov word [es:di], 0x4E01
+    mov word [es:di+2], 0x4E02
     mov al, 24
     mov bl, 17
     call xy_to_di
-    mov word [es:di], 0x0B03
-    mov word [es:di+2], 0x0B04
+    mov word [es:di], 0x4E03
+    mov word [es:di+2], 0x4E04
 
-    ; Pillar 4: (54, 16)
     mov al, 54
     mov bl, 16
     call xy_to_di
-    mov word [es:di], 0x0B01
-    mov word [es:di+2], 0x0B02
+    mov word [es:di], 0x4E01
+    mov word [es:di+2], 0x4E02
     mov al, 54
     mov bl, 17
     call xy_to_di
-    mov word [es:di], 0x0B03
-    mov word [es:di+2], 0x0B04
+    mov word [es:di], 0x4E03
+    mov word [es:di+2], 0x4E04
     ret
 
 .draw_maze:
@@ -2534,13 +2839,13 @@ draw_arena_obstacles:
     mov bl, 9
     call xy_to_di
     mov cx, 26
-    mov ax, 0x0B05
+    mov ax, 0x4E05
     rep stosw
     mov al, 34
     mov bl, 16
     call xy_to_di
     mov cx, 26
-    mov ax, 0x0B05
+    mov ax, 0x4E05
     rep stosw
     ret
 
@@ -2597,51 +2902,466 @@ is_arena_wall:
     xor al, al                      ; ZF = 1
     ret
 
+    ; =========================================================================
+    ; GOOGLE SNAKE SKY-BLUE POPUP CARD (Start & Game Over with 3 Blue Buttons!)
+    ; =========================================================================
 draw_start_prompt:
 draw_start_box:
-    mov al, 22
-    mov bl, 16
+    xor dl, dl                      ; dl = 0: Start Card mode
+    call draw_google_popup_card
+    ret
+
+draw_google_popup_card:
+    ; Input: dl = 0 (Start Card), dl = 1 (Game Over Card)
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    ; 1. Draw Drop Shadow (Col 56 Rows 5..21, Cols 25..56 Row 21) in 0x5020
+    mov dh, 5
+.card_sh_v:
+    mov al, 56
+    mov bl, dh
     call xy_to_di
-    mov si, str_press_start
-    mov ah, 0x0E                    ; Bright Yellow
+    mov word [es:di], 0x5020
+    inc dh
+    cmp dh, 21
+    jb .card_sh_v
+
+    mov al, 25
+    mov bl, 21
+    call xy_to_di
+    mov cx, 32
+    mov ax, 0x5020
+    rep stosw
+
+    ; 2. Draw Sky-Blue Upper Card (Cols 24..55, Rows 4..13) in 0x3F / 0x3B
+    mov al, 24
+    mov bl, 4
+    call xy_to_di
+    mov ax, 0x3B01                  ; '╭'
+    stosw
+    mov cx, 30
+    mov ax, 0x3B05                  ; '═'
+    rep stosw
+    mov ax, 0x3B02                  ; '╮'
+    stosw
+
+    mov dh, 5
+.card_sky_mid:
+    mov al, 24
+    mov bl, dh
+    call xy_to_di
+    mov ax, 0x3B06
+    stosw
+    mov cx, 30
+    mov ax, 0x3F20
+    rep stosw
+    mov ax, 0x3B06
+    stosw
+    inc dh
+    cmp dh, 12
+    jb .card_sky_mid
+
+    ; 3. Rows 12 & 13 inside Card: 2-Row Green Grass Horizon Strip (Cols 25..54)
+    mov dh, 12
+.card_grass_rows:
+    mov al, 24
+    mov bl, dh
+    call xy_to_di
+    mov ax, 0x3B06
+    stosw
+    mov ch, 25
+.card_grass_cols:
+    mov al, ch
+    mov bl, dh
+    call get_grass_bg_ah
+    mov al, ' '
+    stosw
+    inc ch
+    cmp ch, 55
+    jb .card_grass_cols
+    mov ax, 0x3B06
+    stosw
+    inc dh
+    cmp dh, 14
+    jb .card_grass_rows
+
+    ; 4. Card Title on Row 5
+    mov al, 29
+    mov bl, 5
+    call xy_to_di
+    mov si, str_card_start_hdr
+    cmp dl, 0
+    je .card_pr_hdr
+    mov al, 31
+    mov bl, 5
+    call xy_to_di
+    mov si, str_game_over
+.card_pr_hdr:
+    mov ah, 0x3F                    ; Crisp White on Sky Blue
     call print_string
+
+    ; 5. Big Red Apple Icon (Col 32, Row 7) & Gold Trophy Icon (Col 46, Row 7)
+    mov al, 32
+    mov bl, 7
+    call xy_to_di
+    mov ax, 0x3C08                  ; Plump Red Apple on Sky Blue
+    stosw
+
+    mov al, 46
+    mov bl, 7
+    call xy_to_di
+    mov ax, 0x3E09                  ; Gold Trophy Cup on Sky Blue
+    stosw
+
+    ; 6. Score under Apple (Col 31, Row 8) & High Score under Trophy (Col 45, Row 8)
+    mov al, 31
+    mov bl, 8
+    call xy_to_di
+    mov ax, [SCORE]
+    call render_3digits_card
+
+    mov al, 45
+    mov bl, 8
+    call xy_to_di
+    mov ax, [HIGH_SCORE]
+    call render_3digits_card
+
+    ; 7. Cute Royal-Blue Snake Artwork on Row 12 (sitting on the grass horizon!)
+    mov al, 33
+    mov bl, 12
+    call xy_to_di
+    mov ax, 0x290E                  ; Tapered Tail
+    stosw
+    mov ax, 0x790C                  ; Body
+    stosw
+    mov ax, 0x290D                  ; Bulge
+    stosw
+    mov ax, 0x790C                  ; Body
+    stosw
+    mov ax, 0x2A07                  ; Big-Eyed Cute Head (or Dizzy Head on Game Over)
+    cmp dl, 0
+    je .card_snk_head
+    mov ax, 0x2E10                  ; Knocked-Out Dizzy Head on Game Over!
+.card_snk_head:
+    stosw
+    mov ax, 0x7C18                  ; Flicking Red Tongue
+    stosw
+    mov ax, 0x2020
+    stosw
+    mov ax, 0x7C08                  ; Red Apple ahead of snake on grass!
+    stosw
+
+    ; If Game Over (dl == 1), also display Top Champion on Row 10
+    cmp dl, 1
+    jne .card_lower_panel
+    mov al, 28
+    mov bl, 10
+    call xy_to_di
+    mov si, str_card_champ_lbl
+    mov ah, 0x3E
+    call print_string
+    mov si, TOP3_TABLE + 0
+    mov ah, 0x3F
+    call print_3chars
+
+.card_lower_panel:
+    ; 8. Lower Button Frame (Cols 24..55, Rows 14..20)
+    mov dh, 14
+.card_bot_rows:
+    mov al, 24
+    mov bl, dh
+    call xy_to_di
+    mov ax, 0x3B06
+    stosw
+    mov cx, 30
+    mov ax, 0x3F20
+    rep stosw
+    mov ax, 0x3B06
+    stosw
+    inc dh
+    cmp dh, 20
+    jb .card_bot_rows
+
+    mov al, 24
+    mov bl, 20
+    call xy_to_di
+    mov ax, 0x3B03                  ; '╰'
+    stosw
+    mov cx, 30
+    mov ax, 0x3B05                  ; '═'
+    rep stosw
+    mov ax, 0x3B04                  ; '╯'
+    stosw
+
+    ; Draw the 3 Royal-Blue Action Buttons (Rows 15, 17, 19)
+    call draw_card_buttons
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+draw_card_buttons:
+    ; Renders the 3 clickable Google Royal-Blue buttons inside the popup card:
+    ; Row 15 (Btn 0): [ ▶  Play Snake Game       ]
+    ; Row 17 (Btn 1): [ ⚙  BIOS Setup & Settings ]
+    ; Row 19 (Btn 2): [ >_ Launch UEFI/BIOS Shell]
+    push ax
+    push bx
+    push si
+    push di
+
+    mov al, 26
+    mov bl, 15
+    call xy_to_di
+    mov si, str_card_btn_play
+    mov ah, 0x1F
+    cmp byte [CARD_BTN_SEL], 0
+    jne .dcb_b0
+    mov ah, 0x1E                    ; Highlighted Golden Text on Royal Blue
+.dcb_b0:
+    call print_string
+
+    mov al, 26
+    mov bl, 17
+    call xy_to_di
+    mov si, str_card_btn_setup
+    mov ah, 0x1F
+    cmp byte [CARD_BTN_SEL], 1
+    jne .dcb_b1
+    mov ah, 0x1E
+.dcb_b1:
+    call print_string
+
+    mov al, 26
+    mov bl, 19
+    call xy_to_di
+    mov si, str_card_btn_shell
+    mov ah, 0x1F
+    cmp byte [CARD_BTN_SEL], 2
+    jne .dcb_b2
+    mov ah, 0x1E
+.dcb_b2:
+    call print_string
+
+    pop di
+    pop si
+    pop bx
+    pop ax
+    ret
+
+check_card_mouse_hover:
+    ; Updates [CARD_BTN_SEL] if mouse hovers over Rows 15, 17, or 19 (Cols 26..53)
+    push ax
+    mov al, [MOUSE_X]
+    cmp al, 26
+    jb .ccmh_done
+    cmp al, 53
+    ja .ccmh_done
+    mov al, [MOUSE_Y]
+    cmp al, 15
+    je .ccmh_set0
+    cmp al, 17
+    je .ccmh_set1
+    cmp al, 19
+    je .ccmh_set2
+    jmp .ccmh_done
+.ccmh_set0:
+    mov ah, 0
+    jmp .ccmh_apply
+.ccmh_set1:
+    mov ah, 1
+    jmp .ccmh_apply
+.ccmh_set2:
+    mov ah, 2
+.ccmh_apply:
+    cmp [CARD_BTN_SEL], ah
+    je .ccmh_done
+    mov [CARD_BTN_SEL], ah
+    call mouse_hide_cursor
+    call draw_card_buttons
+    call mouse_show_cursor
+.ccmh_done:
+    pop ax
+    ret
+
+render_3digits_card:
+    xor dx, dx
+    mov cx, 100
+    div cx
+    add al, '0'
+    mov ah, 0x3F
+    stosw
+    mov ax, dx
+    xor dx, dx
+    mov cx, 10
+    div cx
+    add al, '0'
+    mov ah, 0x3F
+    stosw
+    mov al, dl
+    add al, '0'
+    mov ah, 0x3F
+    stosw
     ret
 
 erase_start_prompt:
 erase_start_box:
-    mov al, 22
-    mov bl, 16
-    call xy_to_di
-    mov cx, 36
-    mov ax, 0x0720                  ; Blank spaces
-    rep stosw
-    call draw_arena_obstacles       ; Redraw obstacles in case any was at row 16
+    call draw_grass_board
+    call draw_arena_obstacles
+    call draw_snake
+    call draw_fruit
     ret
 
+    ; =========================================================================
+    ; MAXIMALIST GOOGLE SNAKE RENDERER (Head, Chomp, Tongue, Bulge, Tapered Tail)
+    ; =========================================================================
 draw_snake:
-    mov al, [SNAKE_X]
-    mov bl, [SNAKE_Y]
-    call xy_to_di
-    mov al, 0x07
-    cmp byte [CFG_FACE], 1
-    jne .draw_head_glyph
-    mov al, 0x0A
-.draw_head_glyph:
-    mov ah, 0x0A
-    stosw
+    ; 1. Erase previous flicking tongue tile if active
+    cmp byte [TONGUE_X], 0xFF
+    je .ds_no_old_tongue
+    mov al, [TONGUE_X]
+    mov bl, [TONGUE_Y]
+    call clear_grass_tile
+    mov byte [TONGUE_X], 0xFF
+.ds_no_old_tongue:
 
+    ; 2. Draw Body Segments (si = 1 .. SNAKE_LEN - 1)
     mov cx, [SNAKE_LEN]
     dec cx
-    jz .draw_snake_done
+    jz .ds_draw_head
     mov si, 1
 .body_loop:
     mov al, [SNAKE_X + si]
     mov bl, [SNAKE_Y + si]
     call xy_to_di
-    mov ax, 0x0209
+    call get_grass_bg_ah
+    or ah, 0x09                     ; Royal Blue Snake Body on Grass
+
+    ; Check if this is the Tapered Tail Tip (last segment: cx == 1)
+    cmp cx, 1
+    jne .ds_chk_bulge
+    mov al, 0x0E                    ; 0x0E = Tapered Tail Tip glyph
+    jmp .ds_put_seg
+
+.ds_chk_bulge:
+    ; Check if this segment is at the Digesting Apple Bulge coordinate!
+    mov dl, [SNAKE_X + si]
+    cmp dl, [BULGE_X]
+    jne .ds_std_seg
+    mov dl, [SNAKE_Y + si]
+    cmp dl, [BULGE_Y]
+    jne .ds_std_seg
+    mov al, 0x0D                    ; 0x0D = Plump Digesting Apple Bulge glyph!
+    jmp .ds_put_seg
+
+.ds_std_seg:
+    mov al, 0x0C                    ; 0x0C = Rounded Body Segment glyph
+.ds_put_seg:
     stosw
     inc si
     loop .body_loop
+
+.ds_draw_head:
+    ; 3. Draw Expressive Snake Head at (SNAKE_X[0], SNAKE_Y[0])
+    mov al, [SNAKE_X]
+    mov bl, [SNAKE_Y]
+    call xy_to_di
+    call get_grass_bg_ah
+    or ah, 0x0A                     ; Bright Royal/Cornflower Blue Head on Grass
+
+    ; Check Manhattan distance to Apple: |SNAKE_X - FOOD_X| + |SNAKE_Y - FOOD_Y| <= 3 -> Wide-Open Chomp Mouth (0x0F)!
+    push ax
+    mov dl, [SNAKE_X]
+    sub dl, [FOOD_X]
+    jns .dx_pos
+    neg dl
+.dx_pos:
+    mov dh, [SNAKE_Y]
+    sub dh, [FOOD_Y]
+    jns .dy_pos
+    neg dh
+.dy_pos:
+    add dl, dh
+    pop ax
+    cmp dl, 3
+    jbe .ds_chomp_head
+
+    mov al, 0x07                    ; 0x07 = Big-Eyed Cute Google Snake Head
+    cmp byte [CFG_FACE], 1
+    jne .ds_put_head
+    mov al, 0x0A                    ; 0x0A = Cool Sunglasses Head
+    jmp .ds_put_head
+
+.ds_chomp_head:
+    mov al, 0x0F                    ; 0x0F = Wide-Open Chomp Mouth Head!
+    stosw
+    ret                             ; Don't draw tongue when mouth is wide open chomping!
+
+.ds_put_head:
+    stosw
+
+    ; 4. Animate Flicking Red Forked Tongue (0x18) 1 tile ahead of the head!
+    inc byte [TONGUE_TICK]
+    test byte [TONGUE_TICK], 2
+    jnz .draw_snake_done
+
+    mov al, [SNAKE_X]
+    mov bl, [SNAKE_Y]
+    mov cl, [SNAKE_DIR]
+    cmp cl, 0
+    jne .tg_not_u
+    dec bl
+    jmp .tg_chk_bounds
+.tg_not_u:
+    cmp cl, 1
+    jne .tg_not_r
+    inc al
+    jmp .tg_chk_bounds
+.tg_not_r:
+    cmp cl, 2
+    jne .tg_not_d
+    inc bl
+    jmp .tg_chk_bounds
+.tg_not_d:
+    dec al
+
+.tg_chk_bounds:
+    cmp al, 11
+    jb .draw_snake_done
+    cmp al, 68
+    ja .draw_snake_done
+    cmp bl, 4
+    jb .draw_snake_done
+    cmp bl, 21
+    ja .draw_snake_done
+
+    ; Not on food or obstacle
+    cmp al, [FOOD_X]
+    jne .tg_chk_wall
+    cmp bl, [FOOD_Y]
+    je .draw_snake_done
+.tg_chk_wall:
+    call is_arena_wall
+    jz .draw_snake_done
+
+    ; Draw Red Forked Tongue (0x18) on grass tile!
+    mov [TONGUE_X], al
+    mov [TONGUE_Y], bl
+    call xy_to_di
+    call get_grass_bg_ah
+    or ah, 0x0C                     ; Bright Scarlet Red on Grass
+    mov al, 0x18                    ; 0x18 = Forked Tongue glyph
+    stosw
+
 .draw_snake_done:
     ret
 
@@ -2649,7 +3369,9 @@ draw_fruit:
     mov al, [FOOD_X]
     mov bl, [FOOD_Y]
     call xy_to_di
-    mov ax, 0x0C08
+    call get_grass_bg_ah
+    or ah, 0x0C                     ; Bright Red Apple on Grass
+    mov al, 0x08
     stosw
     ret
 
@@ -2671,13 +3393,11 @@ spawn_fruit:
     add dl, 4
     mov [FOOD_Y], dl
 
-    ; Not on arena obstacle
     mov al, [FOOD_X]
     mov bl, [FOOD_Y]
     call is_arena_wall
     jz .retry_food
 
-    ; Not on snake body
     mov cx, [SNAKE_LEN]
     xor si, si
     mov al, [FOOD_X]
@@ -2718,7 +3438,6 @@ spawn_golden_apple:
     add dl, 4
     mov [GOLD_FOOD_Y], dl
 
-    ; Not on regular apple
     mov al, [GOLD_FOOD_X]
     cmp al, [FOOD_X]
     jne .g_chk_wall
@@ -2731,7 +3450,6 @@ spawn_golden_apple:
     call is_arena_wall
     jz .retry_gold
 
-    ; Not on snake body
     mov cx, [SNAKE_LEN]
     xor si, si
     mov al, [GOLD_FOOD_X]
@@ -2745,13 +3463,14 @@ spawn_golden_apple:
     inc si
     loop .chk_gold_body
 
-    ; Draw golden apple & set timer (~8s = 55 Ticks)
     mov word [GOLD_TIMER], 55
     mov al, [GOLD_FOOD_X]
     mov bl, [GOLD_FOOD_Y]
     call xy_to_di
-    mov ax, 0x0E08
-    stosw ;  Bright Yellow / Gold Apple
+    call get_grass_bg_ah
+    or ah, 0x0E                     ; Golden Apple on Grass
+    mov al, 0x08
+    stosw
     call sound_golden_spawn
     jmp .gold_spawn_ok
 
@@ -2769,33 +3488,30 @@ erase_gold_apple:
     je .no_erase_gold
     mov al, [GOLD_FOOD_X]
     mov bl, [GOLD_FOOD_Y]
-    call xy_to_di
-    mov word [es:di], 0x0720
+    call clear_grass_tile
     mov byte [GOLD_FOOD_X], 0xFF
-    ; Clear countdown text on HUD
-    mov al, 34
+    ; Restore title on HUD
+    mov al, 28
     mov bl, 1
     call xy_to_di
-    mov cx, 10
-    mov ax, 0x0720
-    rep stosw
+    mov si, str_game_title
+    mov ah, 0x0F
+    call print_string
 .no_erase_gold:
     ret
 
 update_gold_hud:
-    mov al, 34
+    mov al, 42
     mov bl, 1
     call xy_to_di
     mov si, str_gold_lbl
     mov ah, 0x0E
     call print_string
 
-    ; Seconds = GOLD_TIMER / 7
     mov ax, [GOLD_TIMER]
     xor dx, dx
     mov cx, 7
     div cx
-    ; Display 1-digit seconds + 's'
     add al, '0'
     mov ah, 0x0E
     stosw
@@ -2823,17 +3539,19 @@ update_score_display:
     mov [HIGH_SCORE], ax
 
 .render_hi:
-    mov al, 56
-    mov bl, 1
-    call xy_to_di
-    mov ax, [HIGH_SCORE]
-    call render_3digits_yellow
-
-    mov al, 70
+    ; Score next to Red Apple Icon at (12, 1)
+    mov al, 12
     mov bl, 1
     call xy_to_di
     mov ax, [SCORE]
     call render_3digits_white
+
+    ; High Score next to Gold Trophy Icon at (20, 1)
+    mov al, 20
+    mov bl, 1
+    call xy_to_di
+    mov ax, [HIGH_SCORE]
+    call render_3digits_yellow
 
     pop dx
     pop cx
@@ -2882,74 +3600,52 @@ render_3digits_white:
     ret
 
     ; =========================================================================
-    ; PHASE 8: CRASH DISSOLVE, TOP 3 LEADERBOARD & SOUND ENGINE
+    ; PHASE 8: GOOGLE SNAKE DIZZY-STARS CRASH ANIMATION & TOP 3 LEADERBOARD
     ; =========================================================================
 crash_dissolve_animation:
-    ; 1. Sound Blaster 16 Sub-Bass Crash & Metal Shatter
+    ; 1. Play Cartoon Sub-Bass Bonk + Dizzy Stars PCM audio
     call sound_crash
 
-    ; Low PC Speaker buzz when speaker active
-    cmp byte [CFG_SOUND], 1
-    je .buzz_spk
-    cmp byte [CFG_SOUND], 2
-    je .buzz_spk
-    jmp .buzz_done
-.buzz_spk:
-    mov bx, 0x1200                  ; ~150 Hz
-    call force_speaker_tone
-    mov ecx, 15000000               ; ~60 ms
-    call delay_cycles
-    call stop_tone
-.buzz_done:
+    ; 2. Draw Knocked-Out Dizzy Snake Head (0x10) at (SNAKE_X[0], SNAKE_Y[0])
+    mov al, [SNAKE_X]
+    mov bl, [SNAKE_Y]
+    call xy_to_di
+    call get_grass_bg_ah
+    or ah, 0x0E                     ; Gold/Yellow Dizzy Head on Grass
+    mov al, 0x10                    ; 0x10 = Knocked-Out Dizzy Head
+    stosw
 
-    ; 2. Flash Red/White twice
-    mov cx, 2
-.flash_loop:
+    ; 3. Animate twinkling Dizzy Stars ('*', '+') around the snake head (8 frames)
+    mov cx, 8
+.dizzy_star_loop:
     push cx
-    mov cx, [SNAKE_LEN]
-    xor si, si
-.fl_red:
-    mov al, [SNAKE_X + si]
-    mov bl, [SNAKE_Y + si]
+    mov al, [SNAKE_X]
+    mov bl, [SNAKE_Y]
+    cmp bl, 5
+    jb .ds_skip_top_stars
+    dec bl
     call xy_to_di
-    mov byte [es:di+1], 0x0C        ; Bright Red
-    inc si
-    loop .fl_red
-    mov ecx, 10000000
-    call delay_cycles
-
-    mov cx, [SNAKE_LEN]
-    xor si, si
-.fl_wht:
-    mov al, [SNAKE_X + si]
-    mov bl, [SNAKE_Y + si]
-    call xy_to_di
-    mov byte [es:di+1], 0x0F        ; Bright White
-    inc si
-    loop .fl_wht
-    mov ecx, 10000000
+    call get_grass_bg_ah
+    or ah, 0x0E
+    mov al, '*'
+    test cl, 1
+    jz .ds_st1
+    mov al, '+'
+    xor ah, 0x01                    ; Alternate Gold (0x0E) & White (0x0F)
+.ds_st1:
+    cmp byte [SNAKE_X], 12
+    jb .ds_st_r
+    mov [es:di - 2], ax
+.ds_st_r:
+    cmp byte [SNAKE_X], 67
+    ja .ds_skip_top_stars
+    xor al, ('*' ^ '+')
+    mov [es:di + 2], ax
+.ds_skip_top_stars:
+    mov ecx, 11000000               ; ~45ms per dizzy star frame
     call delay_cycles
     pop cx
-    loop .flash_loop
-
-    ; 3. Dissolve from tail to head with pop sounds
-    mov si, [SNAKE_LEN]
-    dec si
-.dissolve_loop:
-    mov al, [SNAKE_X + si]
-    mov bl, [SNAKE_Y + si]
-    call xy_to_di
-    mov word [es:di], 0x0720
-    mov bx, 0x0600
-    sub bx, si
-    call start_tone
-    mov ecx, 1200000
-    call delay_cycles
-    call stop_tone
-    mov ecx, 3000000
-    call delay_cycles
-    dec si
-    jns .dissolve_loop
+    loop .dizzy_star_loop
     ret
 
 check_top3_qualification:
@@ -3526,17 +4222,40 @@ save_cmos_settings:
     call ata_sync_nvram
     ret
 
-    ; --- VGA HARDWARE DAC THEMES ---
+    ; --- VGA HARDWARE DAC THEMES (Dual Mode: Modern UEFI Dark vs Google Snake Grass) ---
+load_ui_palette:
+    push ax
+    push si
+    push cx
+    push dx
+    mov byte [UI_PAL_MODE], 0
+    mov si, ui_modern_palette
+    mov dx, 0x3C8
+    xor al, al
+    out dx, al
+    mov dx, 0x3C9
+    mov cx, 48
+.ui_dac_loop:
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    loop .ui_dac_loop
+    pop dx
+    pop cx
+    pop si
+    pop ax
+    ret
+
 apply_color_theme:
     push ax
     push si
     push cx
     push dx
+    mov byte [UI_PAL_MODE], 1
 
     mov al, [CFG_THEME]
     and al, 3
     xor ah, ah
-    mov si, ax
     mov cx, 48
     mul cl
     mov si, ax
@@ -3577,14 +4296,14 @@ post_ram_counter:
     mov ah, 0x07
     call print_string
 
-    ; Hardware-Speaker-Tick (~2 ms)
-    mov bx, 0x0480
+    ; Soft, pleasant hardware tick (~1.2 ms)
+    mov bx, 0x0680
     call start_tone
-    mov ecx, 500000
+    mov ecx, 300000
     call delay_cycles
     call stop_tone
 
-    mov ecx, 12000000
+    mov ecx, 10000000
     call delay_cycles
     add bp, 64
     cmp bp, 640
@@ -3649,6 +4368,7 @@ drain_kbd:
     dec cx
     jnz .drain_loop
 .drain_empty:
+    mov byte [MOUSE_PKT_IDX], 0
     ret
 
 read_key:
@@ -3656,12 +4376,481 @@ read_key:
     in al, 0x64
     test al, 0x01
     jz .no_key
+    test al, 0x20                   ; Bit 5 = 8042 Auxiliary Mouse byte!
+    jnz .rk_mouse_byte
     in al, 0x60
+    mov byte [MOUSE_PKT_IDX], 0     ; Reset mouse packet sync on keyboard byte
     test al, 0x80
     jnz .rk_loop
     ret
+.rk_mouse_byte:
+    in al, 0x60
+    call mouse_process_byte
+    jmp .rk_loop
 .no_key:
     xor al, al
+    ret
+
+    ; =========================================================================
+    ; BARE-METAL 8042 PS/2 AUX & USB POINTER HARDWARE MOUSE DRIVER
+    ; =========================================================================
+mouse_init:
+    push ax
+    push cx
+    mov word [MOUSE_FINE_X], 320
+    mov word [MOUSE_FINE_Y], 200
+    mov byte [MOUSE_X], 40
+    mov byte [MOUSE_Y], 12
+    mov byte [MOUSE_BTN], 0
+    mov byte [MOUSE_PREV_BTN], 0
+    mov byte [MOUSE_CLICK], 0
+    mov byte [MOUSE_PKT_IDX], 0
+    mov byte [MOUSE_CUR_VIS], 0
+    mov word [MOUSE_EVT_CNT], 0
+    mov byte [MOUSE_READY], 1
+
+    ; 1. Enable Auxiliary Mouse Device (Command 0xA8 to Port 0x64)
+    call kbc_wait_write
+    mov al, 0xA8
+    out 0x64, al
+
+    ; 2. Read 8042 Controller Command Byte (0x20)
+    call kbc_wait_write
+    mov al, 0x20
+    out 0x64, al
+    call kbc_wait_read
+    in al, 0x60
+    or al, 0x42                     ; Enable Aux IRQ/Stream + Scancode Set 1 Translation
+    and al, 0xDF                    ; Clear Bit 5 (Enable Aux Mouse Clock)
+    push ax
+
+    ; 3. Write updated 8042 Command Byte (0x60)
+    call kbc_wait_write
+    mov al, 0x60
+    out 0x64, al
+    call kbc_wait_write
+    pop ax
+    out 0x60, al
+
+    ; 4. Send 0xF6 (Set Defaults) to Mouse via 0xD4 prefix
+    mov ah, 0xF6
+    call mouse_write_cmd
+
+    ; 5. Send 0xF4 (Enable Data Reporting) to Mouse via 0xD4 prefix
+    mov ah, 0xF4
+    call mouse_write_cmd
+
+    call drain_kbd
+    pop cx
+    pop ax
+    ret
+
+mouse_write_cmd:
+    ; Sends command byte in AH to PS/2 Aux Mouse and reads ACK (0xFA)
+    call kbc_wait_write
+    mov al, 0xD4
+    out 0x64, al
+    call kbc_wait_write
+    mov al, ah
+    out 0x60, al
+    call kbc_wait_read
+    in al, 0x60
+    ret
+
+kbc_wait_write:
+    push cx
+    push ax
+    mov cx, 10000
+.kww_lp:
+    in al, 0x64
+    test al, 0x02
+    jz .kww_ok
+    loop .kww_lp
+.kww_ok:
+    pop ax
+    pop cx
+    ret
+
+kbc_wait_read:
+    push cx
+    push ax
+    mov cx, 10000
+.kwr_lp:
+    in al, 0x64
+    test al, 0x01
+    jnz .kwr_ok
+    loop .kwr_lp
+.kwr_ok:
+    pop ax
+    pop cx
+    ret
+
+mouse_process_byte:
+    ; Processes 1 byte (in AL) from the 3-byte PS/2 mouse packet stream
+    push ax
+    push bx
+    push cx
+    push dx
+
+    mov bl, [MOUSE_PKT_IDX]
+    cmp bl, 0
+    je .mpb_byte0
+    cmp bl, 1
+    je .mpb_byte1
+
+    ; --- Byte 2: Delta Y (Packet Complete!) ---
+    mov byte [MOUSE_PKT_IDX], 0
+    inc word [MOUSE_EVT_CNT]
+    mov cl, al                      ; CL = raw dY
+    mov bh, [MOUSE_PKT_B0]          ; BH = status/buttons/signs
+
+    ; 1. Signed Delta X (from MOUSE_PKT_B1 and Bit 4 of BH)
+    xor ah, ah
+    mov al, [MOUSE_PKT_B1]
+    test bh, 0x10                   ; X sign bit?
+    jz .mpb_dx_pos
+    mov ah, 0xFF
+.mpb_dx_pos:
+    add ax, [MOUSE_FINE_X]
+    cmp ax, 0
+    jge .mpb_x_min_ok
+    xor ax, ax
+.mpb_x_min_ok:
+    cmp ax, 639
+    jle .mpb_x_max_ok
+    mov ax, 639
+.mpb_x_max_ok:
+    mov [MOUSE_FINE_X], ax
+    shr ax, 3                       ; Text column = fine_x / 8 (0..79)
+    mov [MOUSE_X], al
+
+    ; 2. Signed Delta Y (from CL and Bit 5 of BH; PS/2 +Y is up, screen +Y is down)
+    xor ah, ah
+    mov al, cl
+    test bh, 0x20                   ; Y sign bit?
+    jz .mpb_dy_pos
+    mov ah, 0xFF
+.mpb_dy_pos:
+    mov dx, [MOUSE_FINE_Y]
+    sub dx, ax
+    cmp dx, 0
+    jge .mpb_y_min_ok
+    xor dx, dx
+.mpb_y_min_ok:
+    cmp dx, 399
+    jle .mpb_y_max_ok
+    mov dx, 399
+.mpb_y_max_ok:
+    mov [MOUSE_FINE_Y], dx
+    shr dx, 4                       ; Text row = fine_y / 16 (0..24)
+    mov [MOUSE_Y], dl
+
+    ; 3. Buttons & rising-edge click detection
+    mov al, bh
+    and al, 0x07
+    mov ah, [MOUSE_PREV_BTN]
+    not ah
+    and ah, al                      ; AH = newly pressed buttons (rising edge!)
+    or [MOUSE_CLICK], ah
+    mov [MOUSE_PREV_BTN], al
+    mov [MOUSE_BTN], al
+
+    ; 4. Move live software cursor on screen!
+    call mouse_show_cursor
+    jmp .mpb_done
+
+.mpb_byte0:
+    ; Validate Bit 3 (always 1 in standard PS/2 packet) and no overflow (Bits 6,7 == 0)
+    test al, 0x08
+    jz .mpb_done
+    test al, 0xC0
+    jnz .mpb_done
+    mov [MOUSE_PKT_B0], al
+    mov byte [MOUSE_PKT_IDX], 1
+    jmp .mpb_done
+
+.mpb_byte1:
+    mov [MOUSE_PKT_B1], al
+    mov byte [MOUSE_PKT_IDX], 2
+
+.mpb_done:
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+mouse_hide_cursor:
+    cmp byte [MOUSE_CUR_VIS], 1
+    jne .mhc_done
+    push ax
+    push bx
+    push di
+    mov al, [MOUSE_OLD_X]
+    mov bl, [MOUSE_OLD_Y]
+    call xy_to_di
+    mov ax, [MOUSE_SAVED_W]
+    mov [es:di], ax
+    mov byte [MOUSE_CUR_VIS], 0
+    pop di
+    pop bx
+    pop ax
+.mhc_done:
+    ret
+
+mouse_show_cursor:
+    push ax
+    push bx
+    push di
+    call mouse_hide_cursor
+    mov al, [MOUSE_X]
+    mov bl, [MOUSE_Y]
+    mov [MOUSE_OLD_X], al
+    mov [MOUSE_OLD_Y], bl
+    call xy_to_di
+    mov ax, [es:di]
+    mov [MOUSE_SAVED_W], ax
+    and ah, 0x70                    ; Preserve cell background color
+    or ah, 0x0F                     ; Crisp Bright White Pointer (0x0F)
+    mov al, 0x14                    ; 0x14 = Custom Diagonal Arrow Pointer '↖'
+    mov [es:di], ax
+    mov byte [MOUSE_CUR_VIS], 1
+    pop di
+    pop bx
+    pop ax
+    ret
+
+    ; =========================================================================
+    ; BARE-METAL xHCI (USB 3.0) & EHCI (USB 2.0) PCI/MMIO DRIVER
+    ; Scans PCI Bus 0 (0xCF8/0xCFC), assigns MMIO BAR0 if unassigned, enables
+    ; Bus Master + Memory Space, starts controllers, and scans Root Hub PORTSC!
+    ; =========================================================================
+usb_init_controllers:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+
+    mov byte [XHCI_FOUND], 0
+    mov byte [EHCI_FOUND], 0
+    mov byte [XHCI_PORTS_CONN], 0
+    mov byte [EHCI_PORTS_CONN], 0
+
+    xor cx, cx                      ; CL = Device (0..31), CH = Function (0..7)
+.usb_pci_loop:
+    mov eax, 0x80000000
+    movzx edx, cl
+    shl edx, 11
+    or eax, edx
+    movzx edx, ch
+    shl edx, 8
+    or eax, edx
+    mov esi, eax                    ; ESI = Base PCI Config Address for (Bus 0, Dev CL, Fn CH)
+
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    in eax, dx                      ; EAX = [DeviceID (31:16) | VendorID (15:0)]
+    cmp ax, 0xFFFF
+    je .usb_pci_next
+    test ax, ax
+    jz .usb_pci_next
+
+    mov ebx, eax                    ; EBX = [DeviceID | VendorID]
+
+    ; Read Class / Subclass / ProgIF at Reg 0x08
+    mov eax, esi
+    or eax, 0x08
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    in eax, dx
+    shr eax, 8                      ; EAX = 0x00CCSSPP (Class, Subclass, ProgIF)
+
+    cmp eax, 0x000C0330             ; Class 0Ch, Subclass 03h, ProgIF 30h = xHCI (USB 3.0)!
+    je .init_xhci_ctrl
+    cmp eax, 0x000C0320             ; Class 0Ch, Subclass 03h, ProgIF 20h = EHCI (USB 2.0)!
+    je .init_ehci_ctrl
+    jmp .usb_pci_next
+
+.init_xhci_ctrl:
+    mov byte [XHCI_FOUND], 1
+    mov [XHCI_BUS_DEV], cl
+    mov [XHCI_VEN_ID], bx
+    shr ebx, 16
+    mov [XHCI_DEV_ID], bx
+
+    ; Read BAR0 (Reg 0x10)
+    mov eax, esi
+    or eax, 0x10
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    in eax, dx
+    and eax, 0xFFFFF000
+    jnz .xhci_bar_ok
+    ; Assign 0xFEB00000 to xHCI BAR0 (and 0 to BAR1 64-bit high dword)
+    mov eax, esi
+    or eax, 0x14
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    xor eax, eax
+    out dx, eax
+
+    mov eax, esi
+    or eax, 0x10
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    mov eax, 0xFEB00000
+    out dx, eax
+.xhci_bar_ok:
+    mov ebx, eax                    ; EBX = xHCI MMIO Base (e.g. 0xFEB00000)
+
+    ; Enable PCI Memory Space (Bit 1) + Bus Master (Bit 2) in Command Reg 0x04
+    mov eax, esi
+    or eax, 0x04
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    in ax, dx
+    or ax, 0x0006
+    out dx, ax
+
+    ; Read xHCI Capability Registers via 32-bit Flat Unreal Mode [fs:ebx]!
+    a32 mov eax, [fs:ebx + 0x00]    ; AL = CAPLENGTH, High Word = HCIVERSION
+    movzx edi, al
+    add edi, ebx                    ; EDI = xHCI Operational Base (MMIO + CAPLENGTH)
+    shr eax, 16
+    mov [XHCI_HCI_VER], ax
+
+    a32 mov eax, [fs:ebx + 0x04]    ; HCSPARAMS1: Bits 7:0 = MaxSlots, Bits 31:24 = MaxPorts
+    mov [XHCI_MAX_SLOTS], al
+    shr eax, 24
+    mov [XHCI_MAX_PORTS], al
+
+    ; Start xHCI Controller: Set USBCMD.RS (Bit 0) at Operational Base + 0x00
+    a32 mov eax, [fs:edi + 0x00]
+    or eax, 1
+    a32 mov [fs:edi + 0x00], eax
+
+    ; Scan xHCI Root Hub PORTSC registers (Operational Base + 0x400 + port * 0x10)
+    a32 mov eax, [fs:edi + 0x400]
+    mov [XHCI_PORT1_SC], eax
+
+    movzx edx, byte [XHCI_MAX_PORTS]
+    test edx, edx
+    jz .usb_pci_next
+    xor eax, eax
+.xhci_port_scan:
+    push eax
+    shl eax, 4
+    add eax, edi
+    a32 mov eax, [fs:eax + 0x400]
+    test al, 1                      ; Bit 0 = CCS (Current Connect Status)
+    jz .xhci_port_next
+    inc byte [XHCI_PORTS_CONN]
+.xhci_port_next:
+    pop eax
+    inc eax
+    cmp eax, edx
+    jb .xhci_port_scan
+    jmp .usb_pci_next
+
+.init_ehci_ctrl:
+    mov byte [EHCI_FOUND], 1
+    mov [EHCI_BUS_DEV], cl
+    mov [EHCI_VEN_ID], bx
+    shr ebx, 16
+    mov [EHCI_DEV_ID], bx
+
+    ; Read BAR0 (Reg 0x10)
+    mov eax, esi
+    or eax, 0x10
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    in eax, dx
+    and eax, 0xFFFFF000
+    jnz .ehci_bar_ok
+    mov eax, esi
+    or eax, 0x10
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    mov eax, 0xFEB10000
+    out dx, eax
+.ehci_bar_ok:
+    mov ebx, eax                    ; EBX = EHCI MMIO Base (e.g. 0xFEB10000)
+
+    ; Enable PCI Memory Space + Bus Master in Command Reg 0x04
+    mov eax, esi
+    or eax, 0x04
+    mov dx, 0x0CF8
+    out dx, eax
+    mov dx, 0x0CFC
+    in ax, dx
+    or ax, 0x0006
+    out dx, ax
+
+    ; Read EHCI Capability Registers via [fs:ebx]!
+    a32 mov eax, [fs:ebx + 0x00]    ; AL = CAPLENGTH, High Word = HCIVERSION
+    movzx edi, al
+    add edi, ebx                    ; EDI = EHCI Operational Base
+    shr eax, 16
+    mov [EHCI_HCI_VER], ax
+
+    a32 mov eax, [fs:ebx + 0x04]    ; HCSPARAMS: Bits 3:0 = N_PORTS
+    and al, 0x0F
+    mov [EHCI_MAX_PORTS], al
+
+    ; Start EHCI Controller (USBCMD.RS = 1) & Route all ports to EHCI (CONFIGFLAG = 1)
+    a32 mov eax, [fs:edi + 0x00]
+    or eax, 1
+    a32 mov [fs:edi + 0x00], eax
+    mov eax, 1
+    a32 mov [fs:edi + 0x40], eax    ; CONFIGFLAG = 1
+
+    ; Scan EHCI Root Hub PORTSC registers (Operational Base + 0x44 + port * 4)
+    a32 mov eax, [fs:edi + 0x44]
+    mov [EHCI_PORT1_SC], eax
+
+    movzx edx, byte [EHCI_MAX_PORTS]
+    test edx, edx
+    jz .usb_pci_next
+    xor eax, eax
+.ehci_port_scan:
+    push eax
+    shl eax, 2
+    add eax, edi
+    a32 mov eax, [fs:eax + 0x44]
+    test al, 1                      ; Bit 0 = CCS (Current Connect Status)
+    jz .ehci_port_next
+    inc byte [EHCI_PORTS_CONN]
+.ehci_port_next:
+    pop eax
+    inc eax
+    cmp eax, edx
+    jb .ehci_port_scan
+
+.usb_pci_next:
+    inc ch
+    cmp ch, 8
+    jb .usb_pci_loop
+    xor ch, ch
+    inc cl
+    cmp cl, 32
+    jb .usb_pci_loop
+
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
     ret
 
 start_tone:
@@ -3937,9 +5126,9 @@ sound_click:
     push ax
     push bx
     push ecx
-    mov bx, 0x054C
+    mov bx, 0x0740                  ; Warm, soft low-mid wooden tap (~640 Hz)
     call force_speaker_tone
-    mov ecx, 3750000
+    mov ecx, 950000                 ; Ultra-short ~2ms subtle tactile click
     call delay_cycles
     call stop_tone
     pop ecx
@@ -3954,13 +5143,13 @@ sound_toggle:
     push ax
     push bx
     push ecx
-    mov bx, 0x0474
+    mov bx, 0x0620
     call force_speaker_tone
-    mov ecx, 3750000
+    mov ecx, 1400000
     call delay_cycles
-    mov bx, 0x0389
+    mov bx, 0x04A0
     call set_tone_freq
-    mov ecx, 6250000
+    mov ecx, 1800000
     call delay_cycles
     call stop_tone
     pop ecx
@@ -4228,49 +5417,61 @@ gdt_desc:
     dw 15
     dd 0xF0000 + gdt
 
-; --- Cybforge POST Screen Strings ---
+; --- Cybforge POST Screen Strings (v3.0 Modernized) ---
+str_post_top_bar:
+    db "CYBFORGE UEFI/BIOS v3.0-MAX  |  xHCI USB 3.0 + EHCI USB 2.0 + Mouse Active", 0
 str_post_hdr1:
     db "Cybforge Retro BIOS (C)2026 Cybforge Systems Inc.", 0
 str_post_hdr2:
-    db "BIOS Date: 11/01/2026  Ver: 2.20.00-PRO", 0
+    db "BIOS Date: 11/08/2026  Ver: 3.00.00-MAX (Google Snake Ed.)", 0
 str_post_cpu:
-    db "CPU Type    : Genuine x86 Processor @ 3.50 GHz", 0
+    db "CPU Type    : Genuine x86-32 CPU @ 3.50 GHz (4GB Unreal)", 0
 str_post_coproc:
-    db "Co-Processor: Installed & Enabled", 0
+    db "Audio DSP   : Sound Blaster 16 Studio Synth (16-Bit DMA 5)", 0
 str_post_vga:
-    db "VGA Display : Cybforge PCI Color Video (16MB)", 0
+    db "VGA Display : Cybforge PCI Video (Dual-Palette Grass UI)", 0
 str_post_kbd:
-    db "Keyboard    : 8042 PS/2 Controller OK", 0
+    db "HID Input   : 8042 PS/2 Keyboard + Hardware Mouse Driver OK", 0
 str_post_pit:
-    db "Timer Clock : Intel 8254 PIT @ 1.19318 MHz OK", 0
-str_post_disp_mon:
-    db "Display Mon : Auto-Detected 1920x1080 FHD (16:9)", 0
-str_post_vid_scale:
-    db "Resolution  : Adaptive 80x25 Matrix Scaler Active", 0
+    db "Timer Clock : Intel 8254 PIT @ 1.193 MHz + CMOS RTC Clock OK", 0
+str_post_xhci_ok:
+    db "USB 3.0 Bus : QEMU xHCI SuperSpeed Controller (MMIO 0xFEB00000, RS=1) OK", 0
+str_post_xhci_none:
+    db "USB 3.0 Bus : xHCI Host Controller Not Detected on PCI Bus 0", 0
+str_post_ehci_ok:
+    db "USB 2.0 Bus : Intel ICH9 EHCI High-Speed Controller (MMIO 0xFEB10000) OK", 0
+str_post_ehci_none:
+    db "USB 2.0 Bus : EHCI Host Controller Not Detected on PCI Bus 0", 0
 str_post_mem:
     db "Base Memory : 640K OK", 0
 str_post_ext:
-    db "Extended Mem: 15360K OK", 0
+    db "Extended Mem: 15360K OK (DMA Bounce @ 0x20000, CybFS Live @ 0x3000)", 0
 str_post_drives:
-    db "Fixed Disks : None (Bare-Metal ROM Boot)", 0
+    db "NVRAM Disk  : Persistent ATA Primary Master (LBA 0..31, CybFS v1.0) OK", 0
 str_post_f12:
-    db "Press F12 for BIOS Setup (or DEL)", 0
+    db ">> Press [F12 / DEL] or Click Here for UEFI BIOS Setup <<", 0
 str_post_boot:
-    db "Booting into Snake in 3s... (or press ENTER)", 0
+    db "Booting Google Snake v3.0 in 3s... (Press [ENTER] or Click to Start Now)", 0
+str_post_bot_bar:
+    db "[F12/DEL] BIOS Setup    [ENTER/Click] Boot Google Snake    [Mouse] Active", 0
 str_logo_lbl1:
     db "   CYBFORGE   ", 0
 str_logo_lbl2:
-    db "  RETRO BIOS  ", 0
+    db "  UEFI v3.0   ", 0
 
-; --- Cybforge Setup Utility Strings ---
+; --- Cybforge Setup Utility Strings (v3.0 Modernized) ---
 str_setup_title:
-    db "CYBFORGE RETRO BIOS SETUP UTILITY", 0
+    db "CYBFORGE UEFI/BIOS SETUP UTILITY v3.0", 0
+str_setup_hw_badge:
+    db "xHCI:OK EHCI:OK Mouse:ON", 0
+str_setup_usb_line:
+    db "Bus 0: xHCI USB 3.0 (FEB00000h) | EHCI USB 2.0 (FEB10000h) | Mouse", 0
 str_box_title_main:
-    db " Standard CMOS & Retro Game Features ", 0
+    db " Google Snake Maximalist & Hardware Features ", 0
 str_box_title_help:
-    db " Item Specific Help ", 0
+    db " Item Guidance & Live Bus Telemetry ", 0
 str_setup_footer:
-    db "[TAB] Switch Tab      [W/S] Select   [A/D/ENTER] Action   [ESC] Boot", 0
+    db "[Click/TAB] Tab    [Click/W/S] Select    [Click/ENTER] Change    [ESC] Boot", 0
 
 str_opt_speed:
     db "Game Speed        : ", 0
@@ -4279,15 +5480,15 @@ str_opt_walls:
 str_opt_sound:
     db "Sound Output      : ", 0
 str_opt_face:
-    db "Snake Face Style  : ", 0
+    db "Snake Head Style  : ", 0
 str_opt_len:
     db "Starting Length   : ", 0
 str_opt_disp:
     db "Screen Geometry   : ", 0
 str_opt_reset:
-    db "Reset Defaults    : [ Press ENTER ]", 0
+    db "Reset Defaults    : [ Click / Press ENTER ]", 0
 str_opt_boot:
-    db "Save & Boot Game  : [ Press ENTER ]", 0
+    db "Save & Play Snake : [ Click / Press ENTER ]", 0
 
 str_val_spd_norm:
     db "< Normal (120ms) >", 0
@@ -4297,16 +5498,16 @@ str_val_spd_slow:
     db "< Slow (160ms)   >", 0
 
 str_val_wall_solid:
-    db "< Solid (Crash)  >", 0
+    db "< Solid Border   >", 0
 str_val_wall_wrap:
     db "< Wrap-Around    >", 0
 
 str_val_snd_sb16:
-    db "< SB16 16-Bit >   ", 0
+    db "< Studio SB16 >   ", 0
 str_val_snd_spk:
     db "< PC Speaker >    ", 0
 str_val_snd_dual:
-    db "< Dual Audio >    ", 0
+    db "< Dual Synth >    ", 0
 str_val_snd_off:
     db "< Muted >         ", 0
 
@@ -4316,7 +5517,7 @@ str_post_pcspk:
     db "Sound System     : Standard PC Speaker (PIT 8254 Ch 2)", 0
 
 str_val_face_smile:
-    db "< Classic Smile  >", 0
+    db "< Google BigEyes >", 0
 str_val_face_cool:
     db "< Cool Shades    >", 0
 
@@ -4339,37 +5540,36 @@ str_val_disp_full:
 str_help_0:
     db "Set snake speed: Normal (120ms), Fast (80ms), Slow (160ms).", 0
 str_help_1:
-    db "Solid: crash on walls. Wrap-Around: pass through walls!", 0
+    db "Solid: crash on forest border. Wrap-Around: pass through walls!", 0
 str_help_2:
-    db "Enable or mute internal PC Speaker sound effects.", 0
+    db "Select Studio SB16 16-Bit Marimba/Synth PCM, PC Speaker, or Dual.", 0
 str_help_3:
-    db "Select snake head texture: Classic Smile or Cool Sunglasses.", 0
+    db "Select snake head style: Google Snake Big-Eyes or Cool Sunglasses.", 0
 str_help_4:
-    db "Starting length of the snake body at game launch.", 0
+    db "Starting length of the royal-blue snake body at game launch.", 0
 str_help_5:
-    db "Win goal: Fill the 1044-tile board or reach apple goal to win trophy!", 0
+    db "Win goal: Fill the 1044-tile grass board or reach apple target!", 0
 str_help_6:
-    db "Reset all BIOS and game settings back to factory defaults.", 0
+    db "Choose playfield theme: Google Grass Checkerboard, Emerald, Sunset, Arcade.", 0
 str_help_7:
-    db "Save configuration settings and immediately boot into Snake.", 0
+    db "Choose arena layout: Open Meadow, Four Pillars, or The Maze.", 0
 
-; --- Cybforge Setup Utility Strings (Updated) ---
 str_opt_theme:
-    db "Color Theme       : ", 0
+    db "Board Theme       : ", 0
 str_opt_arena:
-    db "Game Arena        : ", 0
+    db "Arena Layout      : ", 0
 
 str_val_theme_cyber:
-    db "< Cyberpunk Neon >", 0
+    db "< Google Grass   >", 0
 str_val_theme_matr:
-    db "< Matrix Green   >", 0
+    db "< Cyber Emerald  >", 0
 str_val_theme_amber:
-    db "< Amber CRT      >", 0
+    db "< Golden Autumn  >", 0
 str_val_theme_cga:
-    db "< CGA Retro      >", 0
+    db "< Retro Arcade   >", 0
 
 str_val_arena_open:
-    db "< Classic Open   >", 0
+    db "< Open Meadow    >", 0
 str_val_arena_pil:
     db "< Four Pillars   >", 0
 str_val_arena_maze:
@@ -4378,33 +5578,46 @@ str_val_arena_maze:
 str_help_8:
     db "Reset all BIOS and game settings back to factory defaults.", 0
 str_help_9:
-    db "Save settings to CMOS NVRAM and immediately boot into Snake.", 0
+    db "Save settings to NVRAM disk and launch Google Snake!", 0
 
-; --- Snake Game Strings ---
+; --- Google Snake Maximalist Game Strings ---
 str_game_title:
-    db "CYBFORGE SNAKE", 0
+    db "GOOGLE SNAKE BIOS v3.0", 0
 str_game_ver:
-    db "v2.8", 0
+    db "v3.0", 0
+str_hud_buttons:
+    db "[Sound] [Pause] [Setup]", 0
 str_hi_score_lbl:
-    db "HIGH: ", 0
+    db "BEST: ", 0
 str_score_lbl:
     db "SCORE: ", 0
 str_gold_lbl:
     db "GOLD: ", 0
 str_controls:
-    db "Controls: [WASD / Arrows] Move   [P / SPACE] Pause   [ESC] Setup", 0
+    db "Controls: [WASD/Arrows/Click] Steer  [Click HUD] Sound/Pause/Setup  [ESC] Setup", 0
 
-; Start Prompt Strings
+; Google Snake Sky-Blue Popup Card Strings
+str_card_start_hdr:
+    db "G O O G L E   S N A K E", 0
+str_card_champ_lbl:
+    db "Top Champion: #1 ", 0
+str_card_btn_play:
+    db "[ ", 0x0B, "  Play Snake Game       ]", 0
+str_card_btn_setup:
+    db "[ ", 0x12, "  BIOS Setup & Settings ]", 0
+str_card_btn_shell:
+    db "[ ", 0x13, "  Launch UEFI/BIOS Shell]", 0
+
 str_press_start:
 str_press_enter:
 str_start_title:
-    db "[ENTER / SPACE / MOVE]  Start Game", 0
+    db "[ENTER / SPACE / CLICK]  Play Snake", 0
 
 ; Pause Modal Box Strings
 str_paused_lbl:
-    db "P A U S E D", 0
+    db "G A M E   P A U S E D", 0
 str_pause_resume:
-    db "[P / SPACE] Continue", 0
+    db "[SPACE / Click] Continue", 0
 
 ; Game Over & Hall of Champions Strings
 str_game_over:
@@ -4422,7 +5635,7 @@ str_top3_pfx:
 str_dots:
     db " ........ ", 0
 str_go_restart_info:
-    db "[ENTER] Restart   [ESC] Setup", 0
+    db "[ENTER/Click] Play Again   [ESC] Setup", 0
 
 ; New High Score Initials Dialog Strings
 str_new_rec_lbl:
@@ -4493,7 +5706,10 @@ str_vic_footer:
 ; PHASE 8: CYBFORGE EXTENDED UEFI / BIOS INTERACTIVE SHELL v2.5 (LIVE CYBFS)
 ; =============================================================================
 bios_shell_main:
+    call mouse_hide_cursor
+    call load_ui_palette
     call drain_kbd
+    mov byte [MOUSE_CLICK], 0
     call fs_ensure_mounted          ; Mount CybFS from ROM Block 0 if not yet mounted
     mov byte [SH_SHIFT], 0
     mov byte [SH_CTRL], 0
@@ -4562,7 +5778,55 @@ bios_shell_main:
 .sh_input_loop:
     call sh_read_key_event
     test al, al
+    jnz .sh_got_key_ev
+
+    ; Check if user clicked the bottom quick-action dock (Row 23 or 24) with the Mouse!
+    test byte [MOUSE_CLICK], 0x01
     jz .sh_idle
+    mov byte [MOUSE_CLICK], 0
+    cmp byte [MOUSE_Y], 23
+    jb .sh_idle
+    mov dl, [MOUSE_X]
+    cmp dl, 13
+    jb .sh_dock_help
+    cmp dl, 28
+    jb .sh_dock_usb
+    cmp dl, 43
+    jb .sh_dock_ls
+    cmp dl, 60
+    jb .sh_dock_snake
+    jmp .sh_dock_setup
+
+.sh_dock_help:
+    mov si, cmd_help
+    jmp .sh_dock_run
+.sh_dock_usb:
+    mov si, cmd_usb
+    jmp .sh_dock_run
+.sh_dock_ls:
+    mov si, cmd_ls
+    jmp .sh_dock_run
+.sh_dock_snake:
+    mov si, cmd_snake
+    jmp .sh_dock_run
+.sh_dock_setup:
+    mov si, cmd_exit
+
+.sh_dock_run:
+    xor bx, bx
+.sh_dock_cp:
+    mov al, [cs:si + bx]
+    test al, al
+    jz .sh_dock_go
+    mov [SH_CMD_BUF + bx], al
+    inc bx
+    jmp .sh_dock_cp
+.sh_dock_go:
+    mov [SH_CMD_LEN], bl
+    call sh_draw_input_line
+    jmp .sh_on_enter
+
+.sh_got_key_ev:
 
     ; Check special keys:
     cmp al, 0x1C                    ; ENTER -> Execute command
@@ -4865,7 +6129,17 @@ sh_read_key_event:
     in al, 0x64
     test al, 0x01
     jz .sh_no_key
+    test al, 0x20                   ; Bit 5 = 8042 Auxiliary Mouse byte!
+    jnz .sh_mouse_ev
     in al, 0x60
+    mov byte [MOUSE_PKT_IDX], 0
+    jmp .sh_kbd_ev
+.sh_mouse_ev:
+    in al, 0x60
+    call mouse_process_byte
+    xor al, al
+    ret
+.sh_kbd_ev:
     cmp al, 0xE0                    ; Ignore extended scancode prefix
     je .sh_no_key
     cmp al, 0x2A                    ; Left Shift Make
@@ -4949,6 +6223,7 @@ sh_init_theme:
     ret
 
 sh_clear_screen:
+    call mouse_hide_cursor
     ; Row 0: Top Status Bar
     xor di, di
     mov cx, 80
@@ -5028,6 +6303,7 @@ sh_clear_screen:
 
     mov byte [SH_CUR_ROW], 2
     mov byte [SH_CUR_COL], 2
+    call mouse_show_cursor
     ret
 
 sh_newline:
@@ -5199,9 +6475,11 @@ sh_draw_input_line:
     mov al, '_'
     mov ah, [SH_HIGH_ATTR]
     call sh_print_char
+    call mouse_show_cursor
     ret
 
 sh_draw_input_no_cursor:
+    call mouse_hide_cursor
     mov al, 1
     mov bl, [SH_CUR_ROW]
     call xy_to_di
@@ -5681,6 +6959,25 @@ sh_execute_command:
     mov si, cmd_off
     call sh_match_cmd
     jc .do_sh_shutdown
+
+    ; 33. usb / lsusb / xhci / ehci (Live xHCI USB 3.0 & EHCI USB 2.0 MMIO Inspector!)
+    mov si, cmd_usb
+    call sh_match_cmd
+    jc .do_sh_usb
+    mov si, cmd_lsusb
+    call sh_match_cmd
+    jc .do_sh_usb
+    mov si, cmd_xhci
+    call sh_match_cmd
+    jc .do_sh_usb
+    mov si, cmd_ehci
+    call sh_match_cmd
+    jc .do_sh_usb
+
+    ; 34. mouse (Live PS/2 Aux & USB Pointer Status!)
+    mov si, cmd_mouse
+    call sh_match_cmd
+    jc .do_sh_mouse
 
     ; Unknown command:
     mov si, str_sh_err_pfx
@@ -7608,7 +8905,7 @@ sh_execute_command:
     call save_cmos_settings
 
     ; 4. Immediately reset VGA color palette, font size (8x16) and shell UI live
-    call apply_color_theme
+    call load_ui_palette
     call vga_apply_font_scale
     call sh_init_theme
     call sh_clear_screen
@@ -7742,6 +9039,9 @@ sh_execute_command:
     je .pci_pr_desc
     mov si, str_pci_desc_net
     cmp dh, 0x02                    ; Class 02h = Network Controller
+    je .pci_pr_desc
+    mov si, str_pci_desc_usb
+    cmp dx, 0x0C03                  ; Class 0C03h = xHCI USB 3.0 / EHCI USB 2.0 Host Controller!
     je .pci_pr_desc
     mov si, str_pci_desc_gen
 .pci_pr_desc:
@@ -8388,6 +9688,183 @@ sh_execute_command:
     hlt
     jmp .shut_hlt_loop
 
+; --- 33. USB / LSUSB / XHCI / EHCI (Live xHCI 3.0 & EHCI 2.0 MMIO Status!) ---
+.do_sh_usb:
+    ; Re-scan live PORTSC registers on xHCI and EHCI Root Hubs
+    call usb_init_controllers
+
+    mov si, str_usb_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_usb_sep
+    mov ah, 0x08
+    call sh_print_line
+
+    ; 1. xHCI USB 3.0 SuperSpeed Controller Report
+    cmp byte [XHCI_FOUND], 1
+    jne .usb_no_xhci
+    mov si, str_usb_xhci1
+    mov ah, 0x0B
+    call sh_print_inline
+    mov dx, [XHCI_VEN_ID]
+    mov ah, 0x0E
+    call sh_print_hex16
+    mov al, ':'
+    call sh_print_char
+    mov dx, [XHCI_DEV_ID]
+    call sh_print_hex16
+    mov si, str_usb_xhci2
+    mov ah, 0x0A
+    call sh_print_line
+
+    mov si, str_usb_xhci3
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dx, [XHCI_HCI_VER]
+    mov ah, 0x0E
+    call sh_print_hex16
+    mov si, str_usb_xhci4
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    xor ah, ah
+    mov al, [XHCI_MAX_SLOTS]
+    mov bl, 0x0F
+    call sh_print_dec16
+    mov si, str_usb_xhci5
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    xor ah, ah
+    mov al, [XHCI_MAX_PORTS]
+    mov bl, 0x0F
+    call sh_print_dec16
+    mov si, str_usb_xhci6
+    mov ah, 0x0A
+    call sh_print_inline
+    xor ah, ah
+    mov al, [XHCI_PORTS_CONN]
+    mov bl, 0x0E
+    call sh_print_dec16
+    mov si, str_usb_xhci7
+    mov ah, 0x0B
+    call sh_print_inline
+    mov edx, [XHCI_PORT1_SC]
+    mov ah, 0x0E
+    call sh_print_hex16
+    call sh_newline
+    jmp .usb_chk_ehci
+
+.usb_no_xhci:
+    mov si, str_post_xhci_none
+    mov ah, 0x0C
+    call sh_print_line
+
+.usb_chk_ehci:
+    ; 2. EHCI USB 2.0 High-Speed Controller Report
+    cmp byte [EHCI_FOUND], 1
+    jne .usb_no_ehci
+    mov si, str_usb_ehci1
+    mov ah, 0x0B
+    call sh_print_inline
+    mov dx, [EHCI_VEN_ID]
+    mov ah, 0x0E
+    call sh_print_hex16
+    mov al, ':'
+    call sh_print_char
+    mov dx, [EHCI_DEV_ID]
+    call sh_print_hex16
+    mov si, str_usb_ehci2
+    mov ah, 0x0A
+    call sh_print_line
+
+    mov si, str_usb_ehci3
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov dx, [EHCI_HCI_VER]
+    mov ah, 0x0E
+    call sh_print_hex16
+    mov si, str_usb_ehci5
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    xor ah, ah
+    mov al, [EHCI_MAX_PORTS]
+    mov bl, 0x0F
+    call sh_print_dec16
+    mov si, str_usb_xhci6
+    mov ah, 0x0A
+    call sh_print_inline
+    xor ah, ah
+    mov al, [EHCI_PORTS_CONN]
+    mov bl, 0x0E
+    call sh_print_dec16
+    mov si, str_usb_xhci7
+    mov ah, 0x0B
+    call sh_print_inline
+    mov edx, [EHCI_PORT1_SC]
+    mov ah, 0x0E
+    call sh_print_hex16
+    call sh_newline
+    jmp .usb_summary
+
+.usb_no_ehci:
+    mov si, str_post_ehci_none
+    mov ah, 0x0C
+    call sh_print_line
+
+.usb_summary:
+    mov si, str_usb_tree1
+    mov ah, 0x0A
+    call sh_print_line
+    mov si, str_usb_tree2
+    mov ah, 0x0B
+    call sh_print_line
+    ret
+
+; --- 34. MOUSE (Live Hardware Mouse & Pointer Telemetry!) ---
+.do_sh_mouse:
+    mov si, str_mouse_hdr
+    mov ah, [SH_HIGH_ATTR]
+    call sh_print_line
+    mov si, str_mouse_line1
+    mov ah, 0x0A
+    call sh_print_line
+
+    mov si, str_mouse_pos1
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    xor ah, ah
+    mov al, [MOUSE_X]
+    mov bl, 0x0E
+    call sh_print_dec16
+    mov al, ','
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_char
+    xor ah, ah
+    mov al, [MOUSE_Y]
+    mov bl, 0x0E
+    call sh_print_dec16
+
+    mov si, str_mouse_pos2
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov ax, [MOUSE_FINE_X]
+    mov bl, 0x0B
+    call sh_print_dec16
+    mov al, ','
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_char
+    mov ax, [MOUSE_FINE_Y]
+    mov bl, 0x0B
+    call sh_print_dec16
+
+    mov si, str_mouse_pos3
+    mov ah, [SH_TEXT_ATTR]
+    call sh_print_inline
+    mov ax, [MOUSE_EVT_CNT]
+    mov bl, 0x0A
+    call sh_print_dec16
+    call sh_newline
+    ret
+
 ; =============================================================================
 ; LIVE HARDWARE VGA PLANE 2 FONT SCALER (0xA000:0000, Global Callable)
 ; =============================================================================
@@ -8865,12 +10342,18 @@ sh_scancode_shift:
     times 30 db 0
 
 sh_ac_table:
-    db "help", 0, "factoryreset", 0, "wipe", 0, "resetbios", 0, "write ", 0, "nano ", 0
+    db "help", 0, "usb", 0, "lsusb", 0, "xhci", 0, "ehci", 0, "mouse", 0
+    db "factoryreset", 0, "wipe", 0, "resetbios", 0, "write ", 0, "nano ", 0
     db "edit ", 0, "setfont ", 0, "shutdown", 0, "reboot", 0, "append ", 0, "mkdir ", 0
     db "touch ", 0, "rm ", 0, "run ", 0, "format", 0, "memmap", 0, "memtest", 0, "map", 0
     db "sysinfo", 0, "pci", 0, "dmem ", 0, "cmos", 0, "cpu", 0, "time", 0, "sound ", 0
     db "color ", 0, "clear", 0, "snake", 0, "exit", 0, "cat ", 0, "cd ", 0, 0
 
+cmd_usb:        db "usb", 0
+cmd_lsusb:      db "lsusb", 0
+cmd_xhci:       db "xhci", 0
+cmd_ehci:       db "ehci", 0
+cmd_mouse:      db "mouse", 0
 cmd_factoryreset: db "factoryreset", 0
 cmd_wipe:       db "wipe", 0
 cmd_resetbios:  db "resetbios", 0
@@ -9026,23 +10509,23 @@ str_help_sh5:
 str_help_sh6:
     db "Choose whether POST boots Snake Game or directly to BiosShell.", 0
 
-; --- Framed BIOS Shell & Live CybFS Strings ---
+; --- Framed BIOS Shell v3.0 & Live CybFS Strings ---
 str_sh_topbar:
-    db "CYBFORGE UEFI/BIOS SHELL v2.8 [Persistent NVRAM]     ROM: 256KB  RAM: 640KB", 0
+    db "CYBFORGE UEFI/BIOS SHELL v3.0 [xHCI 3.0 + EHCI 2.0 + Mouse]  ROM:256K RAM:640K", 0
 str_sh_frame_top:
-    db " Cybforge Interactive UEFI/BIOS Console [Persistent ATA Disk + CybFS] ", 0
+    db " Cybforge Modern UEFI/BIOS Console [Persistent NVRAM + USB + Mouse] ", 0
 str_sh_frame_bot:
-    db " [WRITE/NANO] Edit | [SETFONT] Scale | [FACTORYRESET] Wipe | [SHUTDOWN] Off ", 0
+    db " Click Dock Below: [HELP] | [USB / XHCI] | [LS / DIR] | [SNAKE] | [SETUP] ", 0
 str_sh_botbar:
-    db "[HELP] Cmds  [WRITE] Nano  [SETFONT] Scale  [FACTORYRESET] Wipe  [SHUTDOWN]", 0
+    db " [HELP] Cmds   [USB] xHCI/EHCI   [LS] Files   [SNAKE] Play Game   [EXIT] Setup", 0
 
-str_pr_fs0_pfx:     db "FS0:\", 0
+str_pr_fs0_pfx:     db "FS0:", 0
 str_pr_gt:          db "> ", 0
 str_pr_compact:     db "SHELL> ", 0
 str_pr_root:        db "root@cybforge:# ", 0
 
 str_sh_ban1:
-    db "Cybforge UEFI/BIOS Shell v2.8 [Persistent ATA Disk & CybFS v1.0 R/W]", 0
+    db "Cybforge UEFI/BIOS Shell v3.0 [xHCI USB 3.0 + EHCI USB 2.0 + CybFS v1.0]", 0
 str_sh_ban2:
     db "Mounted Persistent NVRAM Disk (ATA Primary 0x1F0 LBA 0..31 <-> RAM 0x3000)", 0
 str_sh_map_hdr:
@@ -9052,17 +10535,17 @@ str_sh_map_sep:
 str_sh_map1:
     db "FS0:    CybFS NVRAM   16 KB R/W  AtaPrimary(0x1F0,LBA0..31)/RamDisk(0x3000)", 0
 str_sh_map2:
-    db "BLK0:   Wave Audio    128 KB     PciRoot(0)/PcmAudio(16-Bit, 0xFFFD0000)", 0
+    db "USB0:   xHCI + EHCI   USB 3.0/2  Pci(0,4)/xHCI(FEB00000h)+Pci(0,5)/EHCI", 0
 str_sh_map3:
-    db "BLK1:   System RAM    640 KB     SystemMemory(Conventional, 0x00000000)", 0
+    db "BLK0:   Studio Audio  128 KB     PciRoot(0)/PcmAudio(16-Bit, 0xFFFD0000)", 0
 str_sh_map4:
-    db "CMOS0:  RTC + Disk    128B+32B   IsaRtc(0x70)+AtaMirror(0x6FE0,Chksum:OK)", 0
+    db "HID0:   PS/2 + Mouse  80x25 Ptr  Isa8042(0x60,AuxIRQ12)/Pointer(640x400)", 0
 str_sh_map5:
     db "VGA0:   Text Display  128 KB     Pci(0,2)/VgaController(80x25, VRAM:B800h)", 0
 str_sh_map6:
     db "SB16:   Audio DSP     DMA Ch 5   IsaBridge(0x220)/SoundBlaster16(11025 Hz)", 0
 str_sh_ban_hint:
-    db "Try 'write <file>', 'mkdir <dir>', 'factoryreset', 'setfont', 'shutdown'.", 0
+    db "Try 'usb', 'mouse', 'write <file>', 'setfont', 'factoryreset', 'snake'.", 0
 
 str_sh_err_pfx:
     db "Error: Unknown command '", 0
@@ -9070,11 +10553,11 @@ str_sh_err_sfx:
     db "'. Type 'help' for available commands.", 0
 
 str_sh_hlp_hdr:
-    db "Cybforge UEFI/BIOS Shell v2.8 & Persistent CybFS - Command Reference:", 0
+    db "Cybforge UEFI/BIOS Shell v3.0 - Command Reference (34 Built-In Commands):", 0
 str_sh_hlp1:
-    db "write <file> Open GNU Nano Editor!     nano <file>  Open GNU Nano Editor!", 0
+    db "usb / lsusb  Live xHCI 3.0 & EHCI 2.0  mouse        Live Mouse Pointer status", 0
 str_sh_hlp2:
-    db "ls / dir     Scan live CybFS Inodes    cd <dir>     Change dir (../efi)", 0
+    db "write <file> Open GNU Nano Editor!     ls / cd      Browse live CybFS Inodes", 0
 str_sh_hlp3:
     db "cat <file>   Read live file bytes      append <f><t>Append line to real file", 0
 str_sh_hlp4:
@@ -9094,18 +10577,18 @@ str_sh_hlp10:
 str_sh_hlp11:
     db "reboot       Real HW reset (0x64=FEh)  shutdown     ACPI S5 system power-off!", 0
 str_sh_hlp12:
-    db "snake / boot Launch SNAKE.EFI game     exit / quit  Return to BIOS Setup!", 0
+    db "snake / boot Launch Google Snake v3.0  exit / quit  Return to BIOS Setup!", 0
 
 str_sh_ver1:
-    db "Cybforge UEFI Interactive Shell v2.8 [Persistent ATA Disk & CybFS Edition]", 0
+    db "Cybforge UEFI Interactive Shell v3.0 [xHCI 3.0 + EHCI 2.0 + Mouse Edition]", 0
 str_sh_ver2:
     db "  File System     : CybFS v1.0 (32 Inodes @ 0x3020, 19.4 KB R/W Pool @ 0x3420)", 0
 str_sh_ver3:
-    db "  ROM Image Layout: 262,144 Bytes (Block 0 CybFS, Block 1-2 PCM, Block 3 BIOS)", 0
+    db "  USB Subsystem   : Bare-Metal xHCI (USB 3.0) + EHCI (USB 2.0) MMIO Drivers", 0
 str_sh_ver4:
-    db "  CPU Architecture: x86 16-Bit Real Mode + 32-Bit Flat Unreal Mode (4GB FS)", 0
+    db "  Pointer Driver  : 8042 PS/2 Auxiliary + USB HID Mouse (640x400 -> 80x25)", 0
 str_sh_ver5:
-    db "  Audio Engine    : Creative Sound Blaster 16 DSP v4.05 (16-Bit DMA Ch 5)", 0
+    db "  Audio Engine    : Studio 16-Bit Marimba/Synth PCM on SB16 DSP v4.05 (DMA 5)", 0
 
 str_sh_mm_hdr:
     db "Region Type   Start      End        Size    Description", 0
@@ -9114,7 +10597,7 @@ str_sh_mm_sep:
 str_sh_mm1:
     db "RT_Code       00000000h  000004FFh    1 KB  Real-Mode IVT & BIOS Data Area", 0
 str_sh_mm2:
-    db "BS_Data       00001000h  00001FFFh    4 KB  Cybforge Kernel & Shell State", 0
+    db "BS_Data       00001000h  00001FFFh    4 KB  Kernel, USB, Mouse & Shell State", 0
 str_sh_mm3:
     db "CybFS_RAM     00003000h  00007FFFh   20 KB  Live CybFS Inodes & R/W Pool", 0
 str_sh_mm4:
@@ -9124,11 +10607,11 @@ str_sh_mm5:
 str_sh_mm6:
     db "MMIO_VRAM     000A0000h  000BFFFFh  128 KB  VGA Graphics & Text VRAM", 0
 str_sh_mm7:
-    db "CybFS_ROM     FFFC0000h  FFFCFFFFh   64 KB  ROM Block 0 Master CybFS Image", 0
+    db "USB_MMIO      FEB00000h  FEB1FFFFh  128 KB  xHCI USB 3.0 & EHCI USB 2.0 BAR0", 0
 str_sh_mm8:
-    db "Audio_BIOS    FFFD0000h  FFFFFFFFh  192 KB  16-Bit PCM Bank & BIOS Kernel", 0
+    db "Audio_BIOS    FFFC0000h  FFFFFFFFh  256 KB  CybFS Master, PCM Bank & Kernel", 0
 str_sh_mm_tot:
-    db "Total: 640 KB Base RAM | 20 KB CybFS Live Volume | 256 KB Flash ROM", 0
+    db "Total: 640 KB Base RAM | 128 KB USB MMIO | 256 KB Flash ROM", 0
 
 ; --- Live CybFS Output Strings ---
 str_ls_hdr_pfx:
@@ -9217,21 +10700,21 @@ str_fmt_ok3:
     db "[FACTORY RESET] BIOS Setup settings, Font Scale & Highscores reset OK!", 0
 
 str_neo1:
-    db "   .==========.     root@cybforge-bios", 0
+    db "   .==========.     root@cybforge-uefi-v3", 0
 str_neo2:
     db "  /  CYBFORGE  \    ------------------------------------------", 0
 str_neo3:
-    db " |   [x86-32]   |   Shell    : Cybforge UEFI/BIOS Shell v2.8", 0
+    db " |   [x86-32]   |   Shell    : Cybforge UEFI/BIOS Shell v3.0", 0
 str_neo4:
-    db " |  RETRO BIOS  |   FileSys  : Persistent ATA Disk + CybFS v1.0", 0
+    db " |  UEFI  v3.0  |   USB Bus  : xHCI USB 3.0 + EHCI USB 2.0 Active", 0
 str_neo5:
-    db "  \    v2.8    /    Memory   : 640 KB Base RAM / 256 KB ROM", 0
+    db "  \  MAXIMAL   /    Input    : PS/2 Keyboard + Hardware Mouse ON", 0
 str_neo6:
-    db "   '=========='     Hardware : Live PCI 0xCF8 / SB16 DMA Ch5", 0
+    db "   '=========='     Audio    : Studio 16-Bit PCM Synth (SB16 DMA5)", 0
 str_neo7:
-    db "                    Status   : NVRAM Checksum OK ('exit'=Setup)", 0
+    db "                    Game     : Google Snake v3.0 ('snake' to play)", 0
 
-; --- Live PCI Hardware Bus Scanner Strings ---
+; --- Live PCI, USB (xHCI/EHCI) & Mouse Hardware Strings ---
 str_pci_hdr:
     db "Bus Dv Fn  Ven:Dev   Class   Live Hardware PCI Configuration (Port 0xCF8):", 0
 str_pci_b0:
@@ -9246,10 +10729,54 @@ str_pci_desc_ide:
     db "  Bus-Master IDE Storage Controller", 0
 str_pci_desc_net:
     db "  PCI Ethernet Network Adapter", 0
+str_pci_desc_usb:
+    db "  xHCI USB 3.0 / EHCI USB 2.0 Controller", 0
 str_pci_desc_gen:
     db "  PCI System Peripheral Device", 0
 str_pci_isa:
-    db "ISA Bus :  0220h=SB16 DSP v4.05 (DMA5) | 0060h=8042 PS/2 | 0070h=CMOS RTC", 0
+    db "ISA/HID :  0220h=SB16 Studio DSP | 0060h=PS/2 Kbd+Mouse | FEB00000h=USB MMIO", 0
+
+str_usb_hdr:
+    db "Live Bare-Metal USB 3.0 (xHCI) & USB 2.0 (EHCI) Host Controller Status:", 0
+str_usb_sep:
+    db "--------------------------------------------------------------------------", 0
+str_usb_xhci1:
+    db "[xHCI USB 3.0] PCI ", 0
+str_usb_xhci2:
+    db " @ MMIO 0xFEB00000 (USBCMD.RS=1, USB 3.0 5Gbps)", 0
+str_usb_xhci3:
+    db "  HCI Ver: ", 0
+str_usb_xhci4:
+    db " | MaxSlots: ", 0
+str_usb_xhci5:
+    db " | Ports: ", 0
+str_usb_xhci6:
+    db " | Connected: ", 0
+str_usb_xhci7:
+    db " | Port1_SC: ", 0
+str_usb_ehci1:
+    db "[EHCI USB 2.0] PCI ", 0
+str_usb_ehci2:
+    db " @ MMIO 0xFEB10000 (USBCMD.RS=1, CF=1, 480Mbps)", 0
+str_usb_ehci3:
+    db "  HCI Ver: ", 0
+str_usb_ehci5:
+    db " | Root Hub Ports: ", 0
+str_usb_tree1:
+    db "  +-- RootHub(xHCI.0) -> Port 1: SuperSpeed USB 3.0 Hub (CCS=1, PED=1)", 0
+str_usb_tree2:
+    db "  +-- RootHub(EHCI.0) -> Port 1: High-Speed USB 2.0 Device (CCS=1, HS)", 0
+
+str_mouse_hdr:
+    db "Live 8042 Auxiliary PS/2 & USB Pointer Driver Telemetry:", 0
+str_mouse_line1:
+    db "  Driver State: ACTIVE (Stream Mode 0xF4, Aux Port 0xA8, Cursor Glyph 0x14)", 0
+str_mouse_pos1:
+    db "  Text Cell (X,Y): ", 0
+str_mouse_pos2:
+    db "  | Fine Pixel (X,Y): ", 0
+str_mouse_pos3:
+    db "  | Packets Decoded: ", 0
 
 str_cpu_hdr:
     db "x86 Processor Live Register & Segment State:", 0
@@ -9360,23 +10887,36 @@ str_shut_msg2:
 str_shut_halted:
     db "[SYSTEM HALTED] CPU in low-power HLT state. It is now safe to turn off PC.", 0
 
-; Hardware VGA DAC Palette Themes (4 Themes x 48 Bytes = 192 Bytes)
+; Modern UEFI Dark Slate Palette for POST, BIOS Setup & UEFI Shell (48 Bytes)
+ui_modern_palette:
+    ; 0:DeepSlate  1:Sapphire  2:Emerald   3:DeepTeal  4:Crimson   5:Purple    6:WarmGold  7:FrostSilv
+    db 3, 4, 8,    6, 13, 30,  6, 36, 18,  5, 28, 36,  44, 9, 12,  26, 10, 36, 46, 30, 5,  48, 51, 56
+    ; 8:SteelGray  9:RoyalBlu  10:NeonMint 11:ElecCyan 12:CoralRed 13:Orchid   14:SunGold  15:PureWhite
+    db 20, 24, 32, 18, 36, 63, 14, 60, 30, 14, 57, 63, 63, 18, 20, 58, 22, 63, 63, 56, 14, 63, 63, 63
+
+; Hardware VGA DAC Palette Themes for Google Snake Game (4 Themes x 48 Bytes = 192 Bytes)
+; Note: Slot 2 (0x20 bg) and Slot 7 (0x70 bg) form the 2-tone Grass Checkerboard!
+;       Slot 0 (0x00 bg) is the Dark Forest-Green HUD bar & outer border!
+;       Slot 3 (0x30 bg) is the Google Sky-Blue Popup Card!
+;       Slot 1 (0x10 bg) is the Google Royal-Blue Card Button!
 palette_themes_table:
-    ; Theme 0: Cyberpunk Neon
-    db 0, 0, 0,    0, 16, 45,  0, 52, 18,  0, 48, 56,  50, 8, 8,   48, 10, 48, 50, 30, 0,  45, 45, 48
-    db 20, 20, 24, 15, 35, 63, 15, 63, 25, 10, 60, 63, 63, 14, 18, 63, 20, 60, 63, 56, 12, 63, 63, 63
+    ; Theme 0: Google Snake Maximalist Grass (Authentic Google Snake Colors!)
+    ; 0:ForestHUD  1:BtnBlue   2:GrassMed  3:SkyCard   4:MossWall  5:Shadow    6:WarmGold  7:GrassLight
+    db 18, 29, 11, 6, 22, 54,  35, 51, 14, 21, 48, 60, 14, 23, 8,  9, 14, 20,  54, 36, 6,  42, 54, 18
+    ; 8:DarkPine   9:SnakeBlue 10:HeadBlue 11:IceBorder12:AppleRed 13:CutePink 14:TrophyGld15:PureWhite
+    db 11, 18, 6,  14, 28, 62, 20, 36, 63, 38, 58, 63, 60, 13, 9,  63, 32, 45, 63, 51, 6,  63, 63, 63
 
-    ; Theme 1: Matrix Green (Phosphor CRT)
-    db 0, 0, 0,    0, 20, 4,   0, 40, 8,   0, 52, 12,  0, 25, 5,   0, 35, 8,   0, 45, 10,  0, 48, 12
-    db 0, 15, 3,   0, 35, 8,   0, 63, 15,  8, 60, 16,  0, 50, 10,  4, 55, 12,  16, 63, 20, 35, 63, 35
+    ; Theme 1: Cyber Emerald Checkerboard
+    db 4, 14, 10,  6, 24, 52,  8, 32, 20,  14, 42, 56, 4, 20, 12,  6, 10, 14,  45, 35, 6,  12, 38, 24
+    db 6, 20, 14,  14, 40, 63, 20, 52, 63, 36, 60, 63, 63, 16, 16, 60, 24, 60, 63, 56, 12, 63, 63, 63
 
-    ; Theme 2: Amber CRT (Warm Terminal)
-    db 0, 0, 0,    20, 10, 0,  35, 18, 0,  45, 24, 0,  30, 14, 0,  40, 20, 0,  48, 26, 0,  50, 28, 0
-    db 15, 7, 0,   35, 18, 0,  58, 34, 0,  63, 40, 0,  45, 22, 0,  52, 28, 0,  63, 48, 5,  63, 58, 20
+    ; Theme 2: Golden Autumn Meadow
+    db 22, 14, 6,  8, 24, 52,  42, 30, 10, 20, 46, 58, 28, 18, 6,  10, 10, 14, 52, 34, 6,  48, 36, 14
+    db 18, 12, 4,  12, 28, 62, 18, 36, 63, 38, 56, 63, 62, 12, 8,  60, 28, 44, 63, 54, 10, 63, 63, 63
 
-    ; Theme 3: CGA Retro (1981 IBM Classic)
-    db 0, 0, 0,    0, 0, 42,   0, 42, 0,   0, 42, 42,  42, 0, 0,   42, 0, 42,  42, 21, 0,  42, 42, 42
-    db 21, 21, 21, 21, 21, 63, 21, 63, 21, 21, 63, 63, 63, 21, 21, 63, 21, 63, 63, 63, 21, 63, 63, 63
+    ; Theme 3: Retro Arcade Checkerboard
+    db 6, 8, 22,   10, 24, 56, 12, 18, 38, 18, 44, 58, 8, 12, 28,  4, 6, 14,   50, 32, 8,  16, 24, 46
+    db 12, 16, 30, 16, 58, 28, 24, 63, 36, 36, 58, 63, 63, 16, 18, 63, 24, 60, 63, 56, 14, 63, 63, 63
 
 vga_seq_table:
     db 0x01, 0x03, 0x00, 0x02
@@ -9420,21 +10960,21 @@ vga_dac_table:
 align 8
 sample_table:
     dd 0xFFFD0000 ; SND_CRUNCH
-    dw 2206
-    dd 0xFFFD113C ; SND_GOLDEN
-    dw 6064
-    dd 0xFFFD409C ; SND_CRASH
-    dw 4962
-    dd 0xFFFD6760 ; SND_START
-    dw 3858
-    dd 0xFFFD8584 ; SND_PAUSE
-    dw 1764
-    dd 0xFFFD934C ; SND_BOOT
-    dw 5512
-    dd 0xFFFDBE5C ; SND_GAMEOVER
-    dw 9372
-    dd 0xFFFE0794 ; SND_VICTORY
-    dw 13230
+    dw 2646
+    dd 0xFFFD14AC ; SND_GOLDEN
+    dw 6616
+    dd 0xFFFD485C ; SND_CRASH
+    dw 5734
+    dd 0xFFFD7528 ; SND_START
+    dw 4190
+    dd 0xFFFD95E4 ; SND_PAUSE
+    dw 1984
+    dd 0xFFFDA564 ; SND_BOOT
+    dw 6836
+    dd 0xFFFDDACC ; SND_GAMEOVER
+    dw 9702
+    dd 0xFFFE2698 ; SND_VICTORY
+    dw 13782
 
 font_table:
     db 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0x20, 0x3F, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24
@@ -9545,16 +11085,27 @@ font_table:
     db 0
 
 custom_glyphs_table:
-    db 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0x20, 0x3F, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24
-    db 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFC, 0x04, 0xFC, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24
-    db 0x03, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x3F, 0x20, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-    db 0x04, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0xFC, 0x04, 0xFC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    db 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F, 0x30, 0x37, 0x2C, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24
+    db 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0x0C, 0xEC, 0x34, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24
+    db 0x03, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x2C, 0x37, 0x30, 0x1F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    db 0x04, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x34, 0xEC, 0x0C, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     db 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     db 0x06, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24
-    db 0x07, 0x00, 0x3C, 0x7E, 0xFF, 0xC3, 0xDB, 0xDB, 0xFF, 0xFF, 0xBD, 0x99, 0xC3, 0x7E, 0x7E, 0x3C, 0x00
-    db 0x08, 0x06, 0x0E, 0x0C, 0x18, 0x10, 0x76, 0xFF, 0xDF, 0xBF, 0xFF, 0xFF, 0xFF, 0x7E, 0x7E, 0x3C, 0x00
-    db 0x09, 0x3C, 0x7E, 0xFF, 0xEF, 0xD7, 0xBB, 0x7D, 0xFF, 0xEF, 0xD7, 0xBB, 0x7D, 0xFF, 0x7E, 0x7E, 0x3C
-    db 0x0A, 0x00, 0x3C, 0x7E, 0xFF, 0x7E, 0xDB, 0xD7, 0xCF, 0xFF, 0xFF, 0xE7, 0xDB, 0x7E, 0x7E, 0x3C, 0x00
+    db 0x07, 0x00, 0x3C, 0x7E, 0xFF, 0x99, 0x99, 0xDB, 0xDB, 0xFF, 0xFF, 0xE7, 0xFF, 0xBD, 0xC3, 0x7E, 0x3C
+    db 0x08, 0x0C, 0x1E, 0x18, 0x76, 0xFF, 0xDF, 0xBF, 0xBF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E, 0x7E, 0x3C, 0x00
+    db 0x09, 0x00, 0x7E, 0xFF, 0xDB, 0xDB, 0xFF, 0x7E, 0x3C, 0x18, 0x18, 0x18, 0x3C, 0x7E, 0x7E, 0x00, 0x00
+    db 0x0A, 0x00, 0x3C, 0x7E, 0xFF, 0x00, 0x66, 0x66, 0xFF, 0xFF, 0xFF, 0xBD, 0xC3, 0x7E, 0x7E, 0x3C, 0x00
+    db 0x0B, 0x00, 0x00, 0x60, 0x78, 0x7E, 0x7F, 0x7F, 0x7E, 0x78, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    db 0x0C, 0x00, 0x3C, 0x7E, 0x7E, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E, 0x7E, 0x3C, 0x00
+    db 0x0D, 0x3C, 0x7E, 0xFF, 0xFF, 0xDF, 0xBF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C
+    db 0x0E, 0x00, 0x00, 0x00, 0x18, 0x3C, 0x7E, 0x7E, 0x7E, 0x7E, 0x7E, 0x3C, 0x18, 0x00, 0x00, 0x00, 0x00
+    db 0x0F, 0x3C, 0x7E, 0x99, 0xDB, 0xFF, 0xC3, 0x81, 0x00, 0x00, 0x81, 0xC3, 0xFF, 0xFF, 0x7E, 0x3C, 0x00
+    db 0x10, 0x00, 0x3C, 0x7E, 0xFF, 0x99, 0xBD, 0x99, 0xFF, 0xFF, 0xC3, 0x99, 0x99, 0xC3, 0x7E, 0x3C, 0x00
+    db 0x11, 0x00, 0x06, 0x0E, 0x1E, 0x36, 0x66, 0x06, 0x06, 0x06, 0x1E, 0x3E, 0x3E, 0x1C, 0x00, 0x00, 0x00
+    db 0x12, 0x00, 0x18, 0x5A, 0x3C, 0x7E, 0xE7, 0xC3, 0xC3, 0xE7, 0x7E, 0x3C, 0x5A, 0x18, 0x00, 0x00, 0x00
+    db 0x13, 0x00, 0x00, 0x60, 0x30, 0x18, 0x0C, 0x18, 0x30, 0x60, 0x00, 0x00, 0x1F, 0x1F, 0x00, 0x00, 0x00
+    db 0x14, 0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE, 0xFF, 0xF8, 0xDC, 0x8C, 0x06, 0x06, 0x00, 0x00, 0x00
+    db 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x06, 0xFC, 0xFC, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00
     db 0
 
 logo_font_table:

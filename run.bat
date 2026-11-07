@@ -10,7 +10,7 @@ if not exist "%~dp0cybfs_nvram.img" (
 )
 
 echo ========================================================
-echo Cybforge Retro BIOS Loader [v2.8 Persistent NVRAM]
+echo Cybforge UEFI/BIOS Loader [v3.0 Google Snake ^& USB 3.0/2.0]
 echo ========================================================
 
 rem Fast screen geometry detection in 0.01s via Python ctypes
@@ -24,8 +24,9 @@ if "%SCREEN_H%"=="" set SCREEN_H=1080
 
 echo [OK] Screen Detected : %SCREEN_W%x%SCREEN_H%
 echo [OK] Persistent Disk : cybfs_nvram.img (ATA Primary Master LBA 0..31)
-echo [OK] Display Scaling : Hardware-Accelerated OpenGL Scaling (Retro CRT)
-echo Starting Cybforge Retro BIOS in QEMU...
+echo [OK] USB Controllers : xHCI (USB 3.0 SuperSpeed) + EHCI (USB 2.0 High-Speed)
+echo [OK] Input ^& Audio   : Hardware Mouse Pointer + Studio 16-Bit SB16 Synth
+echo Starting Cybforge UEFI/BIOS v3.0 in QEMU...
 echo ========================================================
 
 set "QEMU_CMD=qemu-system-x86_64"
@@ -36,14 +37,16 @@ if errorlevel 1 (
     )
 )
 
-rem Launch with Persistent ATA NVRAM Disk (cybfs_nvram.img), Sound Blaster 16 (16-Bit PCM), and OpenGL display
-"%QEMU_CMD%" -bios "%~dp0bios.bin" -drive file="%~dp0cybfs_nvram.img",format=raw,if=ide -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -device sb16,audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on -serial stdio
+set "USB_FLAGS=-device qemu-xhci,id=xhci -device usb-ehci,id=ehci -device usb-hub,bus=xhci.0 -device usb-bot,bus=ehci.0"
+
+rem Launch with Persistent ATA NVRAM Disk, xHCI USB 3.0, EHCI USB 2.0, Studio SB16 Audio, and OpenGL display
+"%QEMU_CMD%" -bios "%~dp0bios.bin" -drive file="%~dp0cybfs_nvram.img",format=raw,if=ide %USB_FLAGS% -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -device sb16,audiodev=snd0 -display gtk,gl=on,zoom-to-fit=on -serial stdio
 if errorlevel 1 (
     echo.
     echo [NOTE] OpenGL initialization failed. Launching fallback display...
-    "%QEMU_CMD%" -bios "%~dp0bios.bin" -drive file="%~dp0cybfs_nvram.img",format=raw,if=ide -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -device sb16,audiodev=snd0 -display gtk,zoom-to-fit=on -serial stdio
+    "%QEMU_CMD%" -bios "%~dp0bios.bin" -drive file="%~dp0cybfs_nvram.img",format=raw,if=ide %USB_FLAGS% -audiodev dsound,id=snd0,latency=20000 -machine pc,pcspk-audiodev=snd0 -device sb16,audiodev=snd0 -display gtk,zoom-to-fit=on -serial stdio
 )
 if errorlevel 1 (
-    "%QEMU_CMD%" -bios "%~dp0bios.bin" -drive file="%~dp0cybfs_nvram.img",format=raw,if=ide -audiodev dsound,id=snd0 -device sb16,audiodev=snd0 -serial stdio
+    "%QEMU_CMD%" -bios "%~dp0bios.bin" -drive file="%~dp0cybfs_nvram.img",format=raw,if=ide %USB_FLAGS% -audiodev dsound,id=snd0 -device sb16,audiodev=snd0 -serial stdio
 )
 pause
