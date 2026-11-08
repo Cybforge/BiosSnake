@@ -1,4 +1,4 @@
-# Cybforge UEFI/BIOS, Shell & Google Snake v3.0 (256 KB ROM + xHCI USB 3.0 + EHCI USB 2.0 + Mouse Edition)
+# Cybforge UEFI/BIOS, Shell & Cybforge Snake v3.0 (256 KB ROM + xHCI USB 3.0 + EHCI USB 2.0 + Mouse Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-x86%2016%2F32--bit%20Unreal%20Mode-lightgrey.svg)](#)
@@ -197,16 +197,16 @@ build.bat
 
 ## Changelog
 
-### v3.0: Maximalist Google Snake Redesign, Bare-Metal xHCI (USB 3.0) & EHCI (USB 2.0) Drivers, Hardware Mouse & Studio Synth Audio
-- **Maximalist Google Snake Visual Redesign**:
+### v3.0: Maximalist Cybforge Snake Redesign, Bare-Metal xHCI (USB 3.0) & EHCI (USB 2.0) Drivers, Hardware Mouse & Studio Synth Audio
+- **Maximalist Cybforge Snake Visual Redesign**:
   - **2-Tone Green Grass Checkerboard Playfield**: Uses hardware VGA background DAC slots (`0x20` `#8ECC39` and `0x70` `#A8D848`) so the Royal-Blue snake, Red Apple, and Golden Apple sit transparently on top of alternating grass tiles, framed by a Dark Forest-Green (`#4A752C`) top HUD bar and Deep Moss border.
-  - **Sky-Blue Start & Game-Over Popup Card**: Inspired by Google Snake, displays the Red Apple + Score, Gold Trophy + High Score, a cute Royal-Blue snake over a 2-row grass horizon, and **3 clickable Royal-Blue Action Buttons** (`[ Play Snake Game ]`, `[ BIOS Setup & Settings ]`, `[ Launch UEFI/BIOS Shell ]`).
+  - **Sky-Blue Start & Game-Over Popup Card**: Inspired by Cybforge Snake, displays the Red Apple + Score, Gold Trophy + High Score, a cute Royal-Blue snake over a 2-row grass horizon, and **3 clickable Royal-Blue Action Buttons** (`[ Play Snake Game ]`, `[ BIOS Setup & Settings ]`, `[ Launch UEFI/BIOS Shell ]`).
   - **Expressive Custom 16-Scanline Pixel-Art Glyphs (`0x01..0x18`)**: Includes Big-Eyed Cute Head (`0x07`), Wide-Open Chomp Mouth Head (`0x0F` when within 3 tiles of an apple), Flicking Red Forked Tongue (`0x18`), Smooth Rounded Body (`0x0C`), Digesting Apple Bulge (`0x0D` at the eaten apple coordinate), Tapered Tail Tip (`0x0E`), Knocked-Out Dizzy Head (`0x10`) + orbiting dizzy stars on collision, Plump Red Apple (`0x08`), and Gold Trophy Cup (`0x09`).
 - **Bare-Metal xHCI (USB 3.0) & EHCI (USB 2.0) PCI/MMIO Drivers**:
   - Scans PCI Bus 0 (`0xCF8`/`0xCFC`) for xHCI (`Class 0x0C0330`, MMIO `0xFEB00000`) and EHCI (`Class 0x0C0320`, MMIO `0xFEB10000`), enables PCI Memory Space + Bus Master, reads `CAPLENGTH`/`HCIVERSION`/`HCSPARAMS` via 32-bit Flat Unreal Mode (`[fs:ebx]`), starts controllers (`USBCMD.RS = 1`, `CONFIGFLAG = 1`), and scans Root Hub `PORTSC` registers (`usb` / `lsusb` / `xhci` / `ehci` shell commands).
 - **Full Hardware Mouse Support (`8042 PS/2 Aux + USB Pointer`)**:
   - Decodes 3-byte PS/2 Auxiliary mouse packets in real time into `640x400` fine coordinates and `80x25` text cells with a live software arrow cursor (`0x14`).
-  - Supports mouse clicking & hovering across POST, UEFI BIOS Setup, the Google Snake Start/Game-Over Card, in-game playfield steering & HUD buttons, and the UEFI/BIOS Shell bottom quick-action dock (`mouse` command).
+  - Supports mouse clicking & hovering across POST, UEFI BIOS Setup, the Cybforge Snake Start/Game-Over Card, in-game playfield steering & HUD buttons, and the UEFI/BIOS Shell bottom quick-action dock (`mouse` command).
 - **Studio-Grade 16-Bit PCM Audio Synthesis**:
   - Upgraded all 8 ROM WAV samples (`11,025 Hz` 16-bit signed mono PCM) with low-pass filtering, stereo-style chorus detuning, acoustic reverb, and warm marimba/harp/Rhodes/brass instrument envelopes.
 

@@ -466,7 +466,12 @@ TONGUE_TICK     equ 0x1C16  ; Animation tick counter for flicking tongue (Byte)
 TONGUE_X        equ 0x1C17  ; Drawn tongue X coordinate (0xFF=none) (Byte)
 TONGUE_Y        equ 0x1C18  ; Drawn tongue Y coordinate (Byte)
 CARD_BTN_SEL    equ 0x1C19  ; Selected button (0=Play, 1=Setup, 2=Shell) on Start/GameOver card (Byte)
-UI_PAL_MODE     equ 0x1C1A  ; 0 = Modern UEFI Dark Palette, 1 = Google Snake Grass Palette (Byte)
+UI_PAL_MODE     equ 0x1C1A  ; 0 = Modern UEFI Dark Palette, 1 = Cybforge Snake Grass Palette (Byte)
+VGA_GFX_ACTIVE  equ 0x1C1B  ; 1 = VGA Mode 13h (320x200x256) active, 0 = 80x25 Text Mode (Byte)
+CARD_OPEN       equ 0x1C1C  ; 1 = Popup Card active (dims background playfield) (Byte)
+FIRST_SPAWN     equ 0x1C1D  ; 1 = First fruit spawn on row 8 ahead of snake (Byte)
+MOUSE_LAST_FX   equ 0x1C1E  ; Last drawn fine mouse X (Word)
+MOUSE_LAST_FY   equ 0x1C20  ; Last drawn fine mouse Y (Word)
 """
 idx_org = part1.find("[ORG 0x0000]")
 line_end = part1.find("\n", idx_org) + 1
@@ -558,11 +563,13 @@ part2 = """
     call vga_apply_font_scale
     mov byte [SETUP_SEL], 0         ; Row 0 selected
     mov byte [SETUP_TAB], 0         ; Default tab: 0 (Main & Game)
+    mov byte [VGA_GFX_ACTIVE], 0    ; Start in 80x25 Text Mode
 
     ; =========================================================================
     ; PHASE 1: CYBFORGE UEFI/BIOS v3.0 POST SCREEN (Modern Dashboard)
     ; =========================================================================
 post_screen:
+    call vga_set_text_mode
     call mouse_hide_cursor
     call load_ui_palette
     call clear_screen_black
@@ -744,6 +751,7 @@ draw_cybforge_logo:
     ; PHASE 2: MODERNIZED UEFI BIOS SETUP UTILITY (With Full Mouse Support!)
     ; =========================================================================
 core_bios_setup:
+    call vga_set_text_mode
     call mouse_hide_cursor
     call load_ui_palette
     call drain_kbd
@@ -1761,9 +1769,7 @@ draw_val_str:
 
 init_snake_game:
     call mouse_hide_cursor
-    call apply_color_theme
-    call clear_screen_black
-    call draw_game_board
+    call vga_set_mode13h
 
     ; Set snake length according to CFG_LEN
     mov word [SNAKE_LEN], 4
@@ -1777,19 +1783,19 @@ init_snake_game:
     mov word [SNAKE_LEN], 6
 
 .set_snake_body:
-    ; Place snake in center (Head at X=40, Y=12)
-    mov byte [SNAKE_X + 0], 40
-    mov byte [SNAKE_Y + 0], 12
-    mov byte [SNAKE_X + 1], 39
-    mov byte [SNAKE_Y + 1], 12
-    mov byte [SNAKE_X + 2], 38
-    mov byte [SNAKE_Y + 2], 12
-    mov byte [SNAKE_X + 3], 37
-    mov byte [SNAKE_Y + 3], 12
-    mov byte [SNAKE_X + 4], 36
-    mov byte [SNAKE_Y + 4], 12
-    mov byte [SNAKE_X + 5], 35
-    mov byte [SNAKE_Y + 5], 12
+    ; Place snake on 28x16 square grass grid (Head at gx=9, gy=8)
+    mov byte [SNAKE_X + 0], 9
+    mov byte [SNAKE_Y + 0], 8
+    mov byte [SNAKE_X + 1], 8
+    mov byte [SNAKE_Y + 1], 8
+    mov byte [SNAKE_X + 2], 7
+    mov byte [SNAKE_Y + 2], 8
+    mov byte [SNAKE_X + 3], 6
+    mov byte [SNAKE_Y + 3], 8
+    mov byte [SNAKE_X + 4], 5
+    mov byte [SNAKE_Y + 4], 8
+    mov byte [SNAKE_X + 5], 4
+    mov byte [SNAKE_Y + 5], 8
 
     mov byte [SNAKE_DIR], 1         ; Initial direction: Right
     mov byte [NEXT_DIR], 1
@@ -1808,16 +1814,15 @@ init_snake_game:
     mov byte [TONGUE_TICK], 0
     mov byte [CARD_BTN_SEL], 0
     mov byte [MOUSE_CLICK], 0
+    mov byte [FIRST_SPAWN], 1
 
-    call update_score_display
-    call draw_arena_obstacles
     call spawn_fruit
-    call draw_snake
-    call draw_fruit
 
-    ; Display Maximalist Google Snake Sky-Blue Start Card!
-    call draw_start_prompt
-    call mouse_show_cursor
+    ; Render Maximalist Cybforge Snake Sky-Blue Start Card in 320x200x256!
+    mov byte [CARD_OPEN], 1
+    xor dl, dl
+    call gfx_draw_popup_card
+    call gfx_present
     call drain_kbd
 
 .wait_start:
@@ -1825,19 +1830,19 @@ init_snake_game:
     test al, al
     jnz .wait_start_key
 
-    ; Check mouse hover & click on the 3 Royal-Blue Card Buttons!
+    ; Check mouse movement / hover / click on the 3 Royal-Blue Pill Buttons!
     call check_card_mouse_hover
     test byte [MOUSE_CLICK], 0x01
     jz .wait_idle
     mov byte [MOUSE_CLICK], 0
-    mov dh, [MOUSE_Y]
-    cmp dh, 15
-    je .game_started
-    cmp dh, 17
-    je core_bios_setup
-    cmp dh, 19
-    je bios_shell_main
-    ; Clicking anywhere else on the playfield starts the game!
+    mov ax, [MOUSE_FINE_Y]
+    shr ax, 1                       ; py = 0..199
+    cmp ax, 154
+    jb .game_started
+    cmp ax, 173
+    jb core_bios_setup
+    cmp ax, 194
+    jb bios_shell_main
     jmp .game_started
 
 .wait_start_key:
@@ -1877,9 +1882,9 @@ init_snake_game:
     jb .card_redraw_btns
     mov byte [CARD_BTN_SEL], 0
 .card_redraw_btns:
-    call mouse_hide_cursor
-    call draw_card_buttons
-    call mouse_show_cursor
+    xor dl, dl
+    call gfx_draw_popup_card
+    call gfx_present
     jmp .wait_idle
 
 .card_activate_btn:
@@ -1905,18 +1910,18 @@ init_snake_game:
     jmp .game_started
 
 .wait_idle:
-    mov ecx, 200000                 ; ~1ms polling for instant response
+    mov ecx, 250000                 ; ~1ms polling
     call delay_cycles
     jmp .wait_start
 
 .game_started:
-    call mouse_hide_cursor
+    mov byte [CARD_OPEN], 0
     call sound_start
-    call erase_start_prompt
-    call mouse_show_cursor
+    call gfx_render_scene
+    call gfx_present
 
     ; =========================================================================
-    ; PHASE 4: MAIN GAME LOOP
+    ; PHASE 4: MAIN GAME LOOP (320x200x256 Double-Buffered Pixel Engine)
     ; =========================================================================
 game_loop:
     mov bp, 10
@@ -1931,6 +1936,16 @@ game_loop:
 
 .tick_loop:
     call handle_input
+    ; Update hardware mouse cursor live during sub-ticks if moved
+    mov ax, [MOUSE_FINE_X]
+    cmp ax, [MOUSE_LAST_FX]
+    jne .tick_redraw_mouse
+    mov ax, [MOUSE_FINE_Y]
+    cmp ax, [MOUSE_LAST_FY]
+    je .tick_delay
+.tick_redraw_mouse:
+    call gfx_present
+.tick_delay:
     mov ecx, 3800000                ; ~15 ms Mini-Tick
     call delay_cycles
     dec bp
@@ -1949,7 +1964,7 @@ game_loop:
     mov byte [DIR_LOCKED], 1
 .no_queued_dir:
 
-    ; 3. Calculate new head position
+    ; 3. Calculate new head position on 28x16 grid (gx=0..27, gy=0..15)
     mov al, [SNAKE_X]
     mov bl, [SNAKE_Y]
     mov cl, [SNAKE_DIR]
@@ -1975,25 +1990,25 @@ game_loop:
     cmp byte [CFG_WALLS], 1
     jne .store_new_head
 
-    ; Wrap-Around logic (Cols 11..68, Rows 4..21)
-    cmp al, 11
+    ; Wrap-Around logic (Cols 0..27, Rows 0..15)
+    cmp al, 0
     jge .chk_wrap_r
-    mov al, 68
+    mov al, 27
     jmp .chk_wrap_y
 .chk_wrap_r:
-    cmp al, 68
+    cmp al, 27
     jle .chk_wrap_y
-    mov al, 11
+    mov al, 0
 
 .chk_wrap_y:
-    cmp bl, 4
+    cmp bl, 0
     jge .chk_wrap_b
-    mov bl, 21
+    mov bl, 15
     jmp .store_new_head
 .chk_wrap_b:
-    cmp bl, 21
+    cmp bl, 15
     jle .store_new_head
-    mov bl, 4
+    mov bl, 0
 
 .store_new_head:
     mov [NEW_HEAD_X], al
@@ -2003,13 +2018,13 @@ game_loop:
     cmp byte [CFG_WALLS], 1
     je .no_wall_collision
 
-    cmp al, 10
-    jle .do_crash
-    cmp al, 69
+    cmp al, 0
+    jl .do_crash
+    cmp al, 28
     jge .do_crash
-    cmp bl, 3
-    jle .do_crash
-    cmp bl, 22
+    cmp bl, 0
+    jl .do_crash
+    cmp bl, 16
     jge .do_crash
 
 .no_wall_collision:
@@ -2040,8 +2055,6 @@ game_loop:
     dec word [GOLD_TIMER]
     jz .gold_expired
 
-    call update_gold_hud
-
     mov al, [NEW_HEAD_X]
     mov bl, [NEW_HEAD_Y]
     cmp al, [GOLD_FOOD_X]
@@ -2051,15 +2064,21 @@ game_loop:
 
     ; --- GOLDEN APPLE EATEN! (+50 Points) ---
     add word [SCORE], 50
+    mov ax, [SCORE]
+    cmp ax, [HIGH_SCORE]
+    jbe .gold_hi_ok
+    mov [HIGH_SCORE], ax
+.gold_hi_ok:
+    mov al, [NEW_HEAD_X]
+    mov bl, [NEW_HEAD_Y]
     mov [BULGE_X], al
     mov [BULGE_Y], bl
+    mov byte [GOLD_FOOD_X], 0xFF
     call sound_golden_apple
-    call erase_gold_apple
-    call update_score_display
     jmp .chk_eat_regular
 
 .gold_expired:
-    call erase_gold_apple
+    mov byte [GOLD_FOOD_X], 0xFF
 
 .chk_eat_regular:
     ; 7. Check if regular apple was eaten
@@ -2071,12 +2090,15 @@ game_loop:
     jne .normal_move
 
     ; --- REGULAR APPLE EATEN! ---
-    ; Record digesting apple bulge coordinate at eaten apple position!
     mov [BULGE_X], al
     mov [BULGE_Y], bl
     inc word [SCORE]
+    mov ax, [SCORE]
+    cmp ax, [HIGH_SCORE]
+    jbe .reg_hi_ok
+    mov [HIGH_SCORE], ax
+.reg_hi_ok:
     inc byte [APPLE_COUNT]
-    call update_score_display
     call sound_eat_fruit
 
     ; Spawn a golden apple every 5 apples (if not already active)
@@ -2093,14 +2115,14 @@ game_loop:
 
     ; Grow snake
     mov ax, [SNAKE_LEN]
-    cmp ax, 1044
+    cmp ax, 448
     jae .grow_len_done
     inc ax
     mov [SNAKE_LEN], ax
 .grow_len_done:
 
     ; Check victory condition
-    mov cx, 1044
+    mov cx, 448
     cmp byte [CFG_WIN], 1
     jne .chk_win_g50
     mov cx, 25
@@ -2137,29 +2159,24 @@ game_loop:
     mov al, [NEW_HEAD_Y]
     mov [SNAKE_Y + 0], al
 
-    call mouse_hide_cursor
     call spawn_fruit
-    call draw_snake
-    call draw_fruit
-    call mouse_show_cursor
+    call gfx_render_scene
+    call gfx_present
     jmp game_loop
 
 .normal_move:
-    call mouse_hide_cursor
-    ; Erase tail tip back to its 2-tone Grass Checkerboard tile!
+    ; Check if digesting bulge reached the tail tip
     mov si, [SNAKE_LEN]
     dec si
     mov al, [SNAKE_X + si]
     mov bl, [SNAKE_Y + si]
     cmp al, [BULGE_X]
-    jne .erase_tail_tile
+    jne .shift_segs
     cmp bl, [BULGE_Y]
-    jne .erase_tail_tile
-    mov byte [BULGE_X], 0xFF        ; Digesting bulge reached the tail and finished!
-.erase_tail_tile:
-    call clear_grass_tile
+    jne .shift_segs
+    mov byte [BULGE_X], 0xFF
 
-    ; Shift segments
+.shift_segs:
     mov cx, [SNAKE_LEN]
     dec cx
 .shift_loop:
@@ -2176,155 +2193,119 @@ game_loop:
     mov al, [NEW_HEAD_Y]
     mov [SNAKE_Y], al
 
-    call draw_snake
-    call draw_fruit
-    call mouse_show_cursor
+    call gfx_render_scene
+    call gfx_present
     jmp game_loop
 
 .do_crash:
-    call mouse_hide_cursor
     call crash_dissolve_animation
     jmp game_over
 
     ; =========================================================================
-    ; PHASE 5A: VICTORY SCREEN (Trophy & Victory Fanfare)
+    ; PHASE 5A: VICTORY SCREEN (Mode 13h Graphical Trophy & Victory Fanfare)
     ; =========================================================================
 victory_screen:
-    call mouse_hide_cursor
     call sound_victory
-    call draw_grass_board
+    mov byte [CARD_OPEN], 1
+    call gfx_draw_board
 
-    mov al, 20
-    mov bl, 4
-    call xy_to_di
-    mov si, str_vic_hdr1
-    mov ah, 0x2E
-    call print_string
+    ; Draw Victory Sky-Blue Rounded Card (X=52..267, Y=28..184)
+    mov ax, 54
+    mov bx, 30
+    mov cx, 216
+    mov dx, 156
+    mov byte [GFX_COLOR], 26
+    call gfx_fill_rect
 
-    mov al, 28
-    mov bl, 5
-    call xy_to_di
+    mov ax, 52
+    mov bx, 28
+    mov cx, 216
+    mov dx, 156
+    mov byte [GFX_COLOR], 6
+    call gfx_fill_rounded_rect
+
+    ; Title: "* VICTORY! *"
+    mov ax, 116
+    mov bx, 36
+    mov si, str_vic_short
+    mov dl, 22
+    call gfx_draw_text
+
+    ; Subtitle: "YOU CONQUERED THE BOARD!"
+    mov ax, 64
+    mov bx, 50
     mov si, str_vic_hdr2
-    mov ah, 0x2F
-    call print_string
+    mov dl, 15
+    call gfx_draw_text
 
-    mov al, 32
-    mov bl, 7
-    call xy_to_di
-    mov si, str_vic_t1
-    mov ah, 0x2E
-    call print_string
-    mov al, 31
-    mov bl, 8
-    call xy_to_di
-    mov si, str_vic_t2
-    mov ah, 0x2E
-    call print_string
-    mov al, 32
-    mov bl, 9
-    call xy_to_di
-    mov si, str_vic_t3
-    mov ah, 0x2E
-    call print_string
-    mov al, 28
-    mov bl, 10
-    call xy_to_di
-    mov si, str_vic_t4
-    mov ah, 0x2F
-    call print_string
-    mov al, 32
-    mov bl, 11
-    call xy_to_di
-    mov si, str_vic_t5
-    mov ah, 0x2E
-    call print_string
-    mov al, 31
-    mov bl, 12
-    call xy_to_di
-    mov si, str_vic_t6
-    mov ah, 0x2E
-    call print_string
-    mov al, 32
-    mov bl, 13
-    call xy_to_di
-    mov si, str_vic_t7
-    mov ah, 0x2E
-    call print_string
-    mov al, 37
-    mov bl, 14
-    call xy_to_di
-    mov si, str_vic_t8
-    mov ah, 0x2E
-    call print_string
-    mov al, 34
-    mov bl, 15
-    call xy_to_di
-    mov si, str_vic_t9
-    mov ah, 0x2E
-    call print_string
-    mov al, 33
-    mov bl, 16
-    call xy_to_di
-    mov si, str_vic_t10
-    mov ah, 0x2E
-    call print_string
-    mov al, 33
-    mov bl, 17
-    call xy_to_di
-    mov si, str_vic_t11
-    mov ah, 0x2F
-    call print_string
-    mov al, 33
-    mov bl, 18
-    call xy_to_di
-    mov si, str_vic_t12
-    mov ah, 0x2F
-    call print_string
-    mov al, 33
-    mov bl, 19
-    call xy_to_di
-    mov si, str_vic_t13
-    mov ah, 0x2E
-    call print_string
+    ; Draw 3 Golden Trophies in the center
+    mov ax, 124
+    mov bx, 72
+    mov si, sprite_trophy16
+    call gfx_draw_sprite16
+    mov ax, 152
+    mov bx, 68
+    mov si, sprite_trophy16
+    call gfx_draw_sprite16
+    mov ax, 180
+    mov bx, 72
+    mov si, sprite_trophy16
+    call gfx_draw_sprite16
 
-    mov al, 26
-    mov bl, 21
-    call xy_to_di
+    ; Board status
+    mov ax, 64
+    mov bx, 104
     mov si, str_vic_status
-    mov ah, 0x2F
-    call print_string
+    mov dl, 22
+    call gfx_draw_text
 
-    call mouse_show_cursor
+    ; Play Again button
+    mov ax, 76
+    mov bx, 140
+    mov cx, 168
+    mov dx, 20
+    mov byte [GFX_COLOR], 9
+    call gfx_fill_rounded_rect
+    mov ax, 92
+    mov bx, 146
+    mov si, str_btn_play_txt
+    mov dl, 15
+    call gfx_draw_text
+
+    call gfx_present
     call drain_kbd
+    mov byte [MOUSE_CLICK], 0
 
 .wait_vic_key:
     call read_key
     cmp al, 0x1C
     je init_snake_game
+    cmp al, 0x39
+    je init_snake_game
     cmp al, 0x01
     je core_bios_setup
     test byte [MOUSE_CLICK], 0x01
     jnz init_snake_game
-    mov ecx, 10000000
+    mov ecx, 5000000
     call delay_cycles
     jmp .wait_vic_key
 
     ; =========================================================================
-    ; PHASE 5: GOOGLE SNAKE SKY-BLUE GAME OVER POPUP CARD & HALL OF CHAMPIONS
+    ; PHASE 5: CYBFORGE SNAKE SKY-BLUE GAME OVER POPUP CARD
     ; =========================================================================
 game_over:
-    call mouse_hide_cursor
     call sound_game_over
 
     ; Check if score qualifies for Top 3 -> Initials entry!
     call check_top3_qualification
 
-    ; Render the Google Snake Sky-Blue Popup Card in Game Over mode (dl = 1)!
+    ; Render the Cybforge Snake Sky-Blue Popup Card in Game Over mode (dl = 1)!
     mov byte [CARD_BTN_SEL], 0
     mov byte [MOUSE_CLICK], 0
+    mov byte [CARD_OPEN], 1
     mov dl, 1
-    call draw_google_popup_card
-    call mouse_show_cursor
+    call gfx_draw_popup_card
+    call gfx_present
     call drain_kbd
 
 .wait_enter:
@@ -2332,17 +2313,18 @@ game_over:
     test al, al
     jnz .go_got_key
 
-    call check_card_mouse_hover
+    call check_card_mouse_hover_go
     test byte [MOUSE_CLICK], 0x01
     jz .go_idle
     mov byte [MOUSE_CLICK], 0
-    mov dh, [MOUSE_Y]
-    cmp dh, 15
-    je .do_restart
-    cmp dh, 17
-    je .do_setup
-    cmp dh, 19
-    je .do_shell
+    mov ax, [MOUSE_FINE_Y]
+    shr ax, 1
+    cmp ax, 154
+    jb .do_restart
+    cmp ax, 173
+    jb .do_setup
+    cmp ax, 194
+    jb .do_shell
     jmp .do_restart
 
 .go_got_key:
@@ -2364,7 +2346,7 @@ game_over:
     je .do_shell
 
 .go_idle:
-    mov ecx, 2000000
+    mov ecx, 250000
     call delay_cycles
     jmp .wait_enter
 
@@ -2383,9 +2365,9 @@ game_over:
     mov byte [CARD_BTN_SEL], 2
 
 .go_redraw_btns:
-    call mouse_hide_cursor
-    call draw_card_buttons
-    call mouse_show_cursor
+    mov dl, 1
+    call gfx_draw_popup_card
+    call gfx_present
     jmp .go_idle
 
 .go_activate_btn:
@@ -2417,13 +2399,17 @@ handle_input:
     jz .input_done
     mov byte [MOUSE_CLICK], 0
 
-    ; Did user click the top Forest-Green HUD bar (Row 0..2)?
-    cmp byte [MOUSE_Y], 2
-    ja .mouse_steer_playfield
-    mov dl, [MOUSE_X]
-    cmp dl, 59
+    mov ax, [MOUSE_FINE_X]
+    shr ax, 1                       ; AX = px (0..319)
+    mov bx, [MOUSE_FINE_Y]
+    shr bx, 1                       ; BX = py (0..199)
+
+    ; Did user click the top Forest-Green HUD bar (py < 24)?
+    cmp bx, 24
+    jae .mouse_steer_playfield
+    cmp ax, 272
     jb .hud_toggle_sound
-    cmp dl, 65
+    cmp ax, 292
     jb .do_pause
     pop ax                          ; Clean up return address -> jump to Setup
     call sound_click
@@ -2436,21 +2422,33 @@ handle_input:
     ret
 
 .mouse_steer_playfield:
-    ; Steer snake toward clicked playfield coordinate (MOUSE_X, MOUSE_Y)!
+    ; Convert clicked pixel (AX=px, BX=py) to 28x16 grid coordinate (dl=gx, dh=gy)
+    sub ax, 20
+    jns .ms_px_pos
+    xor ax, ax
+.ms_px_pos:
+    mov cl, 10
+    div cl
+    mov dl, al                      ; DL = clicked gx (0..27)
+
+    mov ax, bx
+    sub ax, 32
+    jns .ms_py_pos
+    xor ax, ax
+.ms_py_pos:
+    div cl
+    mov dh, al                      ; DH = clicked gy (0..15)
+
     mov al, [SNAKE_DIR]
     test al, 1                      ; Moving horizontally (Right=1 or Left=3)?
     jnz .steer_vertical
-    ; Currently moving Up/Down -> Turn Left (3) or Right (1) toward MOUSE_X
     mov cl, 1
-    mov dl, [MOUSE_X]
     cmp dl, [SNAKE_X]
     jae .apply_new_dir
     mov cl, 3
     jmp .apply_new_dir
 .steer_vertical:
-    ; Currently moving Left/Right -> Turn Up (0) or Down (2) toward MOUSE_Y
     mov cl, 2
-    mov dh, [MOUSE_Y]
     cmp dh, [SNAKE_Y]
     jae .apply_new_dir
     mov cl, 0
@@ -2471,62 +2469,35 @@ handle_input:
     jmp .chk_wasd
 
 .do_pause:
-    call mouse_hide_cursor
     call sound_pause
-    ; Sky-Blue Pause Modal Box (Cols 28..52, Rows 10..14)
-    mov al, 28
-    mov bl, 10
-    call xy_to_di
-    mov ax, 0x3B01
-    stosw
-    mov cx, 23
-    mov ax, 0x3B05
-    rep stosw
-    mov ax, 0x3B02
-    stosw
+    ; Draw Sky-Blue Rounded Pause Modal (X=64..255, Y=66..134)
+    mov ax, 66
+    mov bx, 68
+    mov cx, 192
+    mov dx, 68
+    mov byte [GFX_COLOR], 26
+    call gfx_fill_rect
 
-    mov dh, 11
-.p_box_mid:
-    mov al, 28
-    mov bl, dh
-    call xy_to_di
-    mov ax, 0x3B06
-    stosw
-    mov cx, 23
-    mov ax, 0x3F20
-    rep stosw
-    mov ax, 0x3B06
-    stosw
-    inc dh
-    cmp dh, 14
-    jb .p_box_mid
+    mov ax, 64
+    mov bx, 66
+    mov cx, 192
+    mov dx, 68
+    mov byte [GFX_COLOR], 6
+    call gfx_fill_rounded_rect
 
-    mov al, 28
-    mov bl, 14
-    call xy_to_di
-    mov ax, 0x3B03
-    stosw
-    mov cx, 23
-    mov ax, 0x3B05
-    rep stosw
-    mov ax, 0x3B04
-    stosw
-
-    mov al, 35
-    mov bl, 11
-    call xy_to_di
+    mov ax, 76
+    mov bx, 80
     mov si, str_paused_lbl
-    mov ah, 0x3E
-    call print_string
+    mov dl, 22
+    call gfx_draw_text
 
-    mov al, 30
-    mov bl, 13
-    call xy_to_di
+    mov ax, 68
+    mov bx, 104
     mov si, str_pause_resume
-    mov ah, 0x3F
-    call print_string
+    mov dl, 15
+    call gfx_draw_text
 
-    call mouse_show_cursor
+    call gfx_present
     call drain_kbd
     mov byte [MOUSE_CLICK], 0
 
@@ -2546,29 +2517,14 @@ handle_input:
 
 .pause_to_setup:
     call sound_click
-    pop ax                          ; Clean up stack
+    pop ax
     jmp core_bios_setup
 
 .resume_game:
     mov byte [MOUSE_CLICK], 0
-    call mouse_hide_cursor
     call sound_pause
-    ; Restore Grass Checkerboard under pause modal
-    call draw_grass_board
-    call draw_arena_obstacles
-    call draw_snake
-    call draw_fruit
-    cmp byte [GOLD_FOOD_X], 0xFF
-    je .resume_done
-    mov al, [GOLD_FOOD_X]
-    mov bl, [GOLD_FOOD_Y]
-    call xy_to_di
-    call get_grass_bg_ah
-    or ah, 0x0E
-    mov al, 0x08
-    stosw
-.resume_done:
-    call mouse_show_cursor
+    call gfx_render_scene
+    call gfx_present
     ret
 
 .chk_wasd:
@@ -2630,59 +2586,376 @@ handle_input:
     ret
 
     ; =========================================================================
-    ; PHASE 7: GOOGLE SNAKE MAXIMALIST GRAPHICS & GRASS CHECKERBOARD ENGINE
+    ; PHASE 7: MODE 13H (320x200x256) DOUBLE-BUFFERED PIXEL GRAPHICS ENGINE
+    ; Backbuffer in RAM: Segment 0x3000:0000 (64,000 Bytes)
+    ; Hardware Linear Framebuffer: Segment 0xA000:0000 (64,000 Bytes)
     ; =========================================================================
-get_grass_bg_ah:
-    ; Input: AL = X, BL = Y
-    ; Output: AH = 0x20 (Medium Grass) if (X+Y) is even, 0x70 (Light Grass) if odd
-    push ax
-    add al, bl
-    test al, 1
-    pop ax
-    mov ah, 0x20
-    jz .ggb_done
-    mov ah, 0x70
-.ggb_done:
-    ret
+GFX_COLOR       equ 0x1C22
+GFX_TMP_X       equ 0x1C24
+GFX_TMP_Y       equ 0x1C26
+MOUSE_GFX_BG    equ 0x1C30          ; 192 bytes (12x16 patch)
 
-clear_grass_tile:
-    ; Restores cell (AL, BL) to its 2-tone Grass Checkerboard tile
+vga_set_mode13h:
     push ax
+    push bx
+    push cx
+    push dx
+    push si
     push di
-    call xy_to_di
-    call get_grass_bg_ah
-    mov al, ' '
-    stosw
+    push es
+
+    mov byte [VGA_GFX_ACTIVE], 1
+
+    ; 1. Misc Output Register (0x3C2) = 0x63 (25 MHz, 400-line mode, RAM enable)
+    mov dx, 0x3C2
+    mov al, 0x63
+    out dx, al
+
+    ; 2. Sequencer Registers (0x3C4 / 0x3C5) for Chain-4 256-Color Mode 13h
+    mov dx, 0x3C4
+    mov ax, 0x0100                  ; Sync Reset
+    out dx, ax
+    mov si, mode13h_seq_table
+    mov cx, 4
+    mov ah, 1
+.m13_seq:
+    mov dx, 0x3C4
+    mov al, ah
+    out dx, al
+    inc dx
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    inc ah
+    loop .m13_seq
+    mov dx, 0x3C4
+    mov ax, 0x0300                  ; End Sync Reset
+    out dx, ax
+
+    ; 3. CRTC Registers (0x3D4 / 0x3D5) for 320x200 Chain-4
+    mov dx, 0x3D4
+    mov ax, 0x0011                  ; Unlock CR00..CR07
+    out dx, ax
+    mov si, mode13h_crtc_table
+    mov cx, 25
+    xor ah, ah
+.m13_crtc:
+    mov dx, 0x3D4
+    mov al, ah
+    out dx, al
+    inc dx
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    inc ah
+    loop .m13_crtc
+
+    ; 4. Graphics Controller Registers (0x3CE / 0x3CF)
+    mov si, mode13h_gc_table
+    mov cx, 9
+    xor ah, ah
+.m13_gc:
+    mov dx, 0x3CE
+    mov al, ah
+    out dx, al
+    inc dx
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    inc ah
+    loop .m13_gc
+
+    ; 5. Attribute Controller Registers (0x3C0)
+    mov dx, 0x3DA
+    in al, dx
+    mov dx, 0x3C0
+    xor ah, ah
+.m13_ac_pal:
+    mov al, ah
+    out dx, al
+    out dx, al
+    inc ah
+    cmp ah, 16
+    jb .m13_ac_pal
+    mov si, mode13h_ac_ext_table
+    mov cx, 5
+.m13_ac_ext:
+    mov al, ah
+    out dx, al
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    inc ah
+    loop .m13_ac_ext
+
+    mov dx, 0x3DA
+    in al, dx
+    mov dx, 0x3C0
+    mov al, 0x20                    ; Enable video output
+    out dx, al
+
+    mov dx, 0x3C6
+    mov al, 0xFF
+    out dx, al
+
+    ; 6. Load 32-entry 256-Color Cybforge Snake DAC Palette (with Theme support!)
+    call load_mode13h_palette
+
+    pop es
     pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
     pop ax
     ret
 
-draw_grass_board:
-    ; Fills the entire 58x18 playfield interior (Cols 11..68, Rows 4..21)
-    ; with the 2-tone Google Snake grass checkerboard (0x2020 and 0x7020)
+load_mode13h_palette:
+    push ax
+    push cx
+    push dx
+    push si
+
+    ; Colors 0..5 come from selected board theme (CFG_THEME 0..3, 18 bytes each)
+    mov al, [CFG_THEME]
+    and al, 3
+    mov cl, 18
+    mul cl
+    mov si, mode13h_theme_palettes
+    add si, ax
+
+    mov dx, 0x3C8
+    xor al, al
+    out dx, al
+    mov dx, 0x3C9
+    mov cx, 18
+.m13_pal_th:
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    loop .m13_pal_th
+
+    ; Colors 6..31 come from mode13h_fixed_palette (26 * 3 = 78 bytes)
+    mov si, mode13h_fixed_palette
+    mov cx, 26 * 3
+.m13_pal_fx:
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    loop .m13_pal_fx
+
+    pop si
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+vga_set_text_mode:
+    cmp byte [VGA_GFX_ACTIVE], 1
+    jne .vstm_done
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    mov byte [VGA_GFX_ACTIVE], 0
+
+    ; 1. Restore 80x25 Text Mode VGA Registers
+    mov dx, 0x3C2
+    mov al, 0x67
+    out dx, al
+
+    mov dx, 0x3C4
+    mov ax, 0x0100
+    out dx, ax
+    mov si, vga_seq_table
+    mov cx, 4
+    mov ah, 1
+.vstm_seq:
+    mov dx, 0x3C4
+    mov al, ah
+    out dx, al
+    inc dx
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    inc ah
+    loop .vstm_seq
+    mov dx, 0x3C4
+    mov ax, 0x0300
+    out dx, ax
+
+    mov dx, 0x3D4
+    mov ax, 0x0011
+    out dx, ax
+    mov si, vga_crtc_table
+    mov cx, 25
+    xor ah, ah
+.vstm_crtc:
+    mov dx, 0x3D4
+    mov al, ah
+    out dx, al
+    inc dx
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    inc ah
+    loop .vstm_crtc
+    ; Disable hardware text cursor (CR0A = 0x20)
+    mov dx, 0x3D4
+    mov ax, 0x200A
+    out dx, ax
+
+    mov si, vga_gc_table
+    mov cx, 9
+    xor ah, ah
+.vstm_gc:
+    mov dx, 0x3CE
+    mov al, ah
+    out dx, al
+    inc dx
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    inc ah
+    loop .vstm_gc
+
+    mov dx, 0x3DA
+    in al, dx
+    mov dx, 0x3C0
+    xor ah, ah
+.vstm_ac_pal:
+    mov al, ah
+    out dx, al
+    out dx, al
+    inc ah
+    cmp ah, 16
+    jb .vstm_ac_pal
+    mov si, vga_ac_ext_table
+    mov cx, 5
+.vstm_ac_ext:
+    mov al, ah
+    out dx, al
+    mov al, [cs:si]
+    inc si
+    out dx, al
+    inc ah
+    loop .vstm_ac_ext
+    mov dx, 0x3DA
+    in al, dx
+    mov dx, 0x3C0
+    mov al, 0x20
+    out dx, al
+
+    ; 2. Reload ASCII + Custom Glyphs into Plane 2 via vga_apply_font_scale
+    call vga_apply_font_scale
+
+    ; 3. Also reload Cybforge POST Logo Glyphs (0x80..0xBB) into Plane 2
+    mov dx, 0x3C4
+    mov ax, 0x0100
+    out dx, ax
+    mov ax, 0x0402
+    out dx, ax
+    mov ax, 0x0604
+    out dx, ax
+    mov ax, 0x0300
+    out dx, ax
+    mov dx, 0x3CE
+    mov ax, 0x0204
+    out dx, ax
+    mov ax, 0x0005
+    out dx, ax
+    mov ax, 0x0406
+    out dx, ax
+
+    mov ax, 0xA000
+    mov es, ax
+    mov si, logo_font_table
+.vstm_logo_lp:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jz .vstm_logo_done
+    xor ah, ah
+    shl ax, 5
+    mov di, ax
+    mov cx, 16
+.vstm_logo_cp:
+    mov al, [cs:si]
+    inc si
+    stosb
+    loop .vstm_logo_cp
+    jmp .vstm_logo_lp
+.vstm_logo_done:
+    mov dx, 0x3C4
+    mov ax, 0x0100
+    out dx, ax
+    mov ax, 0x0302
+    out dx, ax
+    mov ax, 0x0204
+    out dx, ax
+    mov ax, 0x0300
+    out dx, ax
+    mov dx, 0x3CE
+    mov ax, 0x0004
+    out dx, ax
+    mov ax, 0x1005
+    out dx, ax
+    mov ax, 0x0E06
+    out dx, ax
+
+    ; 4. Restore ES = 0xB800 and load Modern UEFI Dark Slate Palette
+    mov ax, 0xB800
+    mov es, ax
+    call load_ui_palette
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+.vstm_done:
+    ret
+
+; -----------------------------------------------------------------------------
+; Low-Level 320x200 Backbuffer Drawing Primitives (Target Segment 0x3000)
+; -----------------------------------------------------------------------------
+gfx_fill_rect:
+    ; Input: AX = x, BX = y, CX = width, DX = height, [GFX_COLOR] = color
     push ax
     push bx
     push cx
     push dx
     push di
-    mov dh, 4
-.dgb_row:
-    mov al, 11
-    mov bl, dh
-    call xy_to_di
-    mov dl, 11
-.dgb_col:
-    mov al, dl
-    mov bl, dh
-    call get_grass_bg_ah
-    mov al, ' '
-    stosw
-    inc dl
-    cmp dl, 69
-    jb .dgb_col
-    inc dh
-    cmp dh, 22
-    jb .dgb_row
+    push es
+
+    cmp cx, 0
+    jle .gfr_done
+    cmp dx, 0
+    jle .gfr_done
+
+    mov di, 0x3000
+    mov es, di
+
+    ; Compute di = y * 320 + x
+    imul di, bx, 320
+    add di, ax
+    mov al, [GFX_COLOR]
+.gfr_row:
+    push cx
+    push di
+    rep stosb
+    pop di
+    pop cx
+    add di, 320
+    dec dx
+    jnz .gfr_row
+
+.gfr_done:
+    pop es
     pop di
     pop dx
     pop cx
@@ -2690,232 +2963,681 @@ draw_grass_board:
     pop ax
     ret
 
-draw_game_board:
-    ; 1. Fill entire 80x25 screen with Dark Forest-Green outer frame (0x0F20)
+gfx_fill_rounded_rect:
+    ; Input: AX = x, BX = y, CX = width, DX = height, [GFX_COLOR] = color
+    ; Draws a rounded pill/card rectangle by inseting the top/bottom 2 scanlines
+    push ax
+    push bx
+    push cx
+    push dx
+
+    ; Center body: (x, y+2, w, h-4)
+    push ax
+    push bx
+    push cx
+    push dx
+    add bx, 2
+    sub dx, 4
+    call gfx_fill_rect
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+
+    ; Top 2 rows: (x+2, y, w-4, 1) and (x+1, y+1, w-2, 1)
+    push ax
+    push bx
+    push cx
+    add ax, 2
+    sub cx, 4
+    mov dx, 1
+    call gfx_fill_rect
+    pop cx
+    pop bx
+    pop ax
+
+    push ax
+    push bx
+    push cx
+    inc ax
+    inc bx
+    sub cx, 2
+    mov dx, 1
+    call gfx_fill_rect
+    pop cx
+    pop bx
+    pop ax
+
+    ; Bottom 2 rows: (x+1, y+h-2, w-2, 1) and (x+2, y+h-1, w-4, 1)
+    push ax
+    push bx
+    push cx
+    push dx
+    inc ax
+    add bx, dx
+    sub bx, 2
+    sub cx, 2
+    mov dx, 1
+    call gfx_fill_rect
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+
+    add ax, 2
+    add bx, dx
+    dec bx
+    sub cx, 4
+    mov dx, 1
+    call gfx_fill_rect
+
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+gfx_draw_char:
+    ; Input: AX = x, BX = y, CL = ASCII char, DL = fg color (with 1px shadow in Color 26)
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push es
+
+    ; Look up char CL in font_table (each entry: 1 byte code + 16 bytes scanlines)
+    mov si, font_table
+.gdc_find:
+    mov ch, [cs:si]
+    test ch, ch
+    jz .gdc_done
+    cmp ch, cl
+    je .gdc_found
+    add si, 17
+    jmp .gdc_find
+
+.gdc_found:
+    inc si                          ; SI points to 16 scanlines (use scanlines 2..11 compressed to 8 rows!)
+    mov di, 0x3000
+    mov es, di
+    imul di, bx, 320
+    add di, ax
+
+    ; Render 12 scanlines (rows 2..13 of the 8x16 glyph) so lowercase descenders ('y','g','p') are crisp!
+    add si, 2
+    mov ch, 12
+.gdc_row:
+    mov ah, [cs:si]
+    inc si
+    mov cl, 8
+    push di
+.gdc_bit:
+    shl ah, 1
+    jnc .gdc_next_px
+    mov byte [es:di + 321], 26      ; 1px Bottom-Right Drop Shadow
+    mov [es:di], dl                 ; Crisp Foreground Pixel
+.gdc_next_px:
+    inc di
+    dec cl
+    jnz .gdc_bit
+    pop di
+    add di, 320
+    dec ch
+    jnz .gdc_row
+
+.gdc_done:
+    pop es
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+gfx_draw_text:
+    ; Input: AX = x, BX = y, SI = null-terminated string in CS, DL = fg color
+    push ax
+    push bx
+    push cx
+    push si
+.gdt_lp:
+    mov cl, [cs:si]
+    inc si
+    test cl, cl
+    jz .gdt_done
+    call gfx_draw_char
+    add ax, 8
+    jmp .gdt_lp
+.gdt_done:
+    pop si
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+gfx_draw_3digits:
+    ; Input: AX = x, BX = y, CX = 16-bit number (0..999), DL = fg color
+    push ax
+    push bx
+    push cx
+    push dx
+    mov [GFX_TMP_X], ax
+    mov [GFX_TMP_Y], bx
+    mov [GFX_COLOR], dl             ; Save foreground color safely in [GFX_COLOR]!
+
+    mov ax, cx
+    xor dx, dx
+    mov cx, 100
+    div cx                          ; AL = hundreds, DX = remainder (0..99)
+    mov cl, al
+    add cl, '0'
+    push dx                         ; Preserve remainder across gfx_draw_char!
+    mov ax, [GFX_TMP_X]
+    mov bx, [GFX_TMP_Y]
+    mov dl, [GFX_COLOR]
+    call gfx_draw_char
+    pop dx
+
+    add word [GFX_TMP_X], 8
+    mov ax, dx
+    xor dx, dx
+    mov cx, 10
+    div cx                          ; AL = tens, DL = ones (0..9)
+    mov cl, al
+    add cl, '0'
+    push dx                         ; Preserve ones digit across gfx_draw_char!
+    mov ax, [GFX_TMP_X]
+    mov bx, [GFX_TMP_Y]
+    mov dl, [GFX_COLOR]
+    call gfx_draw_char
+    pop dx
+
+    add word [GFX_TMP_X], 8
+    mov cl, dl
+    add cl, '0'
+    mov ax, [GFX_TMP_X]
+    mov bx, [GFX_TMP_Y]
+    mov dl, [GFX_COLOR]
+    call gfx_draw_char
+
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+gfx_draw_sprite10:
+    ; Input: AX = x, BX = y, SI = 10x10 byte sprite in CS (0xFF = transparent)
+    push ax
+    push bx
+    push cx
+    push si
+    push di
+    push es
+    mov di, 0x3000
+    mov es, di
+    imul di, bx, 320
+    add di, ax
+    mov ch, 10
+.gds10_r:
+    mov cl, 10
+    push di
+.gds10_c:
+    mov al, [cs:si]
+    inc si
+    cmp al, 0xFF
+    je .gds10_skip
+    mov [es:di], al
+.gds10_skip:
+    inc di
+    dec cl
+    jnz .gds10_c
+    pop di
+    add di, 320
+    dec ch
+    jnz .gds10_r
+    pop es
+    pop di
+    pop si
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+gfx_draw_sprite16:
+    ; Input: AX = x, BX = y, SI = 16x16 byte sprite in CS (0xFF = transparent)
+    push ax
+    push bx
+    push cx
+    push si
+    push di
+    push es
+    mov di, 0x3000
+    mov es, di
+    imul di, bx, 320
+    add di, ax
+    mov ch, 16
+.gds16_r:
+    mov cl, 16
+    push di
+.gds16_c:
+    mov al, [cs:si]
+    inc si
+    cmp al, 0xFF
+    je .gds16_skip
+    mov [es:di], al
+.gds16_skip:
+    inc di
+    dec cl
+    jnz .gds16_c
+    pop di
+    add di, 320
+    dec ch
+    jnz .gds16_r
+    pop es
+    pop di
+    pop si
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+gfx_present:
+    ; Draws the hardware mouse cursor onto the backbuffer (0x3000:0000),
+    ; copies all 64,000 bytes to VGA 0xA000:0000, and restores the patch under the cursor!
+    push eax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push bp
+    push ds
+    push es
+
+    ; Compute clamped cursor pixel (px in 0..307, py in 0..183)
+    mov ax, [MOUSE_FINE_X]
+    mov [MOUSE_LAST_FX], ax
+    shr ax, 1
+    cmp ax, 307
+    jbe .gp_x_ok
+    mov ax, 307
+.gp_x_ok:
+    mov bx, [MOUSE_FINE_Y]
+    mov [MOUSE_LAST_FY], bx
+    shr bx, 1
+    cmp bx, 183
+    jbe .gp_y_ok
+    mov bx, 183
+.gp_y_ok:
+    imul di, bx, 320
+    add di, ax                      ; DI = top-left offset of 12x16 cursor patch in 0x3000
+    mov bp, di
+
+    ; 1. Save 12x16 background patch from 0x3000:bp into DS:MOUSE_GFX_BG
+    mov ax, 0x3000
+    mov es, ax
+    mov si, MOUSE_GFX_BG
+    mov ch, 16
+.gp_save_r:
+    mov cl, 12
+    push di
+.gp_save_c:
+    mov al, [es:di]
+    mov [ds:si], al
+    inc di
+    inc si
+    dec cl
+    jnz .gp_save_c
+    pop di
+    add di, 320
+    dec ch
+    jnz .gp_save_r
+
+    ; 2. Draw 12x16 Black-Outlined White Arrow Cursor onto 0x3000:bp
+    mov di, bp
+    mov si, sprite_cursor_12x16
+    mov ch, 16
+.gp_cur_r:
+    mov cl, 12
+    push di
+.gp_cur_c:
+    mov al, [cs:si]
+    inc si
+    cmp al, 0xFF
+    je .gp_cur_skip
+    mov [es:di], al
+.gp_cur_skip:
+    inc di
+    dec cl
+    jnz .gp_cur_c
+    pop di
+    add di, 320
+    dec ch
+    jnz .gp_cur_r
+
+    ; 3. Tear-free 32-bit burst copy from 0x3000:0000 to 0xA000:0000 (16,000 dwords)
+    mov ax, 0x3000
+    mov ds, ax
+    mov ax, 0xA000
+    mov es, ax
+    xor si, si
     xor di, di
-    mov cx, 80 * 25
-    mov ax, 0x0F20
-    rep stosw
+    mov cx, 16000
+    rep movsd
 
-    ; 2. Top Google Snake HUD Bar (Row 1):
-    ; Left: Plump Red Apple Icon (0x0C08) + Score + Gold Trophy Icon (0x0E09) + High Score
-    mov al, 10
-    mov bl, 1
-    call xy_to_di
-    mov ax, 0x0C08                  ; Red Apple Icon
-    stosw
-    mov ax, 0x0F20
-    stosw
+    ; 4. Restore 12x16 background patch back into 0x3000:bp
+    xor ax, ax
+    mov ds, ax
+    mov ax, 0x3000
+    mov es, ax
+    mov di, bp
+    mov si, MOUSE_GFX_BG
+    mov ch, 16
+.gp_rest_r:
+    mov cl, 12
+    push di
+.gp_rest_c:
+    mov al, [ds:si]
+    mov [es:di], al
+    inc si
+    inc di
+    dec cl
+    jnz .gp_rest_c
+    pop di
+    add di, 320
+    dec ch
+    jnz .gp_rest_r
 
-    mov al, 18
-    mov bl, 1
-    call xy_to_di
-    mov ax, 0x0E09                  ; Gold Trophy Icon
-    stosw
-    mov ax, 0x0F20
-    stosw
+    pop es
+    pop ds
+    pop bp
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop eax
+    ret
 
-    ; Center Title: "GOOGLE SNAKE BIOS v3.0"
-    mov al, 28
-    mov bl, 1
-    call xy_to_di
-    mov si, str_game_title
-    mov ah, 0x0F
-    call print_string
+; -----------------------------------------------------------------------------
+; Scene Renderer: HUD Bar, 28x16 Grass Checkerboard, Obstacles, Apple & Snake
+; -----------------------------------------------------------------------------
+gfx_render_scene:
+    call gfx_draw_board
+    call gfx_draw_fruit
+    call gfx_draw_snake
+    ret
 
-    ; Right Clickable HUD Buttons: [Sound] [Pause] [Setup]
-    mov al, 52
-    mov bl, 1
-    call xy_to_di
-    mov si, str_hud_buttons
-    mov ah, 0x0E
-    call print_string
+gfx_draw_board:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
 
-    ; Bottom Controls Bar (Row 24)
-    mov al, 6
-    mov bl, 24
-    call xy_to_di
-    mov si, str_controls
-    mov ah, 0x0F
-    call print_string
+    ; 1. Top Dark Forest-Green HUD Bar (Y = 0..23, Color 0)
+    xor ax, ax
+    xor bx, bx
+    mov cx, 320
+    mov dx, 24
+    mov byte [GFX_COLOR], 0
+    call gfx_fill_rect
 
-    ; 3. Playfield Deep Moss Border Frame (X: 10..69, Y: 3..22, attr 0x4F)
-    mov al, 10
-    mov bl, 3
-    call xy_to_di
-    mov ax, 0x4F01
-    stosw
-    mov cx, 58
-    mov ax, 0x4F05
-    rep stosw
-    mov ax, 0x4F02
-    stosw
+    ; 2. Outer Playfield Forest Border (Y = 24..199, Color 1)
+    xor ax, ax
+    mov bx, 24
+    mov cx, 320
+    mov dx, 176
+    mov byte [GFX_COLOR], 1
+    call gfx_fill_rect
 
-    mov cx, 18
-    mov dh, 4
-.vert_loop:
-    mov al, 10
-    mov bl, dh
-    call xy_to_di
-    mov ax, 0x4F06
-    stosw
-    mov al, 69
-    call xy_to_di
-    mov ax, 0x4F06
-    stosw
+    ; Subtle 1px dark inner frame around the 280x160 playfield (X=19..300, Y=31..192)
+    mov ax, 19
+    mov bx, 31
+    mov cx, 282
+    mov dx, 162
+    mov byte [GFX_COLOR], 26
+    call gfx_fill_rect
+
+    ; 3. Draw 28 x 16 Square Grass Checkerboard (10x10 pixel tiles at X=20..299, Y=32..191)
+    xor dh, dh                      ; DH = gy (0..15)
+.gdb_row:
+    xor dl, dl                      ; DL = gx (0..27)
+.gdb_col:
+    mov al, dl
+    add al, dh
+    and al, 1                       ; 0 = Even tile, 1 = Odd tile
+    add al, 2                       ; Colors 2 & 3 = Bright & Medium Grass
+    cmp byte [CARD_OPEN], 1
+    jne .gdb_col_ok
+    add al, 2                       ; Colors 4 & 5 = Dimmed Olive Grass when Popup Card is open!
+.gdb_col_ok:
+    mov [GFX_COLOR], al
+
+    movzx ax, dl
+    imul ax, 10
+    add ax, 20                      ; px = 20 + gx * 10
+    movzx bx, dh
+    imul bx, 10
+    add bx, 32                      ; py = 32 + gy * 10
+    mov cx, 10
+    push dx
+    mov dx, 10
+    call gfx_fill_rect
+    pop dx
+
+    inc dl
+    cmp dl, 28
+    jb .gdb_col
     inc dh
-    loop .vert_loop
+    cmp dh, 16
+    jb .gdb_row
 
-    mov al, 10
-    mov bl, 22
-    call xy_to_di
-    mov ax, 0x4F03
-    stosw
-    mov cx, 58
-    mov ax, 0x4F05
-    rep stosw
-    mov ax, 0x4F04
-    stosw
+    ; 4. Draw HUD Icons & Scores on Top Bar (Y = 0..23)
+    ; Left: 16x16 Glossy Red Apple at (6, 4) + Score at (25, 7)
+    mov ax, 6
+    mov bx, 4
+    mov si, sprite_apple16
+    call gfx_draw_sprite16
 
-    ; 4. Fill playfield interior with 2-tone Grass Checkerboard!
-    call draw_grass_board
+    mov ax, 25
+    mov bx, 7
+    mov cx, [SCORE]
+    mov dl, 15
+    call gfx_draw_3digits
 
-    ; 5. Draw arena obstacles
-    call draw_arena_obstacles
+    ; Trophy at (56, 4) + High Score at (75, 7)
+    mov ax, 56
+    mov bx, 4
+    mov si, sprite_trophy16
+    call gfx_draw_sprite16
+
+    mov ax, 75
+    mov bx, 7
+    mov cx, [HIGH_SCORE]
+    mov dl, 22
+    call gfx_draw_3digits
+
+    ; Center HUD Title: "CYBFORGE SNAKE" (or Golden Apple Timer if active)
+    cmp byte [GOLD_FOOD_X], 0xFF
+    jne .gdb_gold_hud
+    mov ax, 114
+    mov bx, 7
+    mov si, str_game_title
+    mov dl, 15
+    call gfx_draw_text
+    jmp .gdb_hud_right
+
+.gdb_gold_hud:
+    mov ax, 118
+    mov bx, 7
+    mov si, str_gold_lbl
+    mov dl, 21
+    call gfx_draw_text
+    mov ax, [GOLD_TIMER]
+    xor dx, dx
+    mov cx, 7
+    div cx
+    mov cx, ax
+    mov ax, 166
+    mov bx, 7
+    mov dl, 22
+    call gfx_draw_3digits
+
+.gdb_hud_right:
+    ; Right HUD Action Icons: Speaker (X=254), Pause (X=276), Settings Gear (X=298)
+    mov ax, 254
+    mov bx, 4
+    mov si, sprite_hud_speaker
+    call gfx_draw_sprite16
+
+    ; Pause bars || at (278, 6)
+    mov ax, 278
+    mov bx, 6
+    mov cx, 3
+    mov dx, 12
+    mov byte [GFX_COLOR], 15
+    call gfx_fill_rect
+    mov ax, 284
+    call gfx_fill_rect
+
+    ; Settings Gear icon at (296, 4)
+    mov ax, 296
+    mov bx, 4
+    mov si, sprite_hud_gear
+    call gfx_draw_sprite16
+
+    ; 5. Draw Arena Obstacles if active
+    call gfx_draw_arena_obstacles
+
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     ret
 
-draw_arena_obstacles:
+gfx_draw_arena_obstacles:
     cmp byte [CFG_ARENA], 1
-    je .draw_pillars
+    je .gdao_pillars
     cmp byte [CFG_ARENA], 2
-    je .draw_maze
+    je .gdao_maze
     ret
 
-.draw_pillars:
-    mov al, 24
-    mov bl, 8
-    call xy_to_di
-    mov word [es:di], 0x4E01
-    mov word [es:di+2], 0x4E02
-    mov al, 24
-    mov bl, 9
-    call xy_to_di
-    mov word [es:di], 0x4E03
-    mov word [es:di+2], 0x4E04
-
-    mov al, 54
-    mov bl, 8
-    call xy_to_di
-    mov word [es:di], 0x4E01
-    mov word [es:di+2], 0x4E02
-    mov al, 54
-    mov bl, 9
-    call xy_to_di
-    mov word [es:di], 0x4E03
-    mov word [es:di+2], 0x4E04
-
-    mov al, 24
-    mov bl, 16
-    call xy_to_di
-    mov word [es:di], 0x4E01
-    mov word [es:di+2], 0x4E02
-    mov al, 24
-    mov bl, 17
-    call xy_to_di
-    mov word [es:di], 0x4E03
-    mov word [es:di+2], 0x4E04
-
-    mov al, 54
-    mov bl, 16
-    call xy_to_di
-    mov word [es:di], 0x4E01
-    mov word [es:di+2], 0x4E02
-    mov al, 54
-    mov bl, 17
-    call xy_to_di
-    mov word [es:di], 0x4E03
-    mov word [es:di+2], 0x4E04
+.gdao_pillars:
+    ; Four 2x2-tile 3D blocks at (6,3), (20,3), (6,11), (20,11)
+    mov ax, 20 + 6*10
+    mov bx, 32 + 3*10
+    mov cx, 20
+    mov dx, 20
+    call gfx_draw_3d_block
+    mov ax, 20 + 20*10
+    mov bx, 32 + 3*10
+    call gfx_draw_3d_block
+    mov ax, 20 + 6*10
+    mov bx, 32 + 11*10
+    call gfx_draw_3d_block
+    mov ax, 20 + 20*10
+    mov bx, 32 + 11*10
+    call gfx_draw_3d_block
     ret
 
-.draw_maze:
-    mov al, 20
-    mov bl, 9
-    call xy_to_di
-    mov cx, 26
-    mov ax, 0x4E05
-    rep stosw
-    mov al, 34
-    mov bl, 16
-    call xy_to_di
-    mov cx, 26
-    mov ax, 0x4E05
-    rep stosw
+.gdao_maze:
+    ; Two horizontal walls: gy=4, gx=5..18 (140x10) and gy=11, gx=9..22 (140x10)
+    mov ax, 20 + 5*10
+    mov bx, 32 + 4*10
+    mov cx, 140
+    mov dx, 10
+    call gfx_draw_3d_block
+    mov ax, 20 + 9*10
+    mov bx, 32 + 11*10
+    mov cx, 140
+    mov dx, 10
+    call gfx_draw_3d_block
+    ret
+
+gfx_draw_3d_block:
+    ; Input: AX=x, BX=y, CX=w, DX=h
+    mov byte [GFX_COLOR], 20        ; Warm Brown Border
+    call gfx_fill_rect
+    push ax
+    push bx
+    push cx
+    push dx
+    inc ax
+    inc bx
+    sub cx, 2
+    sub dx, 2
+    mov byte [GFX_COLOR], 23        ; Amber Inner Block
+    call gfx_fill_rect
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     ret
 
 is_arena_wall:
+    ; Input: AL = gx (0..27), BL = gy (0..15). Output: ZF=1 if wall hit, ZF=0 if clear
     cmp byte [CFG_ARENA], 1
     je .chk_pil
     cmp byte [CFG_ARENA], 2
     je .chk_mz
-    test sp, sp
+    or sp, sp                       ; ZF = 0
     ret
 
 .chk_pil:
-    cmp al, 24
+    cmp al, 6
     je .chk_pil_y
-    cmp al, 25
+    cmp al, 7
     je .chk_pil_y
-    cmp al, 54
+    cmp al, 20
     je .chk_pil_y
-    cmp al, 55
+    cmp al, 21
     je .chk_pil_y
-    test sp, sp
+    or sp, sp
     ret
 .chk_pil_y:
-    cmp bl, 8
+    cmp bl, 3
     je .hit_wall
-    cmp bl, 9
+    cmp bl, 4
     je .hit_wall
-    cmp bl, 16
+    cmp bl, 11
     je .hit_wall
-    cmp bl, 17
+    cmp bl, 12
     je .hit_wall
-    test sp, sp
+    or sp, sp
     ret
 
 .chk_mz:
-    cmp bl, 9
+    cmp bl, 4
     jne .chk_mz_w2
-    cmp al, 20
+    cmp al, 5
     jb .no_mz_hit
-    cmp al, 45
+    cmp al, 18
     jbe .hit_wall
 .chk_mz_w2:
-    cmp bl, 16
+    cmp bl, 11
     jne .no_mz_hit
-    cmp al, 34
+    cmp al, 9
     jb .no_mz_hit
-    cmp al, 59
+    cmp al, 22
     jbe .hit_wall
 .no_mz_hit:
-    test sp, sp
+    or sp, sp
     ret
 
 .hit_wall:
     xor al, al                      ; ZF = 1
     ret
 
-    ; =========================================================================
-    ; GOOGLE SNAKE SKY-BLUE POPUP CARD (Start & Game Over with 3 Blue Buttons!)
-    ; =========================================================================
-draw_start_prompt:
-draw_start_box:
-    xor dl, dl                      ; dl = 0: Start Card mode
-    call draw_google_popup_card
-    ret
-
-draw_google_popup_card:
-    ; Input: dl = 0 (Start Card), dl = 1 (Game Over Card)
+; -----------------------------------------------------------------------------
+; Continuous, Connected Multi-Color Royal-Blue Snake Renderer (gfx_draw_snake)
+; -----------------------------------------------------------------------------
+gfx_draw_snake:
     push ax
     push bx
     push cx
@@ -2923,187 +3645,319 @@ draw_google_popup_card:
     push si
     push di
 
-    ; 1. Draw Drop Shadow (Col 56 Rows 5..21, Cols 25..56 Row 21) in 0x5020
-    mov dh, 5
-.card_sh_v:
-    mov al, 56
-    mov bl, dh
-    call xy_to_di
-    mov word [es:di], 0x5020
-    inc dh
-    cmp dh, 21
-    jb .card_sh_v
+    ; 1. Draw Seamless Connected Tube Bridges between adjacent segments (i and i+1)
+    mov cx, [SNAKE_LEN]
+    dec cx
+    jz .gds_head
+    xor si, si
+.gds_bridge_lp:
+    movzx ax, byte [SNAKE_X + si]
+    movzx bx, byte [SNAKE_Y + si]
+    movzx dx, byte [SNAKE_X + si + 1]
+    movzx di, byte [SNAKE_Y + si + 1]
 
-    mov al, 25
-    mov bl, 21
-    call xy_to_di
-    mov cx, 32
-    mov ax, 0x5020
-    rep stosw
+    ; Check if |gx0 - gx1| + |gy0 - gy1| == 1 (skip bridge if wrapped across screen edge)
+    push ax
+    push bx
+    sub ax, dx
+    jns .gds_dx_p
+    neg ax
+.gds_dx_p:
+    sub bx, di
+    jns .gds_dy_p
+    neg bx
+.gds_dy_p:
+    add ax, bx
+    cmp ax, 1
+    pop bx
+    pop ax
+    jne .gds_next_bridge
 
-    ; 2. Draw Sky-Blue Upper Card (Cols 24..55, Rows 4..13) in 0x3F / 0x3B
-    mov al, 24
-    mov bl, 4
-    call xy_to_di
-    mov ax, 0x3B01                  ; '╭'
-    stosw
-    mov cx, 30
-    mov ax, 0x3B05                  ; '═'
-    rep stosw
-    mov ax, 0x3B02                  ; '╮'
-    stosw
+    ; Compute top-left grid cell (min(gx0,gx1), min(gy0,gy1))
+    cmp ax, dx
+    je .gds_vert_bridge
 
-    mov dh, 5
-.card_sky_mid:
-    mov al, 24
-    mov bl, dh
-    call xy_to_di
-    mov ax, 0x3B06
-    stosw
-    mov cx, 30
-    mov ax, 0x3F20
-    rep stosw
-    mov ax, 0x3B06
-    stosw
-    inc dh
-    cmp dh, 12
-    jb .card_sky_mid
+    ; Horizontal bridge between min(gx0,gx1) and max(gx0,gx1): width=18, height=8
+    cmp ax, dx
+    jb .gds_h_ord
+    mov ax, dx
+.gds_h_ord:
+    imul ax, 10
+    add ax, 21                      ; px = 20 + min_gx*10 + 1
+    imul bx, 10
+    add bx, 33                      ; py = 32 + gy*10 + 1
+    push cx
+    mov cx, 18
+    mov dx, 8
+    mov byte [GFX_COLOR], 11        ; Primary Royal Blue (#4674E9)
+    call gfx_fill_rect
+    ; Top 2px Specular Highlight (#6691F5)
+    inc bx
+    mov dx, 2
+    mov byte [GFX_COLOR], 12
+    call gfx_fill_rect
+    ; Bottom 1px Contour Shadow (#3156B8)
+    add bx, 6
+    mov dx, 1
+    mov byte [GFX_COLOR], 13
+    call gfx_fill_rect
+    pop cx
+    jmp .gds_next_bridge
 
-    ; 3. Rows 12 & 13 inside Card: 2-Row Green Grass Horizon Strip (Cols 25..54)
-    mov dh, 12
-.card_grass_rows:
-    mov al, 24
-    mov bl, dh
-    call xy_to_di
-    mov ax, 0x3B06
-    stosw
-    mov ch, 25
-.card_grass_cols:
-    mov al, ch
-    mov bl, dh
-    call get_grass_bg_ah
-    mov al, ' '
-    stosw
-    inc ch
-    cmp ch, 55
-    jb .card_grass_cols
-    mov ax, 0x3B06
-    stosw
-    inc dh
-    cmp dh, 14
-    jb .card_grass_rows
+.gds_vert_bridge:
+    ; Vertical bridge between min(gy0,gy1) and max(gy0,gy1): width=8, height=18
+    cmp bx, di
+    jb .gds_v_ord
+    mov bx, di
+.gds_v_ord:
+    imul ax, 10
+    add ax, 21                      ; px = 20 + gx*10 + 1
+    imul bx, 10
+    add bx, 33                      ; py = 32 + min_gy*10 + 1
+    push cx
+    mov cx, 8
+    mov dx, 18
+    mov byte [GFX_COLOR], 11
+    call gfx_fill_rect
+    ; Left 2px Specular Highlight
+    inc ax
+    mov cx, 2
+    mov byte [GFX_COLOR], 12
+    call gfx_fill_rect
+    ; Right 1px Contour Shadow
+    add ax, 6
+    mov cx, 1
+    mov byte [GFX_COLOR], 13
+    call gfx_fill_rect
+    pop cx
 
-    ; 4. Card Title on Row 5
-    mov al, 29
-    mov bl, 5
-    call xy_to_di
-    mov si, str_card_start_hdr
-    cmp dl, 0
-    je .card_pr_hdr
-    mov al, 31
-    mov bl, 5
-    call xy_to_di
-    mov si, str_game_over
-.card_pr_hdr:
-    mov ah, 0x3F                    ; Crisp White on Sky Blue
-    call print_string
+.gds_next_bridge:
+    inc si
+    dec cx
+    jnz .gds_bridge_lp
 
-    ; 5. Big Red Apple Icon (Col 32, Row 7) & Gold Trophy Icon (Col 46, Row 7)
-    mov al, 32
-    mov bl, 7
-    call xy_to_di
-    mov ax, 0x3C08                  ; Plump Red Apple on Sky Blue
-    stosw
+    ; 2. Draw Rounded Tapered Tail Tip at last segment (SNAKE_LEN - 1)
+    mov si, [SNAKE_LEN]
+    dec si
+    movzx ax, byte [SNAKE_X + si]
+    imul ax, 10
+    add ax, 22
+    movzx bx, byte [SNAKE_Y + si]
+    imul bx, 10
+    add bx, 34
+    mov cx, 6
+    mov dx, 6
+    mov byte [GFX_COLOR], 11
+    call gfx_fill_rect
 
-    mov al, 46
-    mov bl, 7
-    call xy_to_di
-    mov ax, 0x3E09                  ; Gold Trophy Cup on Sky Blue
-    stosw
+    ; 3. Draw Swollen Digesting Apple Bulge if active!
+    cmp byte [BULGE_X], 0xFF
+    je .gds_head
+    movzx ax, byte [BULGE_X]
+    imul ax, 10
+    add ax, 20
+    movzx bx, byte [BULGE_Y]
+    imul bx, 10
+    add bx, 32
+    mov cx, 10
+    mov dx, 10
+    mov byte [GFX_COLOR], 11
+    call gfx_fill_rounded_rect
+    add ax, 2
+    add bx, 2
+    mov cx, 4
+    mov dx, 3
+    mov byte [GFX_COLOR], 12
+    call gfx_fill_rect
 
-    ; 6. Score under Apple (Col 31, Row 8) & High Score under Trophy (Col 45, Row 8)
-    mov al, 31
-    mov bl, 8
-    call xy_to_di
-    mov ax, [SCORE]
-    call render_3digits_card
+.gds_head:
+    ; 4. Draw Expressive Multi-Color Snake Head at (SNAKE_X[0], SNAKE_Y[0])
+    movzx ax, byte [SNAKE_X]
+    imul ax, 10
+    add ax, 20                      ; AX = head_px
+    movzx bx, byte [SNAKE_Y]
+    imul bx, 10
+    add bx, 32                      ; BX = head_py
 
-    mov al, 45
-    mov bl, 8
-    call xy_to_di
-    mov ax, [HIGH_SCORE]
-    call render_3digits_card
+    ; Base 10x10 rounded royal-blue head
+    mov cx, 10
+    mov dx, 10
+    mov byte [GFX_COLOR], 11
+    call gfx_fill_rounded_rect
 
-    ; 7. Cute Royal-Blue Snake Artwork on Row 12 (sitting on the grass horizon!)
-    mov al, 33
-    mov bl, 12
-    call xy_to_di
-    mov ax, 0x290E                  ; Tapered Tail
-    stosw
-    mov ax, 0x790C                  ; Body
-    stosw
-    mov ax, 0x290D                  ; Bulge
-    stosw
-    mov ax, 0x790C                  ; Body
-    stosw
-    mov ax, 0x2A07                  ; Big-Eyed Cute Head (or Dizzy Head on Game Over)
-    cmp dl, 0
-    je .card_snk_head
-    mov ax, 0x2E10                  ; Knocked-Out Dizzy Head on Game Over!
-.card_snk_head:
-    stosw
-    mov ax, 0x7C18                  ; Flicking Red Tongue
-    stosw
-    mov ax, 0x2020
-    stosw
-    mov ax, 0x7C08                  ; Red Apple ahead of snake on grass!
-    stosw
+    ; Check Manhattan distance to Apple: |SNAKE_X - FOOD_X| + |SNAKE_Y - FOOD_Y| <= 3 -> Wide-Open Chomp Mouth!
+    mov dl, [SNAKE_X]
+    sub dl, [FOOD_X]
+    jns .gds_cdx
+    neg dl
+.gds_cdx:
+    mov dh, [SNAKE_Y]
+    sub dh, [FOOD_Y]
+    jns .gds_cdy
+    neg dh
+.gds_cdy:
+    add dl, dh
+    cmp dl, 3
+    ja .gds_check_tongue
 
-    ; If Game Over (dl == 1), also display Top Champion on Row 10
-    cmp dl, 1
-    jne .card_lower_panel
-    mov al, 28
-    mov bl, 10
-    call xy_to_di
-    mov si, str_card_champ_lbl
-    mov ah, 0x3E
-    call print_string
-    mov si, TOP3_TABLE + 0
-    mov ah, 0x3F
-    call print_3chars
+    ; Draw Wide-Open Chomp Mouth (Maroon 24 + Pink Tongue 25 + White Fangs 15) on front of head!
+    push ax
+    push bx
+    add ax, 2
+    add bx, 2
+    mov cx, 6
+    mov dx, 6
+    mov byte [GFX_COLOR], 24        ; Maroon open mouth interior
+    call gfx_fill_rect
+    inc ax
+    add bx, 2
+    mov cx, 4
+    mov dx, 3
+    mov byte [GFX_COLOR], 25        ; Pink inner tongue
+    call gfx_fill_rect
+    pop bx
+    pop ax
+    jmp .gds_eyes
 
-.card_lower_panel:
-    ; 8. Lower Button Frame (Cols 24..55, Rows 14..20)
-    mov dh, 14
-.card_bot_rows:
-    mov al, 24
-    mov bl, dh
-    call xy_to_di
-    mov ax, 0x3B06
-    stosw
-    mov cx, 30
-    mov ax, 0x3F20
-    rep stosw
-    mov ax, 0x3B06
-    stosw
-    inc dh
-    cmp dh, 20
-    jb .card_bot_rows
+.gds_check_tongue:
+    ; Flicking Red Forked Tongue ahead of snout on even TONGUE_TICK!
+    inc byte [TONGUE_TICK]
+    test byte [TONGUE_TICK], 2
+    jnz .gds_eyes
 
-    mov al, 24
-    mov bl, 20
-    call xy_to_di
-    mov ax, 0x3B03                  ; '╰'
-    stosw
-    mov cx, 30
-    mov ax, 0x3B05                  ; '═'
-    rep stosw
-    mov ax, 0x3B04                  ; '╯'
-    stosw
+    push ax
+    push bx
+    mov cl, [SNAKE_DIR]
+    cmp cl, 1                       ; Right
+    jne .gt_chk_l
+    add ax, 10
+    add bx, 4
+    mov cx, 4
+    mov dx, 2
+    mov byte [GFX_COLOR], 16
+    call gfx_fill_rect
+    add ax, 4
+    dec bx
+    mov cx, 1
+    mov dx, 1
+    call gfx_fill_rect
+    add bx, 3
+    call gfx_fill_rect
+    jmp .gt_done
+.gt_chk_l:
+    cmp cl, 3                       ; Left
+    jne .gt_chk_u
+    sub ax, 4
+    add bx, 4
+    mov cx, 4
+    mov dx, 2
+    mov byte [GFX_COLOR], 16
+    call gfx_fill_rect
+    jmp .gt_done
+.gt_chk_u:
+    cmp cl, 0                       ; Up
+    jne .gt_chk_d
+    add ax, 4
+    sub bx, 4
+    mov cx, 2
+    mov dx, 4
+    mov byte [GFX_COLOR], 16
+    call gfx_fill_rect
+    jmp .gt_done
+.gt_chk_d:
+    add ax, 4
+    add bx, 10
+    mov cx, 2
+    mov dx, 4
+    mov byte [GFX_COLOR], 16
+    call gfx_fill_rect
+.gt_done:
+    pop bx
+    pop ax
 
-    ; Draw the 3 Royal-Blue Action Buttons (Rows 15, 17, 19)
-    call draw_card_buttons
+.gds_eyes:
+    ; Draw Big Protruding Round White Eyes (4x4, Color 15) + Deep-Navy Pupils (2x2, Color 14)
+    ; oriented according to SNAKE_DIR!
+    mov cl, 14                      ; Default pupil color: Deep Navy
+    cmp byte [CFG_FACE], 1
+    jne .gds_eye_col_ok
+    mov cl, 27                      ; Cool Sunglasses: Pure Black lenses
+.gds_eye_col_ok:
 
+    mov ch, [SNAKE_DIR]
+    test ch, 1                      ; Moving horizontally (Right=1 or Left=3)?
+    jz .gds_eyes_vert
+
+    ; Horizontal movement: Top Eye at (px+3, py-1) and Bottom Eye at (px+3, py+7)
+    push ax
+    push bx
+    add ax, 2
+    dec bx
+    mov cx, 4
+    mov dx, 4
+    mov byte [GFX_COLOR], 15
+    call gfx_fill_rect
+    add bx, 8
+    call gfx_fill_rect
+
+    ; Pupils shifted toward movement direction
+    pop bx
+    pop ax
+    push ax
+    push bx
+    add ax, 4
+    cmp byte [SNAKE_DIR], 1
+    je .gds_hp_ok
+    sub ax, 2
+.gds_hp_ok:
+    mov cx, 2
+    mov dx, 2
+    mov byte [GFX_COLOR], 14
+    cmp byte [CFG_FACE], 1
+    jne .gds_hp_draw
+    mov byte [GFX_COLOR], 27
+    mov cx, 4
+.gds_hp_draw:
+    call gfx_fill_rect
+    add bx, 8
+    call gfx_fill_rect
+    pop bx
+    pop ax
+    jmp .gds_done
+
+.gds_eyes_vert:
+    ; Vertical movement: Left Eye at (px-1, py+2) and Right Eye at (px+7, py+2)
+    push ax
+    push bx
+    dec ax
+    add bx, 2
+    mov cx, 4
+    mov dx, 4
+    mov byte [GFX_COLOR], 15
+    call gfx_fill_rect
+    add ax, 8
+    call gfx_fill_rect
+
+    ; Pupils
+    pop bx
+    pop ax
+    push ax
+    push bx
+    add bx, 4
+    cmp byte [SNAKE_DIR], 2
+    je .gds_vp_ok
+    sub bx, 2
+.gds_vp_ok:
+    mov cx, 2
+    mov dx, 2
+    mov byte [GFX_COLOR], 14
+    call gfx_fill_rect
+    add ax, 8
+    call gfx_fill_rect
+    pop bx
+    pop ax
+
+.gds_done:
     pop di
     pop si
     pop dx
@@ -3112,288 +3966,71 @@ draw_google_popup_card:
     pop ax
     ret
 
-draw_card_buttons:
-    ; Renders the 3 clickable Google Royal-Blue buttons inside the popup card:
-    ; Row 15 (Btn 0): [ ▶  Play Snake Game       ]
-    ; Row 17 (Btn 1): [ ⚙  BIOS Setup & Settings ]
-    ; Row 19 (Btn 2): [ >_ Launch UEFI/BIOS Shell]
+; -----------------------------------------------------------------------------
+; Multi-Color 10x10 Glossy Red Apple & Golden Apple Renderer (gfx_draw_fruit)
+; -----------------------------------------------------------------------------
+gfx_draw_fruit:
     push ax
     push bx
     push si
-    push di
 
-    mov al, 26
-    mov bl, 15
-    call xy_to_di
-    mov si, str_card_btn_play
-    mov ah, 0x1F
-    cmp byte [CARD_BTN_SEL], 0
-    jne .dcb_b0
-    mov ah, 0x1E                    ; Highlighted Golden Text on Royal Blue
-.dcb_b0:
-    call print_string
+    movzx ax, byte [FOOD_X]
+    imul ax, 10
+    add ax, 20
+    movzx bx, byte [FOOD_Y]
+    imul bx, 10
+    add bx, 32
+    mov si, sprite_apple10
+    call gfx_draw_sprite10
 
-    mov al, 26
-    mov bl, 17
-    call xy_to_di
-    mov si, str_card_btn_setup
-    mov ah, 0x1F
-    cmp byte [CARD_BTN_SEL], 1
-    jne .dcb_b1
-    mov ah, 0x1E
-.dcb_b1:
-    call print_string
+    cmp byte [GOLD_FOOD_X], 0xFF
+    je .gdf_done
+    movzx ax, byte [GOLD_FOOD_X]
+    imul ax, 10
+    add ax, 20
+    movzx bx, byte [GOLD_FOOD_Y]
+    imul bx, 10
+    add bx, 32
+    mov si, sprite_gold_apple10
+    call gfx_draw_sprite10
 
-    mov al, 26
-    mov bl, 19
-    call xy_to_di
-    mov si, str_card_btn_shell
-    mov ah, 0x1F
-    cmp byte [CARD_BTN_SEL], 2
-    jne .dcb_b2
-    mov ah, 0x1E
-.dcb_b2:
-    call print_string
-
-    pop di
+.gdf_done:
     pop si
     pop bx
     pop ax
     ret
 
-check_card_mouse_hover:
-    ; Updates [CARD_BTN_SEL] if mouse hovers over Rows 15, 17, or 19 (Cols 26..53)
-    push ax
-    mov al, [MOUSE_X]
-    cmp al, 26
-    jb .ccmh_done
-    cmp al, 53
-    ja .ccmh_done
-    mov al, [MOUSE_Y]
-    cmp al, 15
-    je .ccmh_set0
-    cmp al, 17
-    je .ccmh_set1
-    cmp al, 19
-    je .ccmh_set2
-    jmp .ccmh_done
-.ccmh_set0:
-    mov ah, 0
-    jmp .ccmh_apply
-.ccmh_set1:
-    mov ah, 1
-    jmp .ccmh_apply
-.ccmh_set2:
-    mov ah, 2
-.ccmh_apply:
-    cmp [CARD_BTN_SEL], ah
-    je .ccmh_done
-    mov [CARD_BTN_SEL], ah
-    call mouse_hide_cursor
-    call draw_card_buttons
-    call mouse_show_cursor
-.ccmh_done:
-    pop ax
-    ret
-
-render_3digits_card:
-    xor dx, dx
-    mov cx, 100
-    div cx
-    add al, '0'
-    mov ah, 0x3F
-    stosw
-    mov ax, dx
-    xor dx, dx
-    mov cx, 10
-    div cx
-    add al, '0'
-    mov ah, 0x3F
-    stosw
-    mov al, dl
-    add al, '0'
-    mov ah, 0x3F
-    stosw
-    ret
-
-erase_start_prompt:
-erase_start_box:
-    call draw_grass_board
-    call draw_arena_obstacles
-    call draw_snake
-    call draw_fruit
-    ret
-
-    ; =========================================================================
-    ; MAXIMALIST GOOGLE SNAKE RENDERER (Head, Chomp, Tongue, Bulge, Tapered Tail)
-    ; =========================================================================
-draw_snake:
-    ; 1. Erase previous flicking tongue tile if active
-    cmp byte [TONGUE_X], 0xFF
-    je .ds_no_old_tongue
-    mov al, [TONGUE_X]
-    mov bl, [TONGUE_Y]
-    call clear_grass_tile
-    mov byte [TONGUE_X], 0xFF
-.ds_no_old_tongue:
-
-    ; 2. Draw Body Segments (si = 1 .. SNAKE_LEN - 1)
-    mov cx, [SNAKE_LEN]
-    dec cx
-    jz .ds_draw_head
-    mov si, 1
-.body_loop:
-    mov al, [SNAKE_X + si]
-    mov bl, [SNAKE_Y + si]
-    call xy_to_di
-    call get_grass_bg_ah
-    or ah, 0x09                     ; Royal Blue Snake Body on Grass
-
-    ; Check if this is the Tapered Tail Tip (last segment: cx == 1)
-    cmp cx, 1
-    jne .ds_chk_bulge
-    mov al, 0x0E                    ; 0x0E = Tapered Tail Tip glyph
-    jmp .ds_put_seg
-
-.ds_chk_bulge:
-    ; Check if this segment is at the Digesting Apple Bulge coordinate!
-    mov dl, [SNAKE_X + si]
-    cmp dl, [BULGE_X]
-    jne .ds_std_seg
-    mov dl, [SNAKE_Y + si]
-    cmp dl, [BULGE_Y]
-    jne .ds_std_seg
-    mov al, 0x0D                    ; 0x0D = Plump Digesting Apple Bulge glyph!
-    jmp .ds_put_seg
-
-.ds_std_seg:
-    mov al, 0x0C                    ; 0x0C = Rounded Body Segment glyph
-.ds_put_seg:
-    stosw
-    inc si
-    loop .body_loop
-
-.ds_draw_head:
-    ; 3. Draw Expressive Snake Head at (SNAKE_X[0], SNAKE_Y[0])
-    mov al, [SNAKE_X]
-    mov bl, [SNAKE_Y]
-    call xy_to_di
-    call get_grass_bg_ah
-    or ah, 0x0A                     ; Bright Royal/Cornflower Blue Head on Grass
-
-    ; Check Manhattan distance to Apple: |SNAKE_X - FOOD_X| + |SNAKE_Y - FOOD_Y| <= 3 -> Wide-Open Chomp Mouth (0x0F)!
-    push ax
-    mov dl, [SNAKE_X]
-    sub dl, [FOOD_X]
-    jns .dx_pos
-    neg dl
-.dx_pos:
-    mov dh, [SNAKE_Y]
-    sub dh, [FOOD_Y]
-    jns .dy_pos
-    neg dh
-.dy_pos:
-    add dl, dh
-    pop ax
-    cmp dl, 3
-    jbe .ds_chomp_head
-
-    mov al, 0x07                    ; 0x07 = Big-Eyed Cute Google Snake Head
-    cmp byte [CFG_FACE], 1
-    jne .ds_put_head
-    mov al, 0x0A                    ; 0x0A = Cool Sunglasses Head
-    jmp .ds_put_head
-
-.ds_chomp_head:
-    mov al, 0x0F                    ; 0x0F = Wide-Open Chomp Mouth Head!
-    stosw
-    ret                             ; Don't draw tongue when mouth is wide open chomping!
-
-.ds_put_head:
-    stosw
-
-    ; 4. Animate Flicking Red Forked Tongue (0x18) 1 tile ahead of the head!
-    inc byte [TONGUE_TICK]
-    test byte [TONGUE_TICK], 2
-    jnz .draw_snake_done
-
-    mov al, [SNAKE_X]
-    mov bl, [SNAKE_Y]
-    mov cl, [SNAKE_DIR]
-    cmp cl, 0
-    jne .tg_not_u
-    dec bl
-    jmp .tg_chk_bounds
-.tg_not_u:
-    cmp cl, 1
-    jne .tg_not_r
-    inc al
-    jmp .tg_chk_bounds
-.tg_not_r:
-    cmp cl, 2
-    jne .tg_not_d
-    inc bl
-    jmp .tg_chk_bounds
-.tg_not_d:
-    dec al
-
-.tg_chk_bounds:
-    cmp al, 11
-    jb .draw_snake_done
-    cmp al, 68
-    ja .draw_snake_done
-    cmp bl, 4
-    jb .draw_snake_done
-    cmp bl, 21
-    ja .draw_snake_done
-
-    ; Not on food or obstacle
-    cmp al, [FOOD_X]
-    jne .tg_chk_wall
-    cmp bl, [FOOD_Y]
-    je .draw_snake_done
-.tg_chk_wall:
-    call is_arena_wall
-    jz .draw_snake_done
-
-    ; Draw Red Forked Tongue (0x18) on grass tile!
-    mov [TONGUE_X], al
-    mov [TONGUE_Y], bl
-    call xy_to_di
-    call get_grass_bg_ah
-    or ah, 0x0C                     ; Bright Scarlet Red on Grass
-    mov al, 0x18                    ; 0x18 = Forked Tongue glyph
-    stosw
-
-.draw_snake_done:
-    ret
-
-draw_fruit:
-    mov al, [FOOD_X]
-    mov bl, [FOOD_Y]
-    call xy_to_di
-    call get_grass_bg_ah
-    or ah, 0x0C                     ; Bright Red Apple on Grass
-    mov al, 0x08
-    stosw
-    ret
-
+; -----------------------------------------------------------------------------
+; Fruit Spawning on 28 x 16 Grid (Cols 0..27, Rows 0..15)
+; -----------------------------------------------------------------------------
 spawn_fruit:
+    push ax
+    push bx
     push cx
+    push dx
     push si
-    mov bp, 100
+    push bp
+
+    ; On initial start, place first apple at (19, 8) directly in front of the snake!
+    cmp byte [FIRST_SPAWN], 1
+    jne .sf_random
+    mov byte [FIRST_SPAWN], 0
+    mov byte [FOOD_X], 19
+    mov byte [FOOD_Y], 8
+    jmp .spawn_ok
+
+.sf_random:
+    mov bp, 120
 .try_spawn:
     call get_random
     xor dx, dx
-    mov cx, 58
+    mov cx, 28
     div cx
-    add dl, 11
     mov [FOOD_X], dl
     call get_random
     xor dx, dx
-    mov cx, 18
+    mov cx, 16
     div cx
-    add dl, 4
     mov [FOOD_Y], dl
 
     mov al, [FOOD_X]
@@ -3419,26 +4056,32 @@ spawn_fruit:
     dec bp
     jnz .try_spawn
 .spawn_ok:
+    pop bp
     pop si
+    pop dx
     pop cx
+    pop bx
+    pop ax
     ret
 
 spawn_golden_apple:
+    push ax
+    push bx
     push cx
+    push dx
     push si
+    push bp
     mov bp, 100
 .try_gold:
     call get_random
     xor dx, dx
-    mov cx, 58
+    mov cx, 28
     div cx
-    add dl, 11
     mov [GOLD_FOOD_X], dl
     call get_random
     xor dx, dx
-    mov cx, 18
+    mov cx, 16
     div cx
-    add dl, 4
     mov [GOLD_FOOD_Y], dl
 
     mov al, [GOLD_FOOD_X]
@@ -3467,13 +4110,6 @@ spawn_golden_apple:
     loop .chk_gold_body
 
     mov word [GOLD_TIMER], 55
-    mov al, [GOLD_FOOD_X]
-    mov bl, [GOLD_FOOD_Y]
-    call xy_to_di
-    call get_grass_bg_ah
-    or ah, 0x0E                     ; Golden Apple on Grass
-    mov al, 0x08
-    stosw
     call sound_golden_spawn
     jmp .gold_spawn_ok
 
@@ -3482,44 +4118,12 @@ spawn_golden_apple:
     jnz .try_gold
     mov byte [GOLD_FOOD_X], 0xFF
 .gold_spawn_ok:
+    pop bp
     pop si
+    pop dx
     pop cx
-    ret
-
-erase_gold_apple:
-    cmp byte [GOLD_FOOD_X], 0xFF
-    je .no_erase_gold
-    mov al, [GOLD_FOOD_X]
-    mov bl, [GOLD_FOOD_Y]
-    call clear_grass_tile
-    mov byte [GOLD_FOOD_X], 0xFF
-    ; Restore title on HUD
-    mov al, 28
-    mov bl, 1
-    call xy_to_di
-    mov si, str_game_title
-    mov ah, 0x0F
-    call print_string
-.no_erase_gold:
-    ret
-
-update_gold_hud:
-    mov al, 42
-    mov bl, 1
-    call xy_to_di
-    mov si, str_gold_lbl
-    mov ah, 0x0E
-    call print_string
-
-    mov ax, [GOLD_TIMER]
-    xor dx, dx
-    mov cx, 7
-    div cx
-    add al, '0'
-    mov ah, 0x0E
-    stosw
-    mov al, 's'
-    stosw
+    pop bx
+    pop ax
     ret
 
 get_random:
@@ -3530,38 +4134,447 @@ get_random:
     mov [RND_SEED], ax
     ret
 
-update_score_display:
+; -----------------------------------------------------------------------------
+; Maximalist Sky-Blue Popup Card & 3 Pill-Shaped Royal-Blue Buttons
+; (Matches Reference Screenshot 1 with Big-Eyed Blue Snake on Grass Horizon!)
+; -----------------------------------------------------------------------------
+gfx_draw_popup_card:
+    ; Input: DL = 0 (Start Card), DL = 1 (Game Over Card)
     push ax
     push bx
     push cx
     push dx
+    push si
 
-    mov ax, [SCORE]
-    cmp ax, [HIGH_SCORE]
-    jbe .render_hi
-    mov [HIGH_SCORE], ax
+    push dx
+    mov byte [CARD_OPEN], 1
+    call gfx_render_scene           ; Draws dimmed dark-olive background playfield + snake + apple!
 
-.render_hi:
-    ; Score next to Red Apple Icon at (12, 1)
-    mov al, 12
-    mov bl, 1
-    call xy_to_di
-    mov ax, [SCORE]
-    call render_3digits_white
+    ; 1. Card Drop Shadow at (X=59..266, Y=29..137, w=208, h=109)
+    mov ax, 59
+    mov bx, 29
+    mov cx, 208
+    mov dx, 109
+    mov byte [GFX_COLOR], 26
+    call gfx_fill_rounded_rect
 
-    ; High Score next to Gold Trophy Icon at (20, 1)
-    mov al, 20
-    mov bl, 1
-    call xy_to_di
-    mov ax, [HIGH_SCORE]
-    call render_3digits_yellow
+    ; 2. Rounded Sky-Blue Card Body at (X=56..263, Y=26..134, w=208, h=109)
+    ;    Leaves Top HUD Bar (Y=0..23) 100% unobstructed!
+    mov ax, 56
+    mov bx, 26
+    mov cx, 208
+    mov dx, 109
+    mov byte [GFX_COLOR], 6         ; Sky Blue (#4DC1F9)
+    call gfx_fill_rounded_rect
 
+    ; 3. 3-Row Green Grass Horizon at Bottom of Card (X=58..261, Y=103..132, 20x3 tiles of 10x10)
+    mov ax, 58
+    mov bx, 102
+    mov cx, 204
+    mov dx, 1
+    mov byte [GFX_COLOR], 28        ; Horizon edge line
+    call gfx_fill_rect
+
+    xor ch, ch                      ; row 0..2
+.c_grass_r:
+    xor cl, cl                      ; col 0..19
+.c_grass_c:
+    mov al, cl
+    add al, ch
+    and al, 1
+    add al, 2                       ; Bright/Medium Grass (Colors 2 & 3)
+    mov [GFX_COLOR], al
+    movzx ax, cl
+    imul ax, 10
+    add ax, 58
+    movzx bx, ch
+    imul bx, 10
+    add bx, 103
+    push cx
+    mov cx, 10
+    mov dx, 10
+    call gfx_fill_rect
+    pop cx
+    inc cl
+    cmp cl, 20
+    jb .c_grass_c
+    inc ch
+    cmp ch, 3
+    jb .c_grass_r
+    ; Fill remaining 4px right strip of card grass (X=258..261)
+    mov ax, 258
+    mov bx, 103
+    mov cx, 4
+    mov dx, 30
+    mov byte [GFX_COLOR], 2
+    call gfx_fill_rect
+
+    ; 4. Card Header Banner: "CYBFORGE SNAKE" (Start) or "GAME OVER" (Game Over)
+    pop dx
+    push dx
+    cmp dl, 1
+    je .card_hdr_go
+    mov ax, 104
+    mov bx, 30
+    mov si, str_game_title
+    mov dl, 15
+    call gfx_draw_text
+    jmp .card_icons
+.card_hdr_go:
+    mov ax, 124
+    mov bx, 30
+    mov si, str_go_short
+    mov dl, 15
+    call gfx_draw_text
+
+.card_icons:
+    ; 5. Large 16x16 Glossy Red Apple (X=92, Y=44) + Crisp White Score below (X=88, Y=62)
+    mov ax, 92
+    mov bx, 44
+    mov si, sprite_apple16
+    call gfx_draw_sprite16
+
+    mov ax, 88
+    mov bx, 62
+    mov cx, [SCORE]
+    mov dl, 15
+    call gfx_draw_3digits
+
+    ; 6. Large 16x16 Golden Trophy Cup (X=212, Y=44) + Bright Gold High Score below (X=208, Y=62)
+    mov ax, 212
+    mov bx, 44
+    mov si, sprite_trophy16
+    call gfx_draw_sprite16
+
+    mov ax, 208
+    mov bx, 62
+    mov cx, [HIGH_SCORE]
+    mov dl, 22
+    call gfx_draw_3digits
+
+    ; 7. Large Hero Illustration: Curving Royal-Blue Cybforge Snake with Protruding White Eyes
+    ;    sitting on the green grass horizon facing a Glossy Red Apple!
+    ;    Coiled Tail & Lower Body on Grass (X=84..168, Y=98..116)
+    mov ax, 84
+    mov bx, 104
+    mov cx, 16
+    mov dx, 10
+    mov byte [GFX_COLOR], 13        ; Deep Blue Tail Contour
+    call gfx_fill_rounded_rect
+    mov ax, 94
+    mov bx, 99
+    mov cx, 66
+    mov dx, 15
+    mov byte [GFX_COLOR], 11        ; Primary Royal Blue Body (#4674E9)
+    call gfx_fill_rounded_rect
+    mov ax, 98
+    mov bx, 101
+    mov cx, 58
+    mov dx, 4
+    mov byte [GFX_COLOR], 12        ; Specular Highlight (#6691F5)
+    call gfx_fill_rect
+
+    ;    Upright Neck & Rounded Snout (X=132..172, Y=68..104)
+    mov ax, 132
+    mov bx, 74
+    mov cx, 26
+    mov dx, 32
+    mov byte [GFX_COLOR], 11
+    call gfx_fill_rounded_rect
+    ;    Forward-facing Rounded Snout (X=140..174, Y=68..94)
+    mov ax, 140
+    mov bx, 68
+    mov cx, 34
+    mov dx, 26
+    mov byte [GFX_COLOR], 11
+    call gfx_fill_rounded_rect
+    mov ax, 144
+    mov bx, 70
+    mov cx, 26
+    mov dx, 4
+    mov byte [GFX_COLOR], 12
+    call gfx_fill_rect
+
+    ;    Two Giant 10x10 Protruding Round White Eyes on top of head at (138, 63) and (153, 63)
+    mov ax, 138
+    mov bx, 63
+    mov cx, 10
+    mov dx, 10
+    mov byte [GFX_COLOR], 15
+    call gfx_fill_rounded_rect
+    mov ax, 153
+    mov bx, 63
+    call gfx_fill_rounded_rect
+
+    ;    4x5 Deep-Navy Pupils looking right toward the Apple + 2x2 White Catchlights
+    mov ax, 143
+    mov bx, 66
+    mov cx, 4
+    mov dx, 5
+    mov byte [GFX_COLOR], 14
+    call gfx_fill_rect
+    mov ax, 158
+    mov bx, 66
+    call gfx_fill_rect
+    mov ax, 143
+    mov bx, 66
+    mov cx, 2
+    mov dx, 2
+    mov byte [GFX_COLOR], 15
+    call gfx_fill_rect
+    mov ax, 158
+    mov bx, 66
+    call gfx_fill_rect
+
+    ;    Cute Nostrils & Happy Mouth + Flicking Red Forked Tongue
+    mov ax, 164
+    mov bx, 74
+    mov cx, 2
+    mov dx, 2
+    mov byte [GFX_COLOR], 13
+    call gfx_fill_rect
+    mov ax, 169
+    mov bx, 74
+    call gfx_fill_rect
+
+    ;    Smile line & forked red tongue extending toward the apple
+    mov ax, 152
+    mov bx, 86
+    mov cx, 20
+    mov dx, 2
+    mov byte [GFX_COLOR], 14
+    call gfx_fill_rect
+    mov ax, 172
+    mov bx, 85
+    mov cx, 7
+    mov dx, 2
+    mov byte [GFX_COLOR], 16        ; Red Forked Tongue
+    call gfx_fill_rect
+    mov ax, 179
+    mov bx, 84
+    mov cx, 2
+    mov dx, 1
+    call gfx_fill_rect
+    mov ax, 179
+    mov bx, 87
+    call gfx_fill_rect
+
+    ;    Glossy Red Apple on the Grass Horizon to the right of the Snake (X=206, Y=92)
+    mov ax, 206
+    mov bx, 92
+    mov si, sprite_apple16
+    call gfx_draw_sprite16
+
+    ; 8. Draw the 3 Rounded Pill-Shaped Royal-Blue Buttons below the card (Y=139..195)
+    call gfx_draw_card_buttons
+
+    pop dx
+    pop si
     pop dx
     pop cx
     pop bx
     pop ax
     ret
 
+gfx_draw_card_buttons:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+
+    ; --- Button 0 (Y = 139..155, X = 56..263, w = 208): "Play Cybforge Snake" ---
+    mov ax, 56
+    mov bx, 141
+    mov cx, 208
+    mov dx, 16
+    mov byte [GFX_COLOR], 10        ; 3D Pill Bottom Shadow Lip (#114694)
+    call gfx_fill_rounded_rect
+
+    mov ax, 56
+    mov bx, 139
+    mov cx, 208
+    mov dx, 16
+    mov byte [GFX_COLOR], 8         ; Royal Blue (#1967D2)
+    cmp byte [CARD_BTN_SEL], 0
+    jne .btn0_fill
+    mov byte [GFX_COLOR], 9         ; Hover Bright Royal Blue (#2979FF)
+.btn0_fill:
+    call gfx_fill_rounded_rect
+
+    ; Play Triangle Icon on left of Button 0 (X=68, Y=143)
+    mov ax, 68
+    mov bx, 143
+    mov cx, 2
+    mov dx, 8
+    mov byte [GFX_COLOR], 15
+    call gfx_fill_rect
+    add ax, 2
+    inc bx
+    mov dx, 6
+    call gfx_fill_rect
+    add ax, 2
+    inc bx
+    mov dx, 4
+    call gfx_fill_rect
+    add ax, 2
+    inc bx
+    mov dx, 2
+    call gfx_fill_rect
+
+    mov ax, 86
+    mov bx, 141
+    mov si, str_btn_play_txt
+    mov dl, 15
+    cmp byte [CARD_BTN_SEL], 0
+    jne .btn0_txt
+    mov dl, 22                      ; Bright Gold-White highlight when selected
+.btn0_txt:
+    call gfx_draw_text
+
+    ; --- Button 1 (Y = 159..175, X = 56..263, w = 208): "BIOS Setup & Settings" ---
+    mov ax, 56
+    mov bx, 161
+    mov cx, 208
+    mov dx, 16
+    mov byte [GFX_COLOR], 10
+    call gfx_fill_rounded_rect
+
+    mov ax, 56
+    mov bx, 159
+    mov cx, 208
+    mov dx, 16
+    mov byte [GFX_COLOR], 8
+    cmp byte [CARD_BTN_SEL], 1
+    jne .btn1_fill
+    mov byte [GFX_COLOR], 9
+.btn1_fill:
+    call gfx_fill_rounded_rect
+
+    mov ax, 64
+    mov bx, 159
+    mov si, sprite_hud_gear
+    call gfx_draw_sprite16
+
+    mov ax, 84
+    mov bx, 161
+    mov si, str_btn_setup_txt
+    mov dl, 15
+    cmp byte [CARD_BTN_SEL], 1
+    jne .btn1_txt
+    mov dl, 22
+.btn1_txt:
+    call gfx_draw_text
+
+    ; --- Button 2 (Y = 179..195, X = 56..263, w = 208): "Launch UEFI/BIOS Shell" ---
+    mov ax, 56
+    mov bx, 181
+    mov cx, 208
+    mov dx, 16
+    mov byte [GFX_COLOR], 10
+    call gfx_fill_rounded_rect
+
+    mov ax, 56
+    mov bx, 179
+    mov cx, 208
+    mov dx, 16
+    mov byte [GFX_COLOR], 8
+    cmp byte [CARD_BTN_SEL], 2
+    jne .btn2_fill
+    mov byte [GFX_COLOR], 9
+.btn2_fill:
+    call gfx_fill_rounded_rect
+
+    ; '>' Terminal Prompt icon at (66, 181)
+    mov ax, 66
+    mov bx, 181
+    mov cl, '>'
+    mov dl, 22
+    call gfx_draw_char
+
+    mov ax, 80
+    mov bx, 181
+    mov si, str_btn_shell_txt
+    mov dl, 15
+    cmp byte [CARD_BTN_SEL], 2
+    jne .btn2_txt
+    mov dl, 22
+.btn2_txt:
+    call gfx_draw_text
+
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+check_card_mouse_hover:
+    xor dl, dl
+    jmp check_card_mouse_common
+check_card_mouse_hover_go:
+    mov dl, 1
+check_card_mouse_common:
+    push ax
+    push bx
+    push cx
+    mov ax, [MOUSE_FINE_X]
+    shr ax, 1                       ; px (0..319)
+    mov bx, [MOUSE_FINE_Y]
+    shr bx, 1                       ; py (0..199)
+
+    mov ch, [CARD_BTN_SEL]
+    cmp ax, 56
+    jb .ccmc_chk_move
+    cmp ax, 263
+    ja .ccmc_chk_move
+    cmp bx, 139
+    jb .ccmc_chk_move
+    cmp bx, 156
+    jb .ccmc_b0
+    cmp bx, 176
+    jb .ccmc_b1
+    cmp bx, 196
+    jb .ccmc_b2
+    jmp .ccmc_chk_move
+.ccmc_b0:
+    mov ch, 0
+    jmp .ccmc_chk_sel
+.ccmc_b1:
+    mov ch, 1
+    jmp .ccmc_chk_sel
+.ccmc_b2:
+    mov ch, 2
+.ccmc_chk_sel:
+    cmp ch, [CARD_BTN_SEL]
+    je .ccmc_chk_move
+    mov [CARD_BTN_SEL], ch
+    call gfx_draw_card_buttons
+    call gfx_present
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+.ccmc_chk_move:
+    ; Even if button selection didn't change, update cursor if mouse moved!
+    mov ax, [MOUSE_FINE_X]
+    cmp ax, [MOUSE_LAST_FX]
+    jne .ccmc_present
+    mov ax, [MOUSE_FINE_Y]
+    cmp ax, [MOUSE_LAST_FY]
+    je .ccmc_done
+.ccmc_present:
+    call gfx_present
+.ccmc_done:
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; -----------------------------------------------------------------------------
+; Legacy Text-Mode Helper Stubs (Used by BIOS Setup Tab 0 High Score Display)
+; -----------------------------------------------------------------------------
 render_3digits_yellow:
     xor dx, dx
     mov cx, 100
@@ -3603,75 +4616,92 @@ render_3digits_white:
     ret
 
     ; =========================================================================
-    ; PHASE 8: GOOGLE SNAKE DIZZY-STARS CRASH ANIMATION & TOP 3 LEADERBOARD
+    ; PHASE 8: DIZZY-STARS CRASH ANIMATION & TOP 3 LEADERBOARD (Mode 13h)
     ; =========================================================================
 crash_dissolve_animation:
-    ; 1. Play Cartoon Sub-Bass Bonk + Dizzy Stars PCM audio
     call sound_crash
 
-    ; 2. Draw Knocked-Out Dizzy Snake Head (0x10) at (SNAKE_X[0], SNAKE_Y[0])
-    mov al, [SNAKE_X]
-    mov bl, [SNAKE_Y]
-    call xy_to_di
-    call get_grass_bg_ah
-    or ah, 0x0E                     ; Gold/Yellow Dizzy Head on Grass
-    mov al, 0x10                    ; 0x10 = Knocked-Out Dizzy Head
-    stosw
-
-    ; 3. Animate twinkling Dizzy Stars ('*', '+') around the snake head (8 frames)
+    ; Animate 8 frames of Orbiting Golden & White Pixel Stars around the Dizzy Snake Head!
     mov cx, 8
-.dizzy_star_loop:
+.dizzy_loop:
     push cx
-    mov al, [SNAKE_X]
-    mov bl, [SNAKE_Y]
-    cmp bl, 5
-    jb .ds_skip_top_stars
-    dec bl
-    call xy_to_di
-    call get_grass_bg_ah
-    or ah, 0x0E
-    mov al, '*'
+    call gfx_render_scene
+
+    ; Compute head center pixel (px, py)
+    movzx ax, byte [SNAKE_X]
+    imul ax, 10
+    add ax, 20
+    movzx bx, byte [SNAKE_Y]
+    imul bx, 10
+    add bx, 32
+
+    ; Draw 4 twinkling 3x3 Gold/White Stars around the head
+    pop cx
+    push cx
+    mov dl, 21                      ; Gold
+    mov dh, 15                      ; White
     test cl, 1
-    jz .ds_st1
-    mov al, '+'
-    xor ah, 0x01                    ; Alternate Gold (0x0E) & White (0x0F)
-.ds_st1:
-    cmp byte [SNAKE_X], 12
-    jb .ds_st_r
-    mov [es:di - 2], ax
-.ds_st_r:
-    cmp byte [SNAKE_X], 67
-    ja .ds_skip_top_stars
-    xor al, ('*' ^ '+')
-    mov [es:di + 2], ax
-.ds_skip_top_stars:
-    mov ecx, 11000000               ; ~45ms per dizzy star frame
+    jz .dz_col_ok
+    xchg dl, dh
+.dz_col_ok:
+    push ax
+    push bx
+    sub ax, 5
+    sub bx, 5
+    mov [GFX_COLOR], dl
+    mov cx, 3
+    push dx
+    mov dx, 3
+    call gfx_fill_rect
+    pop dx
+
+    add ax, 17
+    mov [GFX_COLOR], dh
+    push dx
+    mov dx, 3
+    call gfx_fill_rect
+    pop dx
+
+    sub ax, 15
+    add bx, 16
+    mov [GFX_COLOR], dh
+    push dx
+    mov dx, 3
+    call gfx_fill_rect
+    pop dx
+
+    add ax, 14
+    mov [GFX_COLOR], dl
+    mov dx, 3
+    call gfx_fill_rect
+    pop bx
+    pop ax
+
+    call gfx_present
+    mov ecx, 11000000
     call delay_cycles
     pop cx
-    loop .dizzy_star_loop
+    loop .dizzy_loop
     ret
 
 check_top3_qualification:
     mov ax, [SCORE]
-    cmp ax, [TOP3_TABLE + 13]       ; Compare with Rank 3
+    cmp ax, [TOP3_TABLE + 13]
     jbe .no_qualification
 
-    ; New record! Display initials entry dialog
     call enter_initials_dialog
 
-    ; Insert into TOP3_TABLE at the appropriate rank
     push es
     push ds
     pop es
 
     mov ax, [SCORE]
-    cmp ax, [TOP3_TABLE + 3]        ; Better than Rank 1?
+    cmp ax, [TOP3_TABLE + 3]
     ja .insert_pos1
 
-    cmp ax, [TOP3_TABLE + 8]        ; Better than Rank 2?
+    cmp ax, [TOP3_TABLE + 8]
     ja .insert_pos2
 
-    ; Replace Rank 3
     mov si, CURRENT_NAME
     mov di, TOP3_TABLE + 10
     mov cx, 3
@@ -3681,12 +4711,10 @@ check_top3_qualification:
     jmp .save_top3_done
 
 .insert_pos2:
-    ; Shift Rank 2 -> Rank 3
     mov si, TOP3_TABLE + 5
     mov di, TOP3_TABLE + 10
     mov cx, 5
     rep movsb
-    ; Place new entry at Rank 2
     mov si, CURRENT_NAME
     mov di, TOP3_TABLE + 5
     mov cx, 3
@@ -3696,17 +4724,14 @@ check_top3_qualification:
     jmp .save_top3_done
 
 .insert_pos1:
-    ; Rank 2 -> Rank 3
     mov si, TOP3_TABLE + 5
     mov di, TOP3_TABLE + 10
     mov cx, 5
     rep movsb
-    ; Rank 1 -> Rank 2
     mov si, TOP3_TABLE + 0
     mov di, TOP3_TABLE + 5
     mov cx, 5
     rep movsb
-    ; Place new entry at Rank 1
     mov si, CURRENT_NAME
     mov di, TOP3_TABLE + 0
     mov cx, 3
@@ -3728,95 +4753,72 @@ enter_initials_dialog:
     mov byte [CURRENT_NAME + 2], 'A'
     mov byte [CUR_CHAR_IDX], 0
 
-    ; Centered dialog box (Cols 25..55, Rows 9..16)
-    mov al, 25
-    mov bl, 9
-    call xy_to_di
-    mov ax, 0x0E01
-    stosw
-    mov cx, 29
-    mov ax, 0x0E05
-    rep stosw
-    mov ax, 0x0E02
-    stosw
-
-    mov dh, 10
-.init_box_mid:
-    mov al, 25
-    mov bl, dh
-    call xy_to_di
-    mov ax, 0x0E06
-    stosw
-    mov cx, 29
-    mov ax, 0x0720
-    rep stosw
-    mov ax, 0x0E06
-    stosw
-    inc dh
-    cmp dh, 16
-    jb .init_box_mid
-
-    mov al, 25
-    mov bl, 16
-    call xy_to_di
-    mov ax, 0x0E03
-    stosw
-    mov cx, 29
-    mov ax, 0x0E05
-    rep stosw
-    mov ax, 0x0E04
-    stosw
-
-    mov al, 30
-    mov bl, 10
-    call xy_to_di
-    mov si, str_new_rec_lbl
-    mov ah, 0x0E
-    call print_string
-
-    mov al, 33
-    mov bl, 11
-    call xy_to_di
-    mov si, str_score_lbl
-    mov ah, 0x0F
-    call print_string
-    mov ax, [SCORE]
-    call render_3digits_white
-
-    mov al, 28
-    mov bl, 14
-    call xy_to_di
-    mov si, str_init_nav
-    mov ah, 0x07
-    call print_string
-
-    mov al, 32
-    mov bl, 15
-    call xy_to_di
-    mov si, str_init_confirm
-    mov ah, 0x0B
-    call print_string
-
 .redraw_initials:
-    mov al, 37
-    mov bl, 13
-    call xy_to_di
+    mov byte [CARD_OPEN], 1
+    call gfx_render_scene
+
+    ; Rounded Sky-Blue Modal Card (X=64..255, Y=42..158)
+    mov ax, 64
+    mov bx, 42
+    mov cx, 192
+    mov dx, 116
+    mov byte [GFX_COLOR], 6
+    call gfx_fill_rounded_rect
+
+    mov ax, 80
+    mov bx, 52
+    mov si, str_new_rec_lbl
+    mov dl, 22
+    call gfx_draw_text
+
+    mov ax, 112
+    mov bx, 68
+    mov si, str_score_lbl
+    mov dl, 15
+    call gfx_draw_text
+    mov ax, 168
+    mov bx, 68
+    mov cx, [SCORE]
+    mov dl, 22
+    call gfx_draw_3digits
+
+    ; Draw 3 Initials Pills at X=120, 148, 176 (Y=90)
     xor si, si
 .show_chars:
-    mov al, [CURRENT_NAME + si]
-    mov ah, 0x0E
+    mov ax, si
+    imul ax, 28
+    add ax, 118
+    mov bx, 88
+    mov cx, 20
+    mov dx, 20
+    mov byte [GFX_COLOR], 8
     cmp si, [CUR_CHAR_IDX]
-    jne .not_act_char
-    mov ah, 0x2F                    ; Bright White on Green
-.not_act_char:
-    stosw
-    mov al, ' '
-    mov ah, 0x07
-    stosw
+    jne .sc_box
+    mov byte [GFX_COLOR], 9
+.sc_box:
+    call gfx_fill_rounded_rect
+
+    add ax, 6
+    add bx, 5
+    mov cl, [CURRENT_NAME + si]
+    mov dl, 15
+    cmp si, [CUR_CHAR_IDX]
+    jne .sc_chr
+    mov dl, 22
+.sc_chr:
+    call gfx_draw_char
+
     inc si
     cmp si, 3
     jb .show_chars
 
+    mov ax, 100
+    mov bx, 122
+    mov si, str_init_confirm
+    mov dl, 15
+    call gfx_draw_text
+
+    call gfx_present
     call drain_kbd
 
 .initials_input:
@@ -3826,29 +4828,25 @@ enter_initials_dialog:
 
     cmp al, 0x1C
     je .init_done
-
     cmp al, 0x4B
     je .char_left
     cmp al, 0x1E
     je .char_left
-
     cmp al, 0x4D
     je .char_right
     cmp al, 0x20
     je .char_right
-
     cmp al, 0x48
     je .char_up
     cmp al, 0x11
     je .char_up
-
     cmp al, 0x50
     je .char_down
     cmp al, 0x1F
     je .char_down
 
 .init_wait:
-    mov ecx, 25000000
+    mov ecx, 15000000
     call delay_cycles
     jmp .initials_input
 
@@ -3896,64 +4894,196 @@ enter_initials_dialog:
     call sound_toggle
     ret
 
-draw_top3_rows:
-    ; Rank 1 (Row 13)
-    mov al, 25
-    mov bl, 13
-    call xy_to_di
-    mov si, str_top1_pfx
-    mov ah, 0x0E
-    call print_string
-    mov si, TOP3_TABLE + 0
-    mov ah, 0x0F
-    call print_3chars
-    mov si, str_dots
-    mov ah, 0x07
-    call print_string
-    mov ax, [TOP3_TABLE + 3]
-    call render_3digits_yellow
+; -----------------------------------------------------------------------------
+; Mode 13h Register Tables, 256-Color Palettes & Multi-Color Pixel-Art Sprites
+; -----------------------------------------------------------------------------
+mode13h_seq_table:
+    db 0x01, 0x0F, 0x00, 0x0E       ; SR01..SR04 (SR02=All 4 Planes, SR04=Chain-4 Linear)
 
-    ; Rank 2 (Row 14)
-    mov al, 25
-    mov bl, 14
-    call xy_to_di
-    mov si, str_top2_pfx
-    mov ah, 0x07
-    call print_string
-    mov si, TOP3_TABLE + 5
-    mov ah, 0x0F
-    call print_3chars
-    mov si, str_dots
-    mov ah, 0x07
-    call print_string
-    mov ax, [TOP3_TABLE + 8]
-    call render_3digits_white
+mode13h_crtc_table:
+    db 0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F
+    db 0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    db 0x9C, 0x0E, 0x8F, 0x28, 0x40, 0x96, 0xB9, 0xA3
+    db 0xFF
 
-    ; Rank 3 (Row 15)
-    mov al, 25
-    mov bl, 15
-    call xy_to_di
-    mov si, str_top3_pfx
-    mov ah, 0x07
-    call print_string
-    mov si, TOP3_TABLE + 10
-    mov ah, 0x0F
-    call print_3chars
-    mov si, str_dots
-    mov ah, 0x07
-    call print_string
-    mov ax, [TOP3_TABLE + 13]
-    call render_3digits_white
-    ret
+mode13h_gc_table:
+    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0F, 0xFF
 
-print_3chars:
-    lodsb
-    stosw
-    lodsb
-    stosw
-    lodsb
-    stosw
-    ret
+mode13h_ac_ext_table:
+    db 0x41, 0x00, 0x0F, 0x00, 0x00
+
+; Colors 0..5 per Board Theme (4 Themes x 6 Colors x 3 Bytes = 72 Bytes)
+; 0:HUD Bar, 1:Outer Border, 2:Grass Light, 3:Grass Med, 4:Dim Grass Light, 5:Dim Grass Med
+mode13h_theme_palettes:
+    ; Theme 0: Lush Grass Checkerboard (Default)
+    db 18, 29, 11,  22, 35, 13,  42, 54, 20,  40, 52, 18,  11, 18, 7,   9, 15, 6
+    ; Theme 1: Cyber Emerald Checkerboard
+    db 4, 18, 14,   6, 24, 18,   14, 46, 30,  10, 40, 26,  4, 14, 10,   3, 11, 8
+    ; Theme 2: Golden Autumn Meadow
+    db 26, 16, 6,   34, 22, 8,   52, 42, 18,  48, 38, 14,  16, 12, 5,   13, 10, 4
+    ; Theme 3: Retro Arcade Checkerboard
+    db 8, 10, 26,   12, 14, 34,  22, 28, 48,  18, 24, 42,  6, 8, 16,    5, 6, 13
+
+; Colors 6..31 Fixed Pixel-Art Palette (26 Colors x 3 Bytes = 78 Bytes)
+mode13h_fixed_palette:
+    db 19, 48, 62   ;  6: Sky-Blue Popup Card (#4DC1F9)
+    db 14, 40, 54   ;  7: Sky-Blue Card Rim
+    db 6, 26, 52    ;  8: Royal-Blue Pill Button (#1967D2)
+    db 10, 32, 63   ;  9: Hover Bright Royal-Blue Pill Button (#2979FF)
+    db 4, 16, 36    ; 10: Pill Button 3D Bottom Lip (#114694)
+    db 17, 29, 58   ; 11: Snake Primary Royal Blue (#4674E9)
+    db 26, 38, 62   ; 12: Snake Top Specular Highlight (#6691F5)
+    db 11, 20, 45   ; 13: Snake Bottom Shadow Contour (#3156B8)
+    db 6, 9, 31     ; 14: Snake Eye Pupil & Nostril Deep Navy (#1A237E)
+    db 63, 63, 63   ; 15: Pure Crisp White (#FFFFFF)
+    db 58, 17, 7    ; 16: Glossy Scarlet Red Apple (#E7471D)
+    db 44, 7, 7     ; 17: Apple Deep Crimson Shadow (#B71C1C)
+    db 63, 36, 34   ; 18: Apple Soft Pink Highlight (#FF8A80)
+    db 31, 46, 16   ; 19: Apple Leaf Fresh Green (#7CB342)
+    db 27, 19, 16   ; 20: Apple Stem Warm Brown (#6D4C41)
+    db 63, 48, 2    ; 21: Trophy / Golden Apple Gold (#FFC107)
+    db 63, 60, 28   ; 22: Trophy Bright Lemon Highlight (#FFF176)
+    db 56, 36, 0    ; 23: Trophy / Block Warm Amber (#FFA000)
+    db 34, 4, 20    ; 24: Snake Chomp Mouth Maroon (#880E4F)
+    db 60, 24, 36   ; 25: Snake Inner Tongue Pink (#F06292)
+    db 6, 11, 4     ; 26: Drop Shadow Dark Forest (#182C10)
+    db 0, 0, 0      ; 27: Pure Black (#000000)
+    db 34, 45, 14   ; 28: Grass Horizon Edge (#8AB438)
+    db 48, 52, 56   ; 29: Silver Gray
+    db 20, 56, 30   ; 30: Mint Accent
+    db 63, 20, 20   ; 31: Bright Coral
+
+; 10x10 Multi-Color Glossy Red Apple Sprite (0xFF = transparent)
+sprite_apple10:
+    db 0xFF,0xFF,0xFF,0xFF, 20,  19,  19, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF, 16,  16,  20,  19,  16,  16, 0xFF,0xFF
+    db 0xFF, 16,  15,  18,  16,  16,  16,  16,  17, 0xFF
+    db 0xFF, 16,  18,  16,  16,  16,  16,  16,  17, 0xFF
+    db 0xFF, 16,  16,  16,  16,  16,  16,  16,  17, 0xFF
+    db 0xFF, 16,  16,  16,  16,  16,  16,  17,  17, 0xFF
+    db 0xFF, 16,  16,  16,  16,  16,  16,  17,  17, 0xFF
+    db 0xFF,0xFF, 16,  16,  16,  16,  17,  17, 0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 17,  17,  17,  17, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 26,  26,  26,  26, 0xFF,0xFF,0xFF
+
+; 10x10 Multi-Color Golden Apple Sprite (0xFF = transparent)
+sprite_gold_apple10:
+    db 0xFF,0xFF,0xFF,0xFF, 20,  19,  19, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF, 21,  21,  20,  19,  21,  21, 0xFF,0xFF
+    db 0xFF, 21,  15,  22,  21,  21,  21,  21,  23, 0xFF
+    db 0xFF, 21,  22,  21,  21,  21,  21,  21,  23, 0xFF
+    db 0xFF, 21,  21,  21,  21,  21,  21,  21,  23, 0xFF
+    db 0xFF, 21,  21,  21,  21,  21,  21,  23,  23, 0xFF
+    db 0xFF, 21,  21,  21,  21,  21,  21,  23,  23, 0xFF
+    db 0xFF,0xFF, 21,  21,  21,  21,  23,  23, 0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 23,  23,  23,  23, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 26,  26,  26,  26, 0xFF,0xFF,0xFF
+
+; 16x16 Multi-Color Glossy Red Apple Sprite (for HUD & Popup Card)
+sprite_apple16:
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 20,  20,  19,  19,  19, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 20,  19,  19,  19,  19, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 16,  16,  16,  20,  20,  19,  16,  16,  16,  16, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF, 16,  16,  18,  18,  16,  16,  16,  16,  16,  16,  16,  17, 0xFF,0xFF
+    db 0xFF, 16,  16,  15,  15,  18,  16,  16,  16,  16,  16,  16,  16,  17,  17, 0xFF
+    db 0xFF, 16,  16,  15,  18,  16,  16,  16,  16,  16,  16,  16,  16,  17,  17, 0xFF
+    db 0xFF, 16,  16,  18,  16,  16,  16,  16,  16,  16,  16,  16,  16,  17,  17, 0xFF
+    db 0xFF, 16,  16,  16,  16,  16,  16,  16,  16,  16,  16,  16,  16,  17,  17, 0xFF
+    db 0xFF, 16,  16,  16,  16,  16,  16,  16,  16,  16,  16,  16,  17,  17,  17, 0xFF
+    db 0xFF, 16,  16,  16,  16,  16,  16,  16,  16,  16,  16,  16,  17,  17,  17, 0xFF
+    db 0xFF,0xFF, 16,  16,  16,  16,  16,  16,  16,  16,  16,  17,  17,  17, 0xFF,0xFF
+    db 0xFF,0xFF, 16,  16,  16,  16,  16,  16,  16,  16,  17,  17,  17,  17, 0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 16,  16,  16,  17,  17,  17,  17,  17,  17,  17, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF, 17,  17,  17, 0xFF,0xFF, 17,  17,  17, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF, 26,  26,  26,  26,  26,  26,  26,  26, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+
+; 16x16 Multi-Color Golden Trophy Cup Sprite (for HUD & Popup Card)
+sprite_trophy16:
+    db 0xFF,0xFF,0xFF, 22,  22,  21,  21,  21,  21,  21,  21,  23,  23, 0xFF,0xFF,0xFF
+    db 0xFF, 21,  21,  15,  22,  21,  21,  21,  21,  21,  21,  23,  23,  21,  21, 0xFF
+    db  21,  23,  21,  15,  22,  21,  21,  21,  21,  21,  21,  23,  23,  21,  23,  21
+    db  21, 0xFF, 21,  22,  22,  21,  21,  21,  21,  21,  21,  23,  23,  21, 0xFF, 21
+    db  21, 0xFF, 21,  22,  21,  21,  21,  21,  21,  21,  21,  23,  23,  21, 0xFF, 21
+    db 0xFF, 23,  23,  21,  21,  21,  21,  21,  21,  21,  21,  23,  23,  23,  23, 0xFF
+    db 0xFF,0xFF,0xFF, 21,  21,  21,  21,  21,  21,  21,  23,  23,  23, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF, 21,  21,  21,  21,  21,  23,  23,  23, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF, 21,  21,  21,  23,  23,  23, 0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 21,  21,  23,  23, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 21,  21,  23,  23, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF, 22,  21,  21,  23,  23,  23, 0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 22,  22,  21,  21,  21,  21,  23,  23,  23,  23, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF, 23,  23,  23,  23,  23,  23,  23,  23,  23,  23,  23,  23, 0xFF,0xFF
+    db 0xFF,0xFF, 26,  26,  26,  26,  26,  26,  26,  26,  26,  26,  26,  26, 0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+
+; 16x16 White HUD Speaker Icon
+sprite_hud_speaker:
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15, 0xFF,0xFF, 15, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF,0xFF, 15, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15,  15,  15, 0xFF, 15, 0xFF,0xFF, 15, 0xFF,0xFF
+    db 0xFF,0xFF, 15,  15,  15,  15,  15,  15,  15, 0xFF,0xFF, 15, 0xFF, 15, 0xFF,0xFF
+    db 0xFF,0xFF, 15,  15,  15,  15,  15,  15,  15, 0xFF,0xFF, 15, 0xFF, 15, 0xFF,0xFF
+    db 0xFF,0xFF, 15,  15,  15,  15,  15,  15,  15, 0xFF,0xFF, 15, 0xFF, 15, 0xFF,0xFF
+    db 0xFF,0xFF, 15,  15,  15,  15,  15,  15,  15, 0xFF,0xFF, 15, 0xFF, 15, 0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15,  15,  15, 0xFF, 15, 0xFF,0xFF, 15, 0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF,0xFF, 15, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15, 0xFF,0xFF, 15, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+
+; 16x16 White HUD Settings Gear Icon
+sprite_hud_gear:
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 15,  15, 0xFF, 15,  15,  15, 0xFF, 15,  15, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF, 15,  15,  15,  15,  15,  15,  15,  15,  15,  15,  15, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF, 15,  15,  15, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF
+    db 0xFF, 15,  15,  15, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF
+    db 0xFF, 15,  15,  15, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF, 15,  15,  15,  15,  15,  15,  15,  15,  15,  15,  15, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF, 15,  15, 0xFF, 15,  15,  15, 0xFF, 15,  15, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 15,  15,  15, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+
+; 12x16 Black-Outlined Crisp White Hardware Mouse Cursor Sprite
+sprite_cursor_12x16:
+    db  27,  27, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db  27,  15,  27, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db  27,  15,  15,  27, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db  27,  15,  15,  15,  27, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db  27,  15,  15,  15,  15,  27, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+    db  27,  15,  15,  15,  15,  15,  27, 0xFF,0xFF,0xFF,0xFF,0xFF
+    db  27,  15,  15,  15,  15,  15,  15,  27, 0xFF,0xFF,0xFF,0xFF
+    db  27,  15,  15,  15,  15,  15,  15,  15,  27, 0xFF,0xFF,0xFF
+    db  27,  15,  15,  15,  15,  15,  15,  15,  15,  27, 0xFF,0xFF
+    db  27,  15,  15,  15,  15,  15,  27,  27,  27,  27, 0xFF,0xFF
+    db  27,  15,  15,  27,  15,  15,  27, 0xFF,0xFF,0xFF,0xFF,0xFF
+    db  27,  15,  27, 0xFF, 27,  15,  15,  27, 0xFF,0xFF,0xFF,0xFF
+    db  27,  27, 0xFF,0xFF, 27,  15,  15,  27, 0xFF,0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF, 27,  15,  15,  27, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF, 27,  15,  15,  27, 0xFF,0xFF,0xFF
+    db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, 27,  27, 0xFF,0xFF,0xFF,0xFF
+
+str_btn_play_txt:
+    db "Play Cybforge Snake", 0
+str_btn_setup_txt:
+    db "BIOS Setup & Settings", 0
+str_btn_shell_txt:
+    db "Launch UEFI/BIOS Shell", 0
+str_go_short:
+    db "GAME OVER", 0
+str_vic_short:
+    db "* VICTORY! *", 0
 
     ; --- CMOS NVRAM PERSISTENCE (0x70 / 0x71) ---
 cmos_read_byte:
@@ -4558,7 +5688,9 @@ mouse_process_byte:
     mov [MOUSE_PREV_BTN], al
     mov [MOUSE_BTN], al
 
-    ; 4. Move live software cursor on screen!
+    ; 4. Move live software cursor on screen (if in 80x25 Text Mode)!
+    cmp byte [VGA_GFX_ACTIVE], 1
+    je .mpb_done
     call mouse_show_cursor
     jmp .mpb_done
 
@@ -5426,7 +6558,7 @@ str_post_top_bar:
 str_post_hdr1:
     db "Cybforge Retro BIOS (C)2026 Cybforge Systems Inc.", 0
 str_post_hdr2:
-    db "BIOS Date: 11/08/2026  Ver: 3.00.00-MAX (Google Snake Ed.)", 0
+    db "BIOS Date: 11/08/2026  Ver: 3.00.00-MAX (Cybforge Snake Ed.)", 0
 str_post_cpu:
     db "CPU Type    : Genuine x86-32 CPU @ 3.50 GHz (4GB Unreal)", 0
 str_post_coproc:
@@ -5454,9 +6586,9 @@ str_post_drives:
 str_post_f12:
     db ">> Press [F12 / DEL] or Click Here for UEFI BIOS Setup <<", 0
 str_post_boot:
-    db "Booting Google Snake v3.0 in 3s... (Press [ENTER] or Click to Start Now)", 0
+    db "Booting Cybforge Snake v3.0 in 3s... (Press [ENTER] or Click to Start Now)", 0
 str_post_bot_bar:
-    db "[F12/DEL] BIOS Setup    [ENTER/Click] Boot Google Snake    [Mouse] Active", 0
+    db "[F12/DEL] BIOS Setup    [ENTER/Click] Boot Cybforge Snake  [Mouse] Active", 0
 str_logo_lbl1:
     db "   CYBFORGE   ", 0
 str_logo_lbl2:
@@ -5470,7 +6602,7 @@ str_setup_hw_badge:
 str_setup_usb_line:
     db "Bus 0: xHCI USB 3.0 (FEB00000h) | EHCI USB 2.0 (FEB10000h) | Mouse", 0
 str_box_title_main:
-    db " Google Snake Maximalist & Hardware Features ", 0
+    db " Cybforge Snake Maximalist & Hardware Features ", 0
 str_box_title_help:
     db " Item Guidance & Live Bus Telemetry ", 0
 str_setup_footer:
@@ -5520,7 +6652,7 @@ str_post_pcspk:
     db "Sound System     : Standard PC Speaker (PIT 8254 Ch 2)", 0
 
 str_val_face_smile:
-    db "< Google BigEyes >", 0
+    db "< Cybforge Eyes  >", 0
 str_val_face_cool:
     db "< Cool Shades    >", 0
 
@@ -5547,13 +6679,13 @@ str_help_1:
 str_help_2:
     db "Select Studio SB16 16-Bit Marimba/Synth PCM, PC Speaker, or Dual.", 0
 str_help_3:
-    db "Select snake head style: Google Snake Big-Eyes or Cool Sunglasses.", 0
+    db "Select snake head style: Cybforge Big-Eyes or Cool Sunglasses.", 0
 str_help_4:
     db "Starting length of the royal-blue snake body at game launch.", 0
 str_help_5:
     db "Win goal: Fill the 1044-tile grass board or reach apple target!", 0
 str_help_6:
-    db "Choose playfield theme: Google Grass Checkerboard, Emerald, Sunset, Arcade.", 0
+    db "Choose playfield theme: Lush Grass Checkerboard, Emerald, Autumn, Arcade.", 0
 str_help_7:
     db "Choose arena layout: Open Meadow, Four Pillars, or The Maze.", 0
 
@@ -5563,7 +6695,7 @@ str_opt_arena:
     db "Arena Layout      : ", 0
 
 str_val_theme_cyber:
-    db "< Google Grass   >", 0
+    db "< Lush Grass     >", 0
 str_val_theme_matr:
     db "< Cyber Emerald  >", 0
 str_val_theme_amber:
@@ -5581,11 +6713,11 @@ str_val_arena_maze:
 str_help_8:
     db "Reset all BIOS and game settings back to factory defaults.", 0
 str_help_9:
-    db "Save settings to NVRAM disk and launch Google Snake!", 0
+    db "Save settings to NVRAM disk and launch Cybforge Snake!", 0
 
 ; --- Google Snake Maximalist Game Strings ---
 str_game_title:
-    db "GOOGLE SNAKE BIOS v3.0", 0
+    db "CYBFORGE SNAKE", 0
 str_game_ver:
     db "v3.0", 0
 str_hud_buttons:
@@ -5601,7 +6733,7 @@ str_controls:
 
 ; Google Snake Sky-Blue Popup Card Strings
 str_card_start_hdr:
-    db "G O O G L E   S N A K E", 0
+    db "C Y B F O R G E   S N A K E", 0
 str_card_champ_lbl:
     db "Top Champion: #1 ", 0
 str_card_btn_play:
@@ -5709,6 +6841,7 @@ str_vic_footer:
 ; PHASE 8: CYBFORGE EXTENDED UEFI / BIOS INTERACTIVE SHELL v2.5 (LIVE CYBFS)
 ; =============================================================================
 bios_shell_main:
+    call vga_set_text_mode
     call mouse_hide_cursor
     call load_ui_palette
     call drain_kbd
@@ -10580,7 +11713,7 @@ str_sh_hlp10:
 str_sh_hlp11:
     db "reboot       Real HW reset (0x64=FEh)  shutdown     ACPI S5 system power-off!", 0
 str_sh_hlp12:
-    db "snake / boot Launch Google Snake v3.0  exit / quit  Return to BIOS Setup!", 0
+    db "snake / boot Launch Cybforge Snake 3.0 exit / quit  Return to BIOS Setup!", 0
 
 str_sh_ver1:
     db "Cybforge UEFI Interactive Shell v3.0 [xHCI 3.0 + EHCI 2.0 + Mouse Edition]", 0
@@ -10715,7 +11848,7 @@ str_neo5:
 str_neo6:
     db "   '=========='     Audio    : Studio 16-Bit PCM Synth (SB16 DMA5)", 0
 str_neo7:
-    db "                    Game     : Google Snake v3.0 ('snake' to play)", 0
+    db "                    Game     : Cybforge Snake v3.0 ('snake' to play)", 0
 
 ; --- Live PCI, USB (xHCI/EHCI) & Mouse Hardware Strings ---
 str_pci_hdr:
